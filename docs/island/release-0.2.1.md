@@ -2,7 +2,7 @@
 
 [中文](../../docs_cn/island/release-0.2.1_cn.md) · [Release process](release.md) · [Documentation](../README.md)
 
-**Status:** release candidate, not yet published. **Date:** 2026-11-10 candidate; use the publication date in the GitHub release.
+**Status:** source-only beta pre-release. **Date:** 2026-11-10.
 
 ## Operator-visible changes
 
@@ -20,8 +20,8 @@ Check out the immutable `v0.2.1` tag from the public `Island-Team/isos-aether` r
 
 ## Known limits and planned work
 
-This beta supports only the host platforms named in its published verification receipt. It does not provide a stable custom-node SDK, a general `.so` loader, or a cross-platform build claim. **Target design — not implemented:** v0.2.2 is planned to define and test custom-node packaging, loading, lifecycle, and Stop; v0.2.3 is planned to extend supported host platforms. These plans do not promise that private v0.2.1 extension code will work unchanged in later releases.
+This beta has been verified on Linux x86_64 only. It does not provide a stable custom-node SDK, a general `.so` loader, or a cross-platform build claim. **Target design — not implemented:** v0.2.2 is planned to define and test custom-node packaging, loading, lifecycle, and Stop; v0.2.3 is planned to extend supported host platforms. These plans do not promise that private v0.2.1 extension code will work unchanged in later releases.
 
 ## Verification
 
-The GitHub release receipt must record the exact public commit, tested host OS and architecture, toolchain versions, reproducible commands and outcomes, end-to-end replay, and every unrun gate or known failure. Results from the private preparation repository do not replace checks on the public snapshot. This candidate note does not claim those checks have passed.
+The GitHub release receipt records the exact public commit, tested host OS and architecture, toolchain versions, reproducible commands and outcomes, end-to-end replay, and every unrun gate or known failure. On the public source candidate, strict Clippy, workspace tests, the locked binary build, EOS CTest, EI checks, UI checks, and bilingual documentation audits passed. The receipt names any boundary not verified for this beta.
