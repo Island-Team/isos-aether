@@ -3,35 +3,45 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
+#[cfg(test)]
 pub(crate) mod candidate_skill_preflight;
 pub(crate) mod core_bins;
 pub(crate) mod preflight;
 pub(crate) mod reader_features;
 pub(crate) mod readiness;
 pub(crate) mod skill_selection;
+#[cfg(test)]
 pub(crate) mod vision_binding;
 use crate::{
   app::config::{self, Paths},
-  runtime::owners::control_grants,
-  runtime::owners::dependent_stop,
-  domain::graph::edge_admission,
-  domain::graph::graph_compat,
-  domain::graph::graph_migration,
-  runtime::logs as log_store,
+  domain::graph::graph_contract,
   domain::launch as package_process,
   domain::packages,
 };
+#[cfg(test)]
+use crate::{
+  runtime::owners::{control_grants, dependent_stop},
+  runtime::logs as log_store,
+};
 use anyhow::{Context, Result, bail, ensure};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
   collections::{BTreeMap, BTreeSet},
   fs,
-  net::{TcpStream, ToSocketAddrs},
-  os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
+  net::ToSocketAddrs,
+  os::unix::{ffi::OsStrExt, fs::PermissionsExt},
   path::{Path, PathBuf},
-  process::{Child, Command, ExitStatus, Stdio},
+  process::Command,
+};
+#[cfg(test)]
+use std::{
+  net::TcpStream,
+  os::unix::process::CommandExt,
+  process::{Child, ExitStatus, Stdio},
   sync::{
     Arc, Mutex,
     mpsc::{self, Receiver},
@@ -48,8 +58,6 @@ const MAX_RESTARTS: u32 = 10;
 pub(crate) struct PackageLoadFailure {
   pub id: String,
   pub version: String,
-  pub stage: &'static str,
-  pub node_path: Option<String>,
   pub source: anyhow::Error,
 }
 
@@ -83,6 +91,7 @@ fn canonical_node_path(path: &str) -> String {
   }
 }
 
+#[cfg(test)]
 fn verify_admitted_handoff_fingerprint(
   executable: &Path,
   handoff_digest: &str,
@@ -153,7 +162,7 @@ pub struct ProcessSettings {
   #[serde(default)]
   pub env_from: BTreeMap<String, String>,
   #[serde(default)]
-  pub skill_libraries: Vec<crate::runtime::process::skill_selection::Entry>,
+  pub skill_executables: Vec<crate::runtime::process::skill_selection::Entry>,
   #[serde(default)]
   pub ready_tcp: Option<String>,
   #[serde(default)]
@@ -316,6 +325,8 @@ pub fn project_with_packages(paths: &Paths, source: &str) -> Result<Vec<ProcessS
   Ok(specs)
 }
 
+#[cfg(test)]
+#[expect(dead_code, reason = "test-only generated profile projection")]
 pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Result<()> {
   ensure!(
     path.is_absolute() && path.is_file(),
@@ -345,23 +356,21 @@ pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Resu
   Ok(())
 }
 
-pub fn use_generated_egia_config(specs: &mut [ProcessSpec], root: &Path) -> Result<()> {
-  let Some(spec) = specs.iter_mut().find(|spec| spec.id == "egia") else {
+#[cfg(test)]
+#[expect(dead_code, reason = "test-only generated EI configuration projection")]
+pub fn use_generated_ei_config(specs: &mut [ProcessSpec], root: &Path) -> Result<()> {
+  let Some(spec) = specs.iter_mut().find(|spec| spec.id == "ei") else {
     return Ok(());
   };
   ensure!(
     root.is_absolute() && root.is_dir(),
-    "selected EGIA configuration is missing"
+    "selected EI configuration is missing"
   );
-  let env_name = if root.file_name().is_some_and(|name| name == "ei") {
-    "EI_ETC"
-  } else {
-    "EGIA_ETC"
-  };
+  let env_name = "EI_ETC";
   ensure!(
     !spec.settings.command.iter().any(|arg| arg == "--etc")
       && !spec.settings.env.contains_key(env_name),
-    "EGIA configuration must use the selected generated root"
+    "EI configuration must use the selected generated root"
   );
   let path = root.to_string_lossy().into_owned();
   spec.settings.command.extend(["--etc".into(), path.clone()]);
@@ -393,10 +402,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     .transpose()?
     .unwrap_or_default();
   let graph: Graph = serde_json::from_value(value.clone())?;
-  ensure!(
-    matches!(graph.version.as_str(), "1.0.0" | "0.1.0" | "0.2.0"),
-    "graph version must be 1.0.0, 0.1.0, or 0.2.0"
-  );
+  ensure!(graph.version == "0.2.0", "graph version must be 0.2.0");
   let mut specs = BTreeMap::new();
   let mut package_processes = BTreeMap::new();
   for (core_id, core) in &graph.cores {
@@ -408,9 +414,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
           }
           let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
           ensure!(
-            ((core_id == "eos" && layer_id == "process")
-              || (graph.version == "0.2.0" && core_id == "isos" && layer_id == "eos_process"))
-              && key == &node.id,
+            (core_id == "isos" && layer_id == "eos_process") && key == &node.id,
             "{path}: package process has invalid placement or id"
           );
           let paths = paths.context("package process requires IsOS package resolver")?;
@@ -425,10 +429,6 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
               .map_err(|source| PackageLoadFailure {
                 id: package_id.to_owned(),
                 version: version.to_owned(),
-                stage: "process",
-                node_path: Some(format!(
-                  "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}"
-                )),
                 source,
               })?;
           ensure!(
@@ -441,20 +441,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
   }
   let mut adapter_libraries = BTreeMap::new();
   let mut owner_catalog = None;
-  let hardware = if graph.version == "0.2.0" {
-    graph
-      .cores
-      .get("isos")
-      .and_then(|core| core.layers.get("eos_hardware"))
-  } else {
-    graph
-      .cores
-      .get("eos")
-      .and_then(|core| core.layers.get("hardware"))
-  };
+  let hardware = graph
+    .cores
+    .get("isos")
+    .and_then(|core| core.layers.get("eos_hardware"));
   if let Some(hardware) = hardware {
-    for (group_id, group) in &hardware.groups {
-      for (node_id, node) in &group.nodes {
+    for group in hardware.groups.values() {
+      for node in group.nodes.values() {
         let Some(adapter) = &node.adapter else {
           continue;
         };
@@ -504,20 +497,6 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         .map_err(|source| PackageLoadFailure {
           id: package.0.to_owned(),
           version: package.1.to_owned(),
-          stage: "adapter",
-          node_path: Some(format!(
-            "/cores/{}/layers/{}/groups/{group_id}/nodes/{node_id}",
-            if graph.version == "0.2.0" {
-              "isos"
-            } else {
-              "eos"
-            },
-            if graph.version == "0.2.0" {
-              "eos_hardware"
-            } else {
-              "hardware"
-            }
-          )),
           source,
         })?;
         let argument = format!("{family}={}@{digest}", library.display());
@@ -538,12 +517,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
           if matches!(layer_id.as_str(), "process" | "eos_process") && node.package.is_some() {
             continue;
           }
-          if matches!(
-            node.node_type.as_str(),
-            "isos.process.component@v1.1"
-              | "isos.process.component@v0.1"
-              | "isos.process.component@v0.2"
-          ) {
+          if matches!(node.node_type.as_str(), "isos.process.component@v0.2") {
             ensure!(
               core_id == "isos" && layer_id == "process" && group_id == "component",
               "{path}: process type has invalid placement"
@@ -551,20 +525,6 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             ensure!(key == node.id, "{path}: node id differs from map key");
             let mut settings: ProcessSettings = serde_json::from_value(node.settings)
               .with_context(|| format!("{path}: invalid process settings"))?;
-            ensure!(
-              matches!(
-                node.node_type.as_str(),
-                "isos.process.component@v0.1" | "isos.process.component@v0.2"
-              ) || settings.env_from.is_empty(),
-              "{path}: env_from requires the @v0.1 component type"
-            );
-            ensure!(
-              matches!(
-                node.node_type.as_str(),
-                "isos.process.component@v0.1" | "isos.process.component@v0.2"
-              ) || settings.skill_libraries.is_empty(),
-              "{path}: skill_libraries requires the @v0.1 component type"
-            );
             let binary = match key.as_str() {
               "eos" => "aether-runtime",
               "bridge" => "aether-http-bridge",
@@ -586,10 +546,10 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                   .chain(args)
                   .collect();
               settings.role = Some("eos".into());
-            } else if key == "egia" && paths.is_some() {
+            } else if key == "ei" && paths.is_some() {
               ensure!(
-                settings.role.as_deref().is_none_or(|role| role == "egia"),
-                "{path}: role must be egia"
+                settings.role.as_deref().is_none_or(|role| role == "ei"),
+                "{path}: role must be ei"
               );
               ensure!(
                 settings.command.is_empty(),
@@ -597,20 +557,20 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
               );
               let args = settings.args.clone();
               let executable =
-                crate::runtime::owners::core_setup::adapter_path(paths.unwrap(), "egia")?
-                  .with_file_name("egia");
+                crate::runtime::owners::core_setup::adapter_path(paths.unwrap(), "ei")?
+                  .with_file_name("ei");
               ensure!(
                 executable.is_file(),
-                "EGIA executable missing at {}",
+                "EI executable missing at {}",
                 executable.display()
               );
               settings.command = std::iter::once(executable.to_string_lossy().into_owned())
                 .chain(args)
                 .collect();
-              settings.role = Some("egia".into());
+              settings.role = Some("ei".into());
               settings
                 .env
-                .extend(crate::domain::graph::generated_v2::egia_launch_env(&value)?);
+                .extend(crate::domain::graph::generated_v2::ei_launch_env(&value)?);
             }
             for dependency in &mut settings.depends_on {
               *dependency = canonical_node_path(dependency);
@@ -656,7 +616,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                 spec.fingerprint = Some(resolved.fingerprint.clone());
               }
             }
-            if paths.is_some() && matches!(key.as_str(), "eos" | "bridge" | "config" | "egia") {
+            if paths.is_some() && matches!(key.as_str(), "eos" | "bridge" | "config" | "ei") {
               let mut digest = Sha256::new();
               digest.update(fs::read(&spec.settings.command[0])?);
               if let Some(backend) = &spec.fingerprint {
@@ -670,25 +630,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
               "duplicate process id {key}"
             );
           } else if core_id == "isos" {
-            if graph.version == "0.2.0"
-              && node.node_type.starts_with(&format!("isos.{layer_id}."))
+            if node.node_type.starts_with(&format!("isos.{layer_id}."))
               && node.node_type.ends_with("@v0.2")
             {
-              continue;
-            }
-            if node.node_type == "isos.ui.vision@v1.0"
-              && layer_id == "ui"
-              && group_id == "panel"
-              && key == node.id
-            {
-              continue;
-            }
-            if node.node_type == "isos.interface.http_gateway@v0.1"
-              && layer_id == "interface"
-              && group_id == "gateway"
-              && key == node.id
-            {
-              // The gateway is handled inside IsOS's HTTP route, not a child process.
               continue;
             }
             bail!("{path}: unregistered IsOS node type {}", node.node_type);
@@ -741,23 +685,6 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
   Ok(ordered)
 }
 
-/// Reject obsolete graph shapes before delegating admission to the core registry.
-fn reject_obsolete_nodes(graph: &Value) -> Result<()> {
-  if let Some(nodes) = graph
-    .pointer("/cores/isos/layers/process/groups/component/nodes")
-    .and_then(Value::as_object)
-  {
-    for (id, node) in nodes {
-      ensure!(
-        node["node_type"] != "isos.process.component@v1.0"
-          && node["settings"].get("command").is_none(),
-        "{id}: obsolete executable command; set node_type to isos.process.component@v1.1 and use settings.role plus settings.args, then save the graph"
-      );
-    }
-  }
-  Ok(())
-}
-
 fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> {
   let api = crate::app::server::local_port()?;
   let ui = crate::app::server::ui_port()?;
@@ -768,7 +695,7 @@ fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> 
       endpoints.push(ready.as_str());
     }
     for pair in spec.settings.command.windows(2) {
-      if matches!(id.as_str(), "eos" | "bridge" | "config" | "egia") && pair[0] == "--listen" {
+      if matches!(id.as_str(), "eos" | "bridge" | "config" | "ei") && pair[0] == "--listen" {
         endpoints.push(&pair[1]);
       }
     }
@@ -808,45 +735,30 @@ pub fn normalize_source(source: &str) -> Result<Value> {
     let value: toml::Value = toml::from_str(source)?;
     serde_json::to_value(value)?
   };
-  if let Some(diagnostic) = graph_compat::version_diagnostic(&graph) {
+  if let Some(diagnostic) = graph_contract::version_diagnostic(&graph) {
     bail!(diagnostic);
   }
   Ok(graph)
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
-  crate::runtime::owners::egia_state::reject_test_env_graph(graph)?;
+  crate::runtime::owners::ei_state::reject_test_env_graph(graph)?;
   crate::runtime::process::skill_selection::check_reserved(graph)?;
   crate::runtime::process::skill_selection::entries(graph)?;
   packages::verify_graph_packages(paths, graph)?;
   package_process::validate_graph(paths, graph)?;
-  graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
+  graph_contract::admit(graph, catalog().ok().as_ref())?;
   validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
-  crate::runtime::owners::egia_state::reject_test_env_graph(graph)?;
+  crate::runtime::owners::ei_state::reject_test_env_graph(graph)?;
   crate::runtime::process::skill_selection::check_reserved(graph)?;
   crate::runtime::process::skill_selection::entries(graph)?;
   packages::verify_graph_packages(paths, graph)?;
   package_process::validate_graph(paths, graph)?;
-  graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
-  reject_obsolete_nodes(graph)?;
-  let eos_graph = if graph["version"] == "0.1.0" {
-    if let Some(diagnostic) = graph_migration::cross_core_diagnostic(graph) {
-      bail!(diagnostic);
-    }
-    let catalog = catalog_for_graph(paths, graph)?;
-    edge_admission::admit(graph, &catalog).map_err(|diagnostic| anyhow::anyhow!("{diagnostic}"))?;
-    let mut projection = graph.clone();
-    projection["cores"]
-      .as_object_mut()
-      .context("graph cores must be an object")?
-      .retain(|owner, _| owner == "eos");
-    projection
-  } else {
-    graph.clone()
-  };
+  graph_contract::admit(graph, catalog().ok().as_ref())?;
+  let eos_graph = crate::domain::graph::single_core::owner_projection(graph, "eos")?;
   paths.prepare()?;
   let mut file = tempfile::Builder::new()
     .prefix("isos-graph-")
@@ -860,18 +772,8 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
   Ok(())
 }
 
-/// Admit the full owner graph, then validate only the EOS projection with its
-/// registry. IsOS rechecks process nodes before supervising any child.
-pub fn validate_full_graph(path: &Path) -> Result<()> {
-  let graph = normalize_source(&fs::read_to_string(path)?)?;
-  let paths = Paths::discover()?;
-  validate_value(&paths, &graph)
-}
-
 mod catalog;
 pub use catalog::{catalog, catalog_at, catalog_for_graph, catalog_for_option_graph};
-#[cfg(test)]
-pub(crate) use catalog::merge_egia_stage_catalog;
 
 fn validate_with_program(path: &Path, program: &Path) -> Result<()> {
   let mut command = Command::new(program);
@@ -891,7 +793,9 @@ fn validate_with_program(path: &Path, program: &Path) -> Result<()> {
   Ok(())
 }
 
+#[cfg(test)]
 mod supervisor;
+#[cfg(test)]
 pub use supervisor::Supervisor;
 
 #[cfg(test)]
@@ -900,9 +804,9 @@ mod projection_tests {
 
   #[test]
   fn registered_isos_http_gateway_has_no_child_process() {
-    let graph = serde_json::json!({"version":"0.1.0","robot":{},"cores":{
+    let graph = serde_json::json!({"version":"0.2.0","robot":{},"cores":{
       "isos":{"layers":{"interface":{"groups":{"gateway":{"nodes":{
-        "control":{"id":"control","node_type":"isos.interface.http_gateway@v0.1","settings":{}}
+        "control":{"id":"control","node_type":"isos.interface.http_gateway@v0.2","settings":{}}
       }}}}}}
     }});
     assert!(project(&graph.to_string()).unwrap().is_empty());

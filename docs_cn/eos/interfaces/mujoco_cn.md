@@ -1,8 +1,11 @@
 # EOS MuJoCo 适配器绑定
 
-[English](../../../docs/eos/interfaces/mujoco.md) · [硬件接口](hardware_cn.md) · [MuJoCo 生命周期](../design/mujoco_cn.md) · [R06 停止](simulator-stop_cn.md)
+> 历史契约：当前按钮到模拟机械臂图未实现此接口。当前数据及命令路径参见[机械臂控制](arm-control_cn.md)；设置、Run、Status 和 Stop 参见[所有者生命周期](owner-health_cn.md)。
 
-EOS 拥有内部 `mujoco-v2` 适配器工厂及已准入硬件节点到模拟器设备的映射。外部 `island/mujoco-sim@0.1.1` 包拥有[分帧套接字契约](https://github.com/Island-Team/isos-mujoco-sim/blob/master/docs_cn/mujoco/interfaces/socket_cn.md)，其中定义线协议字段、单位、示例和错误。IsOS 拥有[包验证及图准入](../../island/retired-repository-references_cn.md#ref-5a029c71a447)。套接字协议 `2.0.0`、图版本、类型 ID 与包版本分别独立。
+
+[English](../../../docs/eos/interfaces/mujoco.md) · [硬件接口](hardware_cn.md) · MuJoCo 生命周期 · [R06 停止](simulator-stop_cn.md)
+
+EOS 拥有内部 `mujoco-v2` 适配器工厂及已准入硬件节点到模拟器设备的映射。外部 `island/mujoco-sim@0.1.1` 包拥有[分帧套接字契约](https://github.com/Island-Team/isos-mujoco-sim/blob/master/docs_cn/mujoco/interfaces/socket_cn.md)，其中定义线协议字段、单位、示例和错误。IsOS 拥有包验证及图准入。套接字协议 `2.0.0`、图版本、类型 ID 与包版本分别独立。
 
 ## 当前适配器设置
 
@@ -17,7 +20,6 @@ EOS 相机、底盘或机械臂实例选择 `adapter.type = "mujoco-v2"`。通�
 | `node.frame_id` | 非空字符串 / 坐标系 | 硬件观测必填；EOS 将其加入类型化数据，不由模拟器决定图坐标系。 |
 | `node.joint_names` | 六个互异字符串 / 关节名 | 机械臂必填；确定观测及目标的顺序。其他硬件种类省略。 |
 
-旧版内置 `eos.process.backend@v1.0` 在设置中保存 `package = "island/mujoco-sim"`、`version = "0.1.1"`、`scene` 和 `socket`。当前包贡献也提供 `eos.process.mujoco@v1.0`，其精确 `node.package` 锁定代替重复的包设置。M1/P02 已确认新 `0.1.0` 图身份、`@v0.1` 进程和通用硬件类型，以及场景/设备选择器；旧 `@v1.0` 图身份在显式迁移前保持安全的既有行为。在受管理交接中，IsOS 根据已验证的 P01 包收据解析可执行文件和场景。下方的 R05 EOS 严格客户端已通过独立实现审查和限定范围的跨所有者资格验证；受管理运动仍需等待 R06 的最终停止栅栏。
 
 ## R05 受管理严格客户端目标
 
@@ -37,4 +39,4 @@ Rust `BackendChild::wait_ready` 现在探测每台声明设备，`Endpoint::heal
 
 适配器将一个图节点映射到一个已验证模拟器设备 ID，连接私有套接字完成有界请求，检查响应身份、大小和类型，再将相机 JPEG 或模拟器观测转换为 EOS 类型化硬件数据。它不执行导航或逆运动学。移动指令先由 EOS dispatcher 检查节点健康、限制、截止时间、指令身份和安全，再由适配器发送。套接字确认本身不能证明物理完成：EOS 通过新的观测确认底盘租约到期或机械臂位置，之后才记录 `Completed`。证据缺失或矛盾时为 `OutcomeUnknown`；EOS 不会自动重放结果不确定的已释放指令。
 
-由 IsOS 管理启动时，EOS 将已验证模拟器作为直接子进程启动；本地显式开发启动则在同一严格模式规则下启动所选但无收据的程序。R05 要求严格健康证明之后，图声明的适配器和后端状态才能就绪。套接字断开或设备不可用会使受影响节点不可用。[R06 受管理停止契约](simulator-stop_cn.md)定义计划中的配套 lane、物理 epoch 栅栏、分别确认、终端凭据及子进程回收顺序。物理停止失败保持可见，不可宣称已确认安全。见[基础设计](../design/runtime/foundation_cn.md)与[实现待办](../maintenance/todo_cn.md)。
+由 IsOS 管理启动时，EOS 将已验证模拟器作为直接子进程启动；本地显式开发启动则在同一严格模式规则下启动所选但无收据的程序。R05 要求严格健康证明之后，图声明的适配器和后端状态才能就绪。套接字断开或设备不可用会使受影响节点不可用。[R06 受管理停止契约](simulator-stop_cn.md)定义计划中的配套 lane、物理 epoch 栅栏、分别确认、终端凭据及子进程回收顺序。物理停止失败保持可见，不可宣称已确认安全。见[基础设计](../design/runtime/foundation_cn.md)。

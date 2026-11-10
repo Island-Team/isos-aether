@@ -22,7 +22,7 @@
   ],
   "rejected": [
     {"path": "source", "value": "eos"},
-    {"path": "core", "value": "egia"},
+    {"path": "core", "value": "ei"},
     {"path": "run_id", "value": "r_other"},
     {"path": "correlation_id", "value": null},
     {"path": "correlation_id", "value": "unsafe:id"},
@@ -32,7 +32,7 @@
     {"path": "correlation_id", "prefix": "h_", "repeat": "A", "count": 62},
     {"path": "correlation_id", "prefix": "h_", "repeat": "a", "count": 63},
     {"path": "message", "value": "unreviewed result"},
-    {"path": "node_path", "value": "/cores/eos/layers/control/groups/primitive/nodes/base"},
+    {"path": "node_path", "value": "/cores/isos/layers/eos_dispatcher/groups/base/nodes/base-velocity"},
     {"path": "fields.status", "value": "Succeeded"},
     {"path": "fields.phase", "value": "poll"},
     {"path": "fields.extra", "value": "payload"},

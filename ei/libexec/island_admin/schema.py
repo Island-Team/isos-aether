@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from egia.contracts.source import configure, schema_documents, schema_registry
+from ei.contracts.source import configure, schema_documents, schema_registry
 from island.share import repository_resources, require_eos_contracts
 
 ROOT = Path(__file__).resolve().parents[2]

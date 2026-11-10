@@ -2,7 +2,7 @@
 """Manually smoke-test the local sandbox camera and microphone.
 
 Run from a source checkout with ``python scripts/sandbox_play.py``.  The
-script reads sandbox device settings from the normal ``etc/egia`` configuration,
+script reads sandbox device settings from the normal ``etc/ei`` configuration,
 so it exercises the same capture backends as the sandbox process.
 """
 
@@ -26,8 +26,8 @@ def _add_repository_import_root() -> None:
 
 _add_repository_import_root()
 
-from egia.lib.config import load_sandbox_config
-from egia.opt.sandbox.devices import DeviceError, MicrophoneAdapter
+from ei.lib.config import load_sandbox_config
+from ei.opt.sandbox.devices import DeviceError, MicrophoneAdapter
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,13 +36,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   parser.add_argument(
     "--etc",
     type=Path,
-    default=REPOSITORY_ROOT / "etc/egia",
+    default=REPOSITORY_ROOT.parent / "config/ei",
     help="configuration directory (default: %(default)s)",
   )
   parser.add_argument(
     "--var-dir",
     type=Path,
-    default=REPOSITORY_ROOT / "var",
+    default=REPOSITORY_ROOT / "data/ei/tmp",
     help="directory in which the microphone WAV is saved (default: %(default)s)",
   )
   parser.add_argument(
@@ -77,7 +77,7 @@ def preview_camera(seconds: float, device: str, width: int, height: int) -> None
 
   camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
   camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-  title = "EGIA sandbox camera test (press q or Esc to close)"
+  title = "EI sandbox camera test (press q or Esc to close)"
   print(f"Camera: previewing for up to {seconds:g} seconds")
   deadline = time.monotonic() + seconds
   try:
@@ -112,7 +112,7 @@ async def record_microphone(etc: Path, var_dir: Path, seconds: float | None) -> 
     print(f"Microphone: failed ({exc})")
     return
 
-  output_path = var_dir / "lib/egia/sandbox/mic-check.wav"
+  output_path = var_dir / "lib/ei/sandbox/mic-check.wav"
   output_path.parent.mkdir(parents=True, exist_ok=True)
   output_path.write_bytes(wav)
   print(f"Microphone: saved {output_path}")

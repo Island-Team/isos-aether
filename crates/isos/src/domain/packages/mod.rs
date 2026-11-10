@@ -111,7 +111,7 @@ pub fn package_path(paths: &Paths, id: &str, version: &str) -> Result<PathBuf> {
   Ok(
     paths
       .data
-      .join("packages")
+      .join("state/packages")
       .join(namespace)
       .join(name)
       .join(version),
@@ -350,7 +350,7 @@ fn checked_manifest_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn validate_payload(root: &Path, release: &Release) -> Result<()> {
-  if is_published_mujoco_legacy(release) {
+  if is_published_mujoco_release(release) {
     checked_file(root, "bin/eos-mujoco-sim", true)?;
     checked_file(root, "assets/scene.xml", false)?;
   }
@@ -368,7 +368,7 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
   Ok(())
 }
 
-pub(crate) fn is_published_mujoco_legacy(release: &Release) -> bool {
+pub(crate) fn is_published_mujoco_release(release: &Release) -> bool {
   let Ok(support) = crate::domain::version::bundled() else {
     return false;
   };
@@ -384,7 +384,7 @@ pub(crate) fn is_published_mujoco_legacy(release: &Release) -> bool {
       .any(|asset| asset.sha256 == pin.asset_sha256)
 }
 
-fn published_mujoco_legacy(
+fn published_mujoco_release(
   bytes: &[u8],
   mut value: serde_json::Value,
 ) -> Result<serde_json::Value> {
@@ -406,21 +406,28 @@ fn published_mujoco_legacy(
   let node_types = value["node_contributions"]["node_types"]
     .as_array_mut()
     .ok_or_else(|| anyhow::anyhow!("unsupported_package_contract"))?;
-  let current = node_types
+  let mut current = node_types
     .iter()
     .find(|node| node["id"] == "eos.process.mujoco@v0.1")
     .cloned()
     .ok_or_else(|| anyhow::anyhow!("unsupported_package_contract"))?;
-  for node in node_types {
-    if node["id"] == "eos.process.mujoco@v1.0" {
-      let mut compatible = current.clone();
-      compatible["id"] = serde_json::json!("eos.process.mujoco@v1.0");
-      *node = compatible;
+  current["id"] = serde_json::json!("isos.eos_process.mujoco@v0.2");
+  current["core"] = serde_json::json!("isos");
+  current["layer"] = serde_json::json!("eos_process");
+  for direction in ["inputs", "outputs"] {
+    for port in current[direction].as_array_mut().into_iter().flatten() {
+      // This reviewed mapping applies only to the exact pinned published release above.
+      let contract = match port["data_type"].as_str() {
+        Some("status") => "mujoco-status",
+        Some("health") => "mujoco-health",
+        _ => return Err(anyhow::anyhow!("unsupported_package_contract")),
+      };
+      port["contract"] = serde_json::json!({"owner":"eos","id":contract,"version":"1.0"});
     }
   }
+  *node_types = vec![current];
   value["node_contributions"]["processes"] = serde_json::json!([
-    {"node_type":"eos.process.mujoco@v1.0","entrypoint":"bin/eos-mujoco-sim","lifecycle_adapter":"mujoco-v2","resources":[{"setting":"scene","kind":"scene","descriptor":"@isos-published-mujoco-scenes"}],"host_inputs":[{"name":"MUJOCO_ROOT","kind":"directory","required":true}]},
-    {"node_type":"eos.process.mujoco@v0.1","entrypoint":"bin/eos-mujoco-sim","lifecycle_adapter":"mujoco-v2","resources":[{"setting":"scene","kind":"scene","descriptor":"@isos-published-mujoco-scenes"}],"host_inputs":[{"name":"MUJOCO_ROOT","kind":"directory","required":true}]}
+    {"node_type":"isos.eos_process.mujoco@v0.2","entrypoint":"bin/eos-mujoco-sim","lifecycle_adapter":"mujoco-v2","resources":[{"setting":"scene","kind":"scene","descriptor":"@isos-published-mujoco-scenes"}],"host_inputs":[{"name":"MUJOCO_ROOT","kind":"directory","required":true}]}
   ]);
   Ok(value)
 }
@@ -675,7 +682,7 @@ pub fn read_manifest(path: &Path) -> Result<Release> {
   let bytes = read_bounded(path, 4_194_304)?;
   let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
   if value["schema_version"] == 4 {
-    value = published_mujoco_legacy(&bytes, value)?;
+    value = published_mujoco_release(&bytes, value)?;
   }
   let support = crate::domain::version::bundled()?;
   ensure!(
@@ -693,23 +700,23 @@ mod contract_tests {
   use super::*;
 
   #[test]
-  fn exact_published_mujoco_schema_four_is_readable_but_edits_are_rejected() {
+  fn pinned_published_mujoco_release_is_readable_but_edits_are_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("release.json");
     let published = include_bytes!("../../../tests/fixtures/packages/mujoco_published_0_1_1.json");
     fs::write(&manifest, published).unwrap();
     let release = read_manifest(&manifest).unwrap();
-    assert!(is_published_mujoco_legacy(&release));
+    assert!(is_published_mujoco_release(&release));
     assert_eq!(release.schema_version, "0.1.0");
     let sidecar: serde_json::Value =
       serde_json::from_slice(&sidecar_bytes(&release).unwrap().unwrap()).unwrap();
-    let aliases: Vec<_> = sidecar["node_types"]
+    let current: Vec<_> = sidecar["node_types"]
       .as_array()
       .unwrap()
       .iter()
       .filter(|node| node["id"] == "isos.eos_process.mujoco@v0.2")
       .collect();
-    assert!(aliases.is_empty());
+    assert_eq!(current.len(), 1);
     let payload = temp.path().join("payload");
     fs::create_dir_all(payload.join("bin")).unwrap();
     fs::create_dir_all(payload.join("assets")).unwrap();
@@ -725,7 +732,7 @@ mod contract_tests {
     fs::write(&binary, b"#!/bin/sh\n").unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(validate_payload(&payload, &release).is_ok());
-    let process = &release.node_contributions.as_ref().unwrap().processes[1];
+    let process = &release.node_contributions.as_ref().unwrap().processes[0];
     let resources = crate::domain::launch::option_resources(&payload, &release, process).unwrap();
     assert_eq!(
       resources
@@ -1096,7 +1103,7 @@ mod source_install_tests {
       runtime: root.path().join("run"),
     };
     assert!(install_source(&paths, &checkout, None).is_err());
-    assert!(!paths.data.join("packages").exists());
+    assert!(!paths.data.join("state/packages").exists());
   }
 }
 
@@ -1273,7 +1280,7 @@ pub fn verify_graph_packages(
 }
 
 pub fn list(paths: &Paths) -> Result<Vec<Receipt>> {
-  let base = paths.data.join("packages");
+  let base = paths.data.join("state/packages");
   if !base.exists() {
     return Ok(Vec::new());
   }
@@ -1296,7 +1303,7 @@ pub fn list(paths: &Paths) -> Result<Vec<Receipt>> {
 }
 
 pub fn listing(paths: &Paths) -> Result<Vec<serde_json::Value>> {
-  let base = paths.data.join("packages");
+  let base = paths.data.join("state/packages");
   if !base.exists() {
     return Ok(Vec::new());
   }
@@ -1805,15 +1812,14 @@ mod verification_tests {
   }
 
   #[test]
-  fn selected_catalog_reverifies_same_size_payload_on_every_request() {
+  fn verified_package_rechecks_same_size_payload_on_every_request() {
     let (_temp, paths, source) = fixture();
     link_with_manifest(&paths, "test/verified", "0.1.1", &source, None).unwrap();
-    let graph = serde_json::json!({"version":"0.1.0","cores":{"eos":{"layers":{"process":{"groups":{"demo":{"nodes":{"one":{"package":{"id":"test/verified","version":"0.1.1"}}}}}}}}}});
-    assert!(crate::runtime::process::catalog_for_graph(&paths, &graph).is_ok());
+    assert!(verify(&paths, "test/verified", "0.1.1").is_ok());
     // The linked tree has the same length after this edit; a metadata or
     // size-only cache would incorrectly continue to admit it.
     fs::write(source.join("payload.bin"), b"replaced").unwrap();
-    assert!(crate::runtime::process::catalog_for_graph(&paths, &graph).is_err());
+    assert!(verify(&paths, "test/verified", "0.1.1").is_err());
   }
 
   #[test]

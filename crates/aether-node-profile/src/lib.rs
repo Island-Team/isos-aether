@@ -5,9 +5,7 @@ use thiserror::Error;
 
 mod registry;
 mod edge_contract;
-pub const GRAPH_VERSION: &str = "1.0.0";
-pub const NEW_GRAPH_VERSION: &str = "0.1.0";
-pub const SINGLE_CORE_GRAPH_VERSION: &str = "0.2.0";
+pub const GRAPH_VERSION: &str = "0.2.0";
 pub use registry::{
   is_eos_backend_type, AdapterFamilyDescriptor, BridgeDeclaration, CatalogAdapterFamily, DataClass,
   DeliveryMode, DataTypeDescriptor, Lifecycle, NodeType, NodeTypeContribution, NodeTypeRegistry,
@@ -20,9 +18,7 @@ pub use edge_contract::{EosEdgeClass, EosEdgeContract};
 pub fn builtin_reader_node_types() -> Vec<String> {
   NodeTypeRegistry::builtin()
     .all()
-    .filter(|definition| {
-      definition.id.starts_with("eos.") || definition.id.starts_with("isos.eos_")
-    })
+    .filter(|definition| definition.id.starts_with("eos.") && definition.id.ends_with("@v0.2"))
     .map(|definition| definition.id.clone())
     .collect()
 }
@@ -110,12 +106,24 @@ pub struct NodeProfile {
   pub references: Vec<String>,
   #[serde(default)]
   pub settings: BTreeMap<String, toml::Value>,
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub service_bindings: BTreeMap<String, ServiceBinding>,
   #[serde(default)]
   pub inputs: BTreeMap<String, PortSources>,
   #[serde(skip)]
   pub kind: NodeKind,
   #[serde(skip)]
   pub path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceBinding {
+  pub owner: String,
+  pub service: String,
+  pub version: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub node: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -185,7 +193,7 @@ impl PortSources {
   }
 }
 
-/// Canonical v2 address; legacy graph addresses are imported to this form.
+/// Canonical node address for graph references.
 pub fn canonical_node_path(path: &str) -> Option<String> {
   let parts: Vec<_> = path.split('/').collect();
   let fields = match parts.as_slice() {
@@ -284,16 +292,11 @@ impl Profile {
 
   /// Hardware nodes owned by EOS and eligible for adapter registration.
   pub fn hardware_nodes(&self) -> impl Iterator<Item = &NodeProfile> {
-    let (core, layer) = if self.version == SINGLE_CORE_GRAPH_VERSION {
-      ("isos", "eos_hardware")
-    } else {
-      ("eos", "hardware")
-    };
     self
       .cores
-      .get(core)
+      .get("isos")
       .into_iter()
-      .flat_map(move |core| core.layers.get(layer))
+      .flat_map(|core| core.layers.get("eos_hardware"))
       .flat_map(|layer| layer.groups.values())
       .flat_map(|group| group.nodes.values())
   }
@@ -305,6 +308,97 @@ impl Profile {
       .flat_map(|core| core.layers.values())
       .flat_map(|layer| layer.groups.values())
       .flat_map(|group| group.nodes.values())
+  }
+
+  /// Admit the EOS command and observation chains before launch.
+  pub fn validate_demo_chain(&self) -> Result<(), ProfileError> {
+    let ids = [
+      "eos.interface.ingress.trigger@v0.2",
+      "eos.skill.demo.joint_delta@v0.2",
+      "eos.dispatcher.arm.delta@v0.2",
+      "eos.hardware.mock.arm@v0.2",
+      "eos.hardware.mock.arm_observer@v0.2",
+      "eos.dispatcher.arm.monitor@v0.2",
+      "eos.skill.demo.arm_status@v0.2",
+      "eos.interface.egress.arm_status@v0.2",
+    ];
+    let all: Vec<_> = self.all_nodes().collect();
+    if all.len() != ids.len() {
+      return Err(ProfileError("EOS demo requires exactly eight nodes".into()));
+    }
+    let mut stages = Vec::new();
+    for id in ids {
+      let mut matches = all.iter().copied().filter(|node| {
+        node.node_type == id
+          || (id == "eos.hardware.mock.arm_observer@v0.2"
+            && node.node_type == "eos.hardware.mock.arm_output@v0.2")
+      });
+      let Some(node) = matches.next() else {
+        return Err(ProfileError(format!("EOS demo requires {id}")));
+      };
+      if matches.next().is_some() {
+        return Err(ProfileError(format!("EOS demo repeats {id}")));
+      }
+      stages.push(node);
+    }
+    let is_observer = stages[4].node_type == "eos.hardware.mock.arm_observer@v0.2";
+    let expected = [
+      ("activation", "ei/governance/safety/", "activation"),
+      ("activation", stages[0].path(), "activation"),
+      ("delta", stages[1].path(), "delta"),
+      ("delta", stages[2].path(), "delta"),
+      ("observation", stages[3].path(), "observation"),
+      ("observation", stages[4].path(), "observation"),
+      ("observation", stages[5].path(), "observation"),
+      ("observation", stages[6].path(), "observation"),
+    ];
+    if is_observer && !stages[4].inputs.is_empty() {
+      return Err(ProfileError(format!(
+        "EOS observation source {} must have no graph input",
+        stages[4].path()
+      )));
+    }
+    for (stage, (input, source, output)) in stages
+      .iter()
+      .zip(expected)
+      .filter(|(stage, _)| !is_observer || stage.node_type != ids[4])
+    {
+      let Some(binding) = stage.inputs.get(input).and_then(PortSources::one) else {
+        return Err(ProfileError(format!(
+          "EOS demo {} lacks {input}",
+          stage.path()
+        )));
+      };
+      let source_matches = if stage.node_type == ids[0] {
+        binding.node.starts_with(source)
+          && canonical_node_path(&binding.node).as_deref() == Some(binding.node.as_str())
+      } else {
+        binding.node == source
+      };
+      if stage.inputs.len() != 1 || !source_matches || binding.output != output {
+        return Err(ProfileError(format!(
+          "EOS demo {} has invalid input route",
+          stage.path()
+        )));
+      }
+    }
+    let arm = stages[3];
+    let sample_ms = arm
+      .settings
+      .get("sample_interval_ms")
+      .and_then(toml::Value::as_integer)
+      .unwrap_or(10);
+    let freshness_ms = arm
+      .settings
+      .get("freshness_timeout_ms")
+      .and_then(toml::Value::as_integer)
+      .unwrap_or(50);
+    if freshness_ms < sample_ms * 2 {
+      return Err(ProfileError(
+        "EOS mock arm freshness_timeout_ms must be at least twice sample_interval_ms".into(),
+      ));
+    }
+    Ok(())
   }
 
   pub fn node(&self, path: &str) -> Option<&NodeProfile> {
@@ -328,7 +422,6 @@ impl Profile {
   }
 
   fn normalize_paths(&mut self) -> Result<(), ProfileError> {
-    self.migrate_legacy_vision()?;
     let mut forms = BTreeSet::new();
     for node in self
       .cores
@@ -385,52 +478,8 @@ impl Profile {
     }
     if forms.len() > 1 {
       return Err(ProfileError(
-        "mixed legacy and short node paths are ambiguous".into(),
+        "mixed qualified and compact node paths are ambiguous".into(),
       ));
-    }
-    Ok(())
-  }
-
-  fn migrate_legacy_vision(&mut self) -> Result<(), ProfileError> {
-    let Some(mut old_core) = self.cores.remove("isosui") else {
-      return Ok(());
-    };
-    if old_core.layers.len() != 1 || !old_core.layers.contains_key("system") {
-      return Err(ProfileError("unsupported isosui legacy core".into()));
-    }
-    let mut layer = old_core
-      .layers
-      .remove("system")
-      .expect("checked system layer");
-    if layer.groups.len() != 1 || !layer.groups.contains_key("ui") {
-      return Err(ProfileError("unsupported isosui legacy group".into()));
-    }
-    let group = layer.groups.remove("ui").expect("checked ui group");
-    let target = &mut self
-      .cores
-      .entry("isos".into())
-      .or_insert_with(|| CoreProfile {
-        layers: BTreeMap::new(),
-      })
-      .layers
-      .entry("ui".into())
-      .or_insert_with(|| LayerProfile {
-        groups: BTreeMap::new(),
-      })
-      .groups
-      .entry("panel".into())
-      .or_insert_with(|| NodeGroup {
-        nodes: BTreeMap::new(),
-      })
-      .nodes;
-    for (id, mut node) in group.nodes {
-      if node.node_type != "isosui.system.vision@v1.0" || target.contains_key(&id) {
-        return Err(ProfileError(format!(
-          "unsupported or duplicate legacy Vision node: {id}"
-        )));
-      }
-      node.node_type = "isos.ui.vision@v1.0".into();
-      target.insert(id, node);
     }
     Ok(())
   }
@@ -439,19 +488,15 @@ impl Profile {
     &mut self,
     registry: &NodeTypeRegistry,
   ) -> Result<(), ProfileError> {
-    if self.version != GRAPH_VERSION
-      && self.version != NEW_GRAPH_VERSION
-      && self.version != SINGLE_CORE_GRAPH_VERSION
-    {
+    if self.version != GRAPH_VERSION {
       return Err(ProfileError(format!(
-        "profile version must be {GRAPH_VERSION}, {NEW_GRAPH_VERSION}, or {SINGLE_CORE_GRAPH_VERSION}"
+        "profile version must be {GRAPH_VERSION}"
       )));
     }
-    if self.version == SINGLE_CORE_GRAPH_VERSION
-      && (self.cores.len() != 1 || !self.cores.contains_key("isos"))
+    if self.cores.len() != 1 || !(self.cores.contains_key("isos") || self.cores.contains_key("eos"))
     {
       return Err(ProfileError(
-        "0.2.0 profile requires only the isos core".into(),
+        "EOS owner projection requires one eos core".into(),
       ));
     }
     if !valid_segment(&self.robot.id) || self.robot.name.trim().is_empty() {
@@ -459,11 +504,6 @@ impl Profile {
     }
     let mut hardware_ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
-    let legacy_mujoco_backend = self.all_nodes().any(|node| {
-      node.node_type == "eos.process.backend@v1.0"
-        && node.settings.get("package").and_then(toml::Value::as_str) == Some("island/mujoco-sim")
-        && node.settings.get("version").and_then(toml::Value::as_str) == Some("0.1.1")
-    });
     for (core_id, core) in &mut self.cores {
       if !valid_segment(core_id) || core.layers.is_empty() {
         return Err(ProfileError(format!("invalid or empty core: {core_id}")));
@@ -480,12 +520,7 @@ impl Profile {
             let definition = registry
               .get(&node.node_type)
               .ok_or_else(|| ProfileError(format!("unknown node type: {}", node.node_type)))?;
-            let expected_type_version = match self.version.as_str() {
-              SINGLE_CORE_GRAPH_VERSION => "@v0.2",
-              NEW_GRAPH_VERSION => "@v0.1",
-              _ => "@v1.",
-            };
-            if !node.node_type.contains(expected_type_version) {
+            if !node.node_type.ends_with("@v0.2") {
               return Err(ProfileError(format!(
                 "node {key} type {} is incompatible with graph version {}",
                 node.node_type, self.version
@@ -507,33 +542,19 @@ impl Profile {
             let hardware = kind != NodeKind::Software;
             if hardware {
               if let Some(family) = registry.adapter_family(&node.adapter.adapter_type) {
-                let legacy_unpinned_mujoco = family.id == "mujoco-v2"
-                  && node.adapter.package.is_none()
-                  && node.package.is_none()
-                  && legacy_mujoco_backend;
                 let family_package = if family.id == "mujoco-v2" {
                   node.adapter.package.as_ref().or(node.package.as_ref())
                 } else {
                   node.adapter.package.as_ref()
                 };
                 if !family.device_kinds.contains(&kind)
-                  || (!legacy_unpinned_mujoco
-                    && family_package != registry.package_for_adapter_family(&family.id))
+                  || family_package != registry.package_for_adapter_family(&family.id)
                 {
                   return Err(ProfileError(format!(
                     "node {key} adapter family provenance or kind mismatch"
                   )));
                 }
-              } else if node.adapter.package.is_some()
-                || (node.adapter.adapter_type == "mujoco-v2"
-                  && !legacy_mujoco_backend
-                  && !matches!(
-                    node.node_type.as_str(),
-                    "eos.hardware.mujoco_camera@v1.0"
-                      | "eos.hardware.mujoco_base@v1.0"
-                      | "eos.hardware.mujoco_manipulator@v1.0"
-                  ))
-              {
+              } else if node.adapter.package.is_some() || node.adapter.adapter_type == "mujoco-v2" {
                 return Err(ProfileError(format!(
                   "node {key} has unregistered adapter family"
                 )));
@@ -560,8 +581,7 @@ impl Profile {
               return Err(ProfileError(format!("duplicate hardware node id: {key}")));
             }
             if node.label.trim().is_empty()
-              || ((self.version == NEW_GRAPH_VERSION || self.version == SINGLE_CORE_GRAPH_VERSION)
-                && node.description.trim().is_empty())
+              || node.description.trim().is_empty()
               || (hardware
                 && (node.adapter.adapter_type.trim().is_empty() || node.frame_id.trim().is_empty()))
             {
@@ -790,7 +810,9 @@ impl Profile {
             )));
           }
           if self.node(&source.node).is_none()
-            && external_bridge_input(node, definition, input, input_name, &source.node)
+            && (external_bridge_input(node, definition, input, input_name, &source.node)
+              || (input.transport == Some(PortTransport::None)
+                && input.delivery_mode == DeliveryMode::Declaration))
           {
             // IsOS admits the complete cross-core edge before handing EOS its
             // owner projection. EOS retains the binding for run-fenced ingress.
@@ -823,29 +845,13 @@ impl Profile {
               node.path()
             )));
           }
-          if matches!(
-            node.node_type.as_str(),
-            "eos.interface.camera_gate@v1.0" | "eos.interface.camera_gate@v0.1"
-          ) && (source_node.kind != NodeKind::Camera
-            || input_name != "frame"
-            || source.output != "frame")
+          if node.node_type == "isos.eos_interface.camera_gate@v0.2"
+            && (source_node.kind != NodeKind::Camera
+              || input_name != "frame"
+              || source.output != "frame")
           {
             return Err(ProfileError(format!(
               "camera gate {} must read a camera frame output",
-              node.path()
-            )));
-          }
-          if matches!(
-            node.node_type.as_str(),
-            "isosui.system.vision@v1.0" | "isos.ui.vision@v1.0"
-          ) && (!matches!(
-            source_node.node_type.as_str(),
-            "eos.interface.camera_gate@v1.0" | "eos.interface.camera_gate@v0.1"
-          ) || input_name != "preview"
-            || source.output != "preview")
-          {
-            return Err(ProfileError(format!(
-              "Vision node {} must read a camera gate preview",
               node.path()
             )));
           }
@@ -862,7 +868,6 @@ impl Profile {
       }
     }
     edge_contract::validate(self, registry)?;
-    self.validate_control_nodes()?;
     // EOS owns package-backed simulator children. A backend declaration
     // binds every MuJoCo adapter to its one typed socket endpoint.
     if self
@@ -981,24 +986,22 @@ impl Profile {
         .inputs
         .get("command")
         .ok_or_else(|| ProfileError(format!("actuator {} requires a command edge", node.path())))?;
-      let legacy_output = match node.kind {
+      let dispatcher_output = match node.kind {
         NodeKind::Base => "base_command",
         NodeKind::Manipulator => "manipulator_command",
         _ => unreachable!(),
       };
-      let mut legacy = false;
+      let mut dispatcher_route = false;
       for source in sources.values() {
         let sender = self
           .node(&source.node)
           .expect("validated connection source");
         if matches!(
           sender.node_type.as_str(),
-          "eos.dispatcher.control@v1.0"
-            | "eos.dispatcher.control@v0.1"
-            | "isos.eos_dispatcher.control@v0.2"
-        ) && source.output == legacy_output
+          "isos.eos_dispatcher.control@v0.2"
+        ) && source.output == dispatcher_output
         {
-          legacy = true;
+          dispatcher_route = true;
         } else if is_primitive_binding(&sender.node_type, node.kind) && source.output == "command" {
           if binding_targets.insert(sender.path(), node.path()).is_some() {
             return Err(ProfileError(format!(
@@ -1014,9 +1017,9 @@ impl Profile {
           )));
         }
       }
-      if legacy && sources.values().len() != 1 {
+      if dispatcher_route && sources.values().len() != 1 {
         return Err(ProfileError(format!(
-          "actuator {} mixes legacy and binding command sources",
+          "actuator {} mixes dispatcher and binding command sources",
           node.path()
         )));
       }
@@ -1034,109 +1037,6 @@ impl Profile {
     }
     Ok(())
   }
-
-  fn validate_control_nodes(&self) -> Result<(), ProfileError> {
-    const DISPATCHER: &str = "eos/dispatcher/control/command";
-    for node in self.all_nodes() {
-      let mut expected = BTreeSet::new();
-      match node.node_type.as_str() {
-        "eos.control.manual@v1.0" | "eos.control.primitive@v1.0" => {
-          let target_path = node.settings["target"].as_str().expect("validated target");
-          let target = self.node(target_path).ok_or_else(|| {
-            ProfileError(format!(
-              "control {} has missing target {target_path}",
-              node.path()
-            ))
-          })?;
-          if !matches!(target.kind, NodeKind::Base | NodeKind::Manipulator) {
-            return Err(ProfileError(format!(
-              "control {} target is not an actuator",
-              node.path()
-            )));
-          }
-          if node.node_type == "eos.control.primitive@v1.0" {
-            let mode = node.settings["movement_type"]
-              .as_str()
-              .expect("validated mode");
-            if !target
-              .movement
-              .as_ref()
-              .is_some_and(|movement| movement.modes.iter().any(|value| value == mode))
-            {
-              return Err(ProfileError(format!(
-                "primitive {} mode is not supported by its target",
-                node.path()
-              )));
-            }
-          }
-          let (expected_port, other_port) = if target.kind == NodeKind::Base {
-            ("base_observation", "manipulator_observation")
-          } else {
-            ("manipulator_observation", "base_observation")
-          };
-          if node
-            .inputs
-            .get(expected_port)
-            .and_then(PortSources::one)
-            .is_none_or(|input| input.node != target_path || input.output != "observation")
-            || node.inputs.contains_key(other_port)
-          {
-            return Err(ProfileError(format!(
-              "control {} must connect typed observation from its target",
-              node.path()
-            )));
-          }
-          expected.insert(target_path);
-          expected.insert(DISPATCHER);
-        }
-        "eos.control.skill@v1.0" => {
-          let steps = node.settings["steps"].as_array().expect("validated steps");
-          if steps.len() > 16 {
-            return Err(ProfileError(format!(
-              "skill {} exceeds 16 steps",
-              node.path()
-            )));
-          }
-          for value in steps {
-            let path = value.as_str().expect("validated step");
-            if self
-              .node(path)
-              .is_none_or(|step| step.node_type != "eos.control.primitive@v1.0")
-            {
-              return Err(ProfileError(format!(
-                "skill {} contains invalid primitive {path}",
-                node.path()
-              )));
-            }
-            expected.insert(path);
-          }
-          expected.insert(DISPATCHER);
-        }
-        _ => continue,
-      }
-      if self
-        .node(DISPATCHER)
-        .is_none_or(|dispatcher| dispatcher.node_type != "eos.dispatcher.control@v1.0")
-        || node
-          .inputs
-          .get("status")
-          .and_then(PortSources::one)
-          .is_none_or(|input| input.node != DISPATCHER || input.output != "status")
-        || node
-          .references
-          .iter()
-          .map(String::as_str)
-          .collect::<BTreeSet<_>>()
-          != expected
-      {
-        return Err(ProfileError(format!(
-          "control {} must reference its targets and EOS dispatcher exactly",
-          node.path()
-        )));
-      }
-    }
-    Ok(())
-  }
 }
 
 pub(crate) fn external_bridge_input(
@@ -1149,9 +1049,9 @@ pub(crate) fn external_bridge_input(
   node.path().starts_with("eos/")
     && !source_node.starts_with("eos/")
     && source_node != node.path()
-    && input.transport == Some(PortTransport::Http)
+    && input.transport == Some(PortTransport::UnixSocket)
     && definition.bridge.as_ref().is_some_and(|bridge| {
-      bridge.adapter == "http" && bridge.inputs.iter().any(|name| name == input_name)
+      bridge.adapter == "unix_socket" && bridge.inputs.iter().any(|name| name == input_name)
     })
 }
 
@@ -1187,45 +1087,32 @@ fn normalize_reference(
   forms: &mut BTreeSet<&'static str>,
 ) -> Result<(), ProfileError> {
   let form = if path.starts_with("cores/") {
-    "legacy"
+    "qualified"
   } else {
-    "short"
+    "compact"
   };
   let canonical =
     canonical_node_path(path).ok_or_else(|| ProfileError(format!("invalid node path: {path}")))?;
   forms.insert(form);
-  *path = canonical
-    .strip_prefix("isosui/system/ui/")
-    .map_or(canonical.clone(), |id| format!("isos/ui/panel/{id}"));
+  *path = canonical;
   Ok(())
 }
 
 fn is_any_primitive_binding(node_type: &str) -> bool {
   matches!(
     node_type,
-    "eos.dispatcher.primitive_base@v1.0"
-      | "eos.dispatcher.primitive_manipulator@v1.0"
-      | "eos.dispatcher.primitive_base@v0.1"
-      | "eos.dispatcher.primitive_manipulator@v0.1"
-      | "isos.eos_dispatcher.primitive_base@v0.2"
-      | "isos.eos_dispatcher.primitive_manipulator@v0.2"
+    "isos.eos_dispatcher.primitive_base@v0.2" | "isos.eos_dispatcher.primitive_manipulator@v0.2"
   )
 }
 
 fn is_primitive_binding(node_type: &str, kind: NodeKind) -> bool {
   matches!(
     (node_type, kind),
-    (
-      "eos.dispatcher.primitive_base@v1.0"
-        | "eos.dispatcher.primitive_base@v0.1"
-        | "isos.eos_dispatcher.primitive_base@v0.2",
-      NodeKind::Base
-    ) | (
-      "eos.dispatcher.primitive_manipulator@v1.0"
-        | "eos.dispatcher.primitive_manipulator@v0.1"
-        | "isos.eos_dispatcher.primitive_manipulator@v0.2",
-      NodeKind::Manipulator
-    )
+    ("isos.eos_dispatcher.primitive_base@v0.2", NodeKind::Base)
+      | (
+        "isos.eos_dispatcher.primitive_manipulator@v0.2",
+        NodeKind::Manipulator
+      )
   )
 }
 

@@ -1,0 +1,13 @@
+# Graph API v1
+
+[中文](../../../../docs_cn/isos/interfaces/http/graph_cn.md) · [Node interface](../node/README.md)
+
+IsOS owns the saved graph and its exact-byte SHA-256 revision. All `/api/isos/v1/*` routes require loopback Host and Origin admission. JSON mutations use `schema_version: "0.1.0"`. Successful responses use `{ "schema_version": "0.1.0", "ok": true, "data": ..., "error": null }`; failures set `ok: false` and return a stable error code, safe message, and correlation ID. A stale revision returns 409, and graph admission failure returns 422.
+
+`GET /api/isos/v1/graph` reads `{pool_name, revision, graph, read_only, diagnostics, missing_file}` from the bound pool file without modifying its bytes. If that file is missing, it returns an editable three-core starter draft, an empty revision, and `missing_file:true`; the editor must save it under a pool name before Apply. `GET /api/isos/v1/graph/new` returns the 16-node demo with separate button and monitor chains without saving it.
+
+`POST /api/isos/v1/graph/validate` accepts `{schema_version, graph}` and returns `{valid, diagnostics}`. `PUT /api/isos/v1/graph` accepts `{schema_version, pool_name, revision}`. The revision must equal the named pool file's exact-byte digest. IsOS verifies the three cores, registered owner types, static links, package pins, and owner projections, publishes a generation, and binds the deployment to that pool file. A missing file returns 404; a stale revision returns 409. Legacy callers may still provide `{schema_version, revision, graph}`; this updates the currently bound pool file and should not be used by the editor.
+
+`POST /api/isos/v1/graph/connection` previews one draft connection. It accepts `{schema_version, graph, source, output, target, input}` after the draft contains that input reference. `source` and `target` are canonical four-part node paths; `output` and `input` are port names. It returns `{allowed:true, edge}` with the exact admitted `source`, `output`, `target`, `input`, route class, channel, and QoS fields, or `{allowed:false, diagnostic}`. Other required inputs and fixed binding targets may still be unconnected during this preview. The selected catalog must be available (503 otherwise); malformed API versions return 400. This read does not save the draft, and Apply repeats full admission.
+
+The current graph format is `0.2.0`, with `isos`, `ei`, and `eos` cores and type IDs `<core>.<layer>.<group>.<node>@v0.2`. The [demo graph](../../../../config/graph-pool/demo.nodes.json) declares 16 nodes across separate control and observation paths. It launches no IsOS child process specs. Live worker health is read through deployment status; graph reads remain configuration reads.

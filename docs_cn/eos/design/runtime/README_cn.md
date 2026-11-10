@@ -1,7 +1,7 @@
-# EOS Rust 运行时设计
+# EOS 运行时专题
 
-[English](../../../../docs/eos/design/runtime/README.md) · [EOS 设计](../README_cn.md) · [节点目录](../../layers/README_cn.md)
+[English](../../../../docs/eos/design/runtime/README.md) · [架构](../architecture_cn.md) · [外部接口](../../interfaces/README_cn.md)
 
-从[基础设计](foundation_cn.md)追踪进程归属与生命周期。[硬件](hardware_cn.md)描述每设备唯一适配器；[Dispatcher](dispatcher_cn.md)负责执行器准入；[进程监管](process_cn.md)负责 MuJoCo 子进程；[R06 模拟器停止](simulator-stop_cn.md)规定目标物理栅栏及终端证明。[连接调度](scheduler_cn.md)定义优先级、频率上限、有界队列和溢出处理。[读取器预检](reader-features_cn.md)说明 IsOS 启动图之前如何检查所选程序的特性。[Rust 事件](events_cn.md)把生命周期与故障映射到共享 JSONL 生产者。各节点类型有对应的[层/组/节点页面](../../layers/README_cn.md)，精确字段和示例仍放在[接口](../../interfaces/README_cn.md)。
+[架构](../architecture_cn.md)是 EOS 的设计总览。本目录说明共用运行机制：[进程选择与就绪](foundation_cn.md)、[硬件适配器](hardware_cn.md)、[Dispatcher 准入](dispatcher_cn.md)、[MuJoCo 子进程监管](process_cn.md)、[托管 Stop](simulator-stop_cn.md)、[有界连线调度](scheduler_cn.md)、[选定读取器特性](reader-features_cn.md)与[运行时事件](events_cn.md)。架构页通过 `design/<layer>/<group>_cn.md` 链接注册节点的专题设计。
 
-其余 C++ 运行时模块、Workflow/ActionList 和历史模型服务在[历史目录](../../legacy/README_cn.md)中索引，不属于 0.x 目标进程计划。[实现里程碑](../../maintenance/todo_cn.md)指出尚处于设计阶段的 Rust 和 EGIA 行为。
+实现与诊断专题包括[后端选择](hardware_cn.md)、[配置](configure_cn.md)、[ARM64 构建](arm64_cn.md)、[包交接](process_cn.md)、[浏览器结果检查](browser-control_cn.md)、[gRPC 重放](grpc-gateway-guide_cn.md)、[路由检查](routed-edges_cn.md)和[排障](troubleshooting_cn.md)。最短操作流程见[快速入门](../../start/quick-start_cn.md)。

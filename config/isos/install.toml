@@ -1,0 +1,7 @@
+# Product installation settings. Paths are absolute when set.
+# Environment overrides: ISOS_INSTALL_ROOT, ISOS_RELEASE_REPOSITORY,
+# ISOS_RELEASE_CHANNEL. ISOS_INSTALL_CONFIG selects another TOML file for updates.
+[install]
+prefix = "~/.local/isos"
+release_repository = "Island-Team/isos-p"
+channel = "stable"

@@ -1,10 +1,16 @@
-# Implemented IsOS design
+# IsOS design
 
-This folder is for contributors who need the reasons behind IsOS's current boundaries. A **registered type** defines what a node may do, a **core** owns its execution, and an **exact pin** identifies verified package bytes. Field-level contracts live under [interfaces](../interfaces/README.md); these pages explain the flow without redefining them.
+[Architecture](architecture.md) is the current overview. Focused pages follow the Rust source boundaries:
 
-- [Server](server.md) follows a local request through `app`, `domain`, `runtime`, and exchanged values; it explains why transport handlers do not decide package or graph authority.
-- [Packages](packages.md) follows an exact pin through release, resource, owner, and lifecycle admission; it explains why IsOS does not parse package-specific payloads.
-- [Data](data.md) explains output descriptor qualification and why the producer retains payload bytes and endpoint authorization.
-- [Control path](control-path.md) follows a key state through explicit HTTP bridges, EOS Dispatcher, base hardware, and a simulator package.
+- [Server and launcher](app/server.md) covers CLI admission, loopback server readiness, and manager handoff.
+- [Package admission](domain/admission.md) follows verified exact pins into an owner launch.
+- [Package manager](domain/packages.md) records the implemented package path and explicitly labeled target work.
+- [Manager services](runtime/services.md) covers local owner configuration.
+- [Presentation selection](ui/presentation.md) covers output ownership and current unavailability.
+- [Registered node families](node/README.md) maps process and UI consumers.
+- [Control path](control-path.md) traces UI key input through EOS admission.
+- [Verification](verification.md) records commands and evidence; [remaining work](remaining-work.md) lists open gates.
+
+Public fields are owned by [interfaces](../interfaces/README.md).
 
 [中文](../../../docs_cn/isos/design/README_cn.md)

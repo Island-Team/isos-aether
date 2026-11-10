@@ -1,6 +1,0 @@
-{
-  global:
-    eos_skill_library_query_v2;
-  local:
-    *;
-};

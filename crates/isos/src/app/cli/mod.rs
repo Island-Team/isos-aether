@@ -1,5 +1,7 @@
 mod commands;
 pub(crate) use commands::*;
+mod product;
+pub(crate) use product::*;
 
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
@@ -10,7 +12,7 @@ use std::path::PathBuf;
   name = "isos",
   version,
   about = "Launch and manage IsOS with EI and EOS",
-  after_help = "MODES\n  dev (default): local source and installed binaries; setup can render configuration.\n  product: exact verified release pins; no source build at Run.\n\nSTART\n  Run `isos` to initialize and open the local workbench.\n  Run `isos <command> --help` for command details."
+  after_help = "MODES\n  dev: local source and installed binaries; setup can render configuration.\n  product (default): exact verified release pins; no source build at Run.\n\nSTART\n  Run `isos` to initialize and open the local workbench.\n  Run `isos <command> --help` for command details."
 )]
 pub(crate) struct Cli {
   #[arg(long = "generate-completion", hide = true)]
@@ -28,11 +30,16 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum CommandLine {
-  /// Report configured core build and launch readiness.
-  Version {
-    #[command(subcommand)]
-    command: VersionCommand,
-  },
+  /// Open the browser workbench without starting EI or EOS deployment workers.
+  Web,
+  /// Open the terminal workbench, starting the IsOS server if needed.
+  Tui,
+  /// Build and install all three cores from a source checkout.
+  Install { source: PathBuf },
+  /// Refresh and list available unified product releases.
+  Update,
+  /// Install a verified unified product release.
+  Upgrade { version: Option<String> },
   /// Initialize the deployment without starting processes.
   Init {
     #[arg(long, value_parser = ["dev", "product"])]
@@ -42,7 +49,7 @@ pub(crate) enum CommandLine {
   Open,
   /// Run the deployment graph.
   Run,
-  /// Serve the local configuration UI, API, and owner-only control socket.
+  /// Serve the configuration UI and API without starting deployment workers.
   Serve {
     #[arg(long)]
     ui_live: bool,
@@ -54,8 +61,12 @@ pub(crate) enum CommandLine {
   },
   /// Start every enabled deployment node in dependency order.
   Start,
-  /// Stop the active deployment and its IsOS-owned processes.
-  Stop,
+  /// Emergency stop for this workspace, independent of the manager and run ID.
+  Stop {
+    /// Read the configured emergency stop code from standard input.
+    #[arg(long)]
+    code_stdin: bool,
+  },
   /// Inspect possible local processes or request an owner-controlled stop.
   PhysicalStop {
     #[command(subcommand)]
@@ -81,6 +92,10 @@ pub(crate) enum CommandLine {
     lines: u32,
     #[arg(long, default_value = "info", value_parser = ["trace", "debug", "info", "warn", "error"])]
     level: String,
+    #[arg(long, default_value = "log", value_parser = ["log", "jsonl", "json"])]
+    format: String,
+    #[arg(long)]
+    follow: bool,
     /// Read the pinned first event and current deployment-run page.
     #[arg(long)]
     current: bool,
@@ -183,14 +198,6 @@ pub(crate) enum AuthCommand {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum VersionCommand {
-  Check {
-    #[arg(long)]
-    json: bool,
-  },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum ConfigCommand {
   Init {
     #[arg(long)]
@@ -203,17 +210,6 @@ pub(crate) enum ConfigCommand {
     file: PathBuf,
     #[arg(long)]
     revision: Option<String>,
-  },
-  /// Preview or commit an explicit saved-graph migration.
-  Migrate {
-    #[arg(long)]
-    preview: bool,
-    #[arg(long, default_value = "0.1.0")]
-    target_version: String,
-    #[arg(long)]
-    revision: String,
-    #[arg(long)]
-    proposed_revision: Option<String>,
   },
   Show,
 }

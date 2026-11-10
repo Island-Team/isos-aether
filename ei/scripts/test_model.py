@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send one small completion to the decision model selected by egia.toml."""
+"""Send one small completion to the decision model selected by ei.toml."""
 
 from __future__ import annotations
 
@@ -36,17 +36,17 @@ for candidate in (REPOSITORY / "src", REPOSITORY):
   if str(candidate) not in sys.path:
     sys.path.insert(0, str(candidate))
 
-from egia.api.plan import PlanStep
-from egia.core.context import render_dynamic_message
-from egia.core.decision.planner import _render_plan_block
-from egia.lib.config import (
+from ei.api.plan import PlanStep
+from ei.core.context import render_dynamic_message
+from ei.core.decision.planner import _render_plan_block
+from ei.lib.config import (
   ConfigError,
   load_mission_templates,
   load_model_config,
   load_model_selection,
   load_prompt_config,
 )
-from egia.lib.vlm import ChatMessage, ModelClientError, VLMClient
+from ei.lib.vlm import ChatMessage, ModelClientError, VLMClient
 
 
 def _messages(
@@ -58,7 +58,7 @@ def _messages(
   """Build either a connectivity probe or the real planner prompt shape."""
   if planner_mission is None and mission_template is None:
     return [
-      ChatMessage(role="user", content=prompt or "Reply with exactly: EGIA model OK")
+      ChatMessage(role="user", content=prompt or "Reply with exactly: EI model OK")
     ]
   prompts = load_prompt_config(etc)
   plan = None
@@ -108,7 +108,7 @@ async def _test_model(
 ) -> dict[str, str]:
   selected = load_model_selection(str(etc))
   if selected is None:
-    raise ConfigError(f"no [model].name configured in {etc / 'egia.toml'}")
+    raise ConfigError(f"no [model].name configured in {etc / 'ei.toml'}")
   binding = load_model_config(str(etc), selected)
   response = await VLMClient.from_config(binding).complete(
     messages,
@@ -127,7 +127,7 @@ async def _test_model(
 def main() -> None:
   """Test the configured decision model and print its reply."""
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--etc", type=Path, default=REPOSITORY / "etc/egia")
+  parser.add_argument("--etc", type=Path, default=REPOSITORY.parent / "config/ei")
   mode = parser.add_mutually_exclusive_group()
   mode.add_argument(
     "--prompt",

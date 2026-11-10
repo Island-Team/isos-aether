@@ -1,5 +1,5 @@
 {
-  "schema": "q01-egia-vision-stale-test-v1",
+  "schema": "q01-ei-vision-stale-test-v1",
   "identity_cases": [
     {"field": "deployment_run_id", "replacement": "run-other", "reason_code": "binding_stale"},
     {"field": "graph_revision", "replacement": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "reason_code": "binding_stale"},

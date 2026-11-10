@@ -9,15 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 PAIRS = [
-    ("docs/isos/interfaces/cores/control-grants.md", "docs_cn/isos/interfaces/cores/control-grants_cn.md"),
+    ("docs/isos/interfaces/core/control-grants.md", "docs_cn/isos/interfaces/core/control-grants_cn.md"),
     ("docs/isos/design/server.md", "docs_cn/isos/design/server_cn.md"),
     ("tests/fixtures/control_grants/README.md", "tests/fixtures/control_grants/README_cn.md"),
 ]
 SHARED = (
     "EOS_CONTROL_GRANTS_FILE",
-    "EGIA_EOS_CONTROL_GRANT_FILE",
+    "EI_EOS_CONTROL_GRANT_FILE",
     "AETHER_BRIDGE_CONTROL_GRANT_FILE",
-    "egia_control_sha256",
+    "ei_control_sha256",
     "operator_control_sha256",
     "control_grant_unsafe_path",
     "control_grant_invalid_file",

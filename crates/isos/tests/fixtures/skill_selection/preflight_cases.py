@@ -20,14 +20,14 @@ assert set(data) == {"schema_version", "eos_design_commit", "success_result", "r
 assert data["schema_version"] == 1
 assert len(data["eos_design_commit"]) == 40
 success = data["success_result"]
-assert set(success) == {"schema_version", "ok", "active_revision", "generation", "run_id", "selection_sha256", "libraries"}
+assert set(success) == {"schema_version", "ok", "active_revision", "generation", "run_id", "selection_sha256", "executables"}
 assert success["schema_version"] == 1 and success["ok"] is True
 for name in ("active_revision", "generation", "selection_sha256"):
     assert len(success[name]) == 64 and all(c in "0123456789abcdef" for c in success[name])
-assert len(success["libraries"]) == 1
-assert set(success["libraries"][0]) == {"package_id", "package_version", "library", "library_sha256", "abi_version", "skill_count"}
-assert success["libraries"][0]["abi_version"] == 2
-assert 1 <= success["libraries"][0]["skill_count"] <= 256
+assert len(success["executables"]) == 1
+assert set(success["executables"][0]) == {"package_id", "package_version", "executable", "executable_sha256", "abi_version", "skill_count"}
+assert success["executables"][0]["abi_version"] == 2
+assert 1 <= success["executables"][0]["skill_count"] <= 256
 rejection = data["rejection_result"]
 assert rejection == {"schema_version": 1, "ok": False, "stage": "abi", "code": "abi_descriptor_invalid"}
 cases = data["cases"]
@@ -38,10 +38,10 @@ assert cases[6]["isos_code"] == "skill_selection_invalid" and "eos_stage" not in
 closed = {
     "input": {"preflight_arguments_invalid", "preflight_grants_invalid", "preflight_profile_invalid"},
     "selection": {"selection_invalid", "selection_revision_mismatch", "selection_manifest_invalid", "selection_digest_mismatch", "selection_handoff_incomplete"},
-    "package": {"package_invalid", "package_changed", "package_unsafe", "library_changed"},
-    "elf": {"library_not_elf", "library_dependency_unsafe"},
+    "package": {"package_invalid", "package_changed", "package_unsafe", "executable_changed"},
+    "elf": {"executable_not_elf", "executable_dependency_unsafe"},
     "worker": {"worker_spawn_failed", "worker_sandbox_failed", "worker_inspection_failed", "worker_timeout", "worker_reap_failed"},
-    "abi": {"abi_library_invalid", "abi_descriptor_invalid", "abi_schema_invalid", "abi_capability_unowned"},
+    "abi": {"abi_executable_invalid", "abi_descriptor_invalid", "abi_schema_invalid", "abi_capability_unowned"},
     "catalog": {"catalog_duplicate_identity", "catalog_capacity", "catalog_broker_unavailable", "catalog_binding_unavailable", "catalog_list_oversize"},
 }
 for case in cases:

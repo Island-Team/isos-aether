@@ -24,7 +24,11 @@ pub fn ui_port() -> Result<u16> {
   Ok(port)
 }
 pub fn ui_url() -> Result<String> {
-  Ok(format!("http://127.0.0.1:{}/en/isos", ui_port()?))
+  ui_url_for("en")
+}
+pub fn ui_url_for(locale: &str) -> Result<String> {
+  anyhow::ensure!(matches!(locale, "en" | "cn"), "unsupported UI locale");
+  Ok(format!("http://127.0.0.1:{}/{locale}/isos", ui_port()?))
 }
 const HOSTED_ORIGINS: [&str; 2] = ["https://www.os-island.com", "https://os-island.com"];
 

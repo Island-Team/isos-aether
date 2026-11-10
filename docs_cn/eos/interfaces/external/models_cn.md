@@ -1,6 +1,6 @@
 # 内部模型接口
 
-[English](../../../../docs/eos/interfaces/external/models.md) · [接口总览](../README_cn.md) · [模型运行时](../../design/runtime/models_cn.md)
+[English](../../../../docs/eos/interfaces/external/models.md) · [接口总览](../README_cn.md) · 模型运行时
 
 EOS 通过私有的 capability 接口调用模型，不把 provider URL、header、凭据和原生载荷传到 EOS 面向客户端的 gRPC 接口。`Health(model_id)` 返回规范健康记录；`Call(model_id, request)` 校验请求、调用配置的服务、归一化响应并返回结构化状态。规范 schema 位于 `share/eos/contracts/eos/external/models/schemas/`，不属于 `share/eos/schemas/eos/` 的公开契约清单。
 
@@ -129,27 +129,93 @@ ASR 把音频转换为文本。请求仅要求 `input.data_b64`，还可提供 `
       "confidence": 0.94,
       "distance_m": 2.1,
       "keypoints": [
-        [310, 120],
-        [300, 110],
-        [320, 110],
-        [290, 115],
-        [330, 115],
-        [275, 210],
-        [345, 210],
-        [250, 320],
-        [370, 320],
-        [235, 420],
-        [385, 420],
-        [285, 410],
-        [335, 410],
-        [280, 540],
-        [340, 540],
-        [275, 675],
-        [345, 675]
+        [
+          310,
+          120
+        ],
+        [
+          300,
+          110
+        ],
+        [
+          320,
+          110
+        ],
+        [
+          290,
+          115
+        ],
+        [
+          330,
+          115
+        ],
+        [
+          275,
+          210
+        ],
+        [
+          345,
+          210
+        ],
+        [
+          250,
+          320
+        ],
+        [
+          370,
+          320
+        ],
+        [
+          235,
+          420
+        ],
+        [
+          385,
+          420
+        ],
+        [
+          285,
+          410
+        ],
+        [
+          335,
+          410
+        ],
+        [
+          280,
+          540
+        ],
+        [
+          340,
+          540
+        ],
+        [
+          275,
+          675
+        ],
+        [
+          345,
+          675
+        ]
       ],
       "keypoint_scores": [
-        0.95, 0.94, 0.94, 0.91, 0.92, 0.96, 0.96, 0.93, 0.93,
-        0.90, 0.91, 0.97, 0.97, 0.95, 0.95, 0.92, 0.92
+        0.95,
+        0.94,
+        0.94,
+        0.91,
+        0.92,
+        0.96,
+        0.96,
+        0.93,
+        0.93,
+        0.9,
+        0.91,
+        0.97,
+        0.97,
+        0.95,
+        0.95,
+        0.92,
+        0.92
       ],
       "pose": "stand",
       "pose_confidence": 0.93,
@@ -261,8 +327,16 @@ Northbound 和技能的类型化 `vision.face` 推理只允许 recognize。v1 sc
 
 ```json
 {
-  "messages": [{"role": "user", "content": "What is in front of me?"}],
-  "input": {"data_b64": "<base64-encoded JPEG image>", "media_type": "image/jpeg"},
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is in front of me?"
+    }
+  ],
+  "input": {
+    "data_b64": "<base64-encoded JPEG image>",
+    "media_type": "image/jpeg"
+  },
   "max_tokens": 128,
   "stream": false
 }

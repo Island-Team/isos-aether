@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from egia.contracts.actions import TerminalStatus
-from egia.contracts.endpoints import PrimitiveKind, ResourceKind
-from egia.contracts.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
-from egia.contracts.validate import validate_primitive, validate_primitive_ack
+from ei.contracts.actions import TerminalStatus
+from ei.contracts.endpoints import PrimitiveKind, ResourceKind
+from ei.contracts.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
+from ei.contracts.validate import validate_primitive, validate_primitive_ack
 from island.generated.eos import capabilities_pb2, gateway_pb2, skills_pb2
 from island.generated.eos.robot import descriptor_pb2
 from island.share import repository_resources

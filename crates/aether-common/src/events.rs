@@ -1,44 +1,41 @@
-//! Fixed, bounded JSONL events for managed EOS process stderr.
+//! Fixed, bounded EOS event constructors for local JSONL logging.
 
 use crate::time::Clock;
-use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Linux pipe writes at or below PIPE_BUF are atomic. The contract permits
-// 8064 bytes, but our fixed EOS templates fit under this tighter bound.
+// Keep legacy event constructors within the local JSONL record bound.
 const MAX_LINE: usize = 4096;
-const WINDOW_NS: u64 = 5_000_000_000;
-const MAX_KEYS: usize = 256;
 
-/// A single nonblocking write to the process stderr fd. EOS records are
-/// smaller than Linux PIPE_BUF, so a full collector pipe drops a whole record
-/// without trapping an actuator stop behind a blocking log write.
-pub struct NonblockingStderr;
+/// Compatibility adapter for older EOS event constructors. Production
+/// processes write their events into the same local per-core JSONL file.
+pub struct LocalCoreLog;
 
-impl NonblockingStderr {
+impl LocalCoreLog {
   pub fn new() -> io::Result<Self> {
-    let flags = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL) };
-    if flags < 0 {
-      return Err(io::Error::last_os_error());
-    }
-    if unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-      return Err(io::Error::last_os_error());
-    }
     Ok(Self)
   }
 }
 
-impl Write for NonblockingStderr {
+impl Write for LocalCoreLog {
   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    let count = unsafe { libc::write(libc::STDERR_FILENO, buf.as_ptr().cast(), buf.len()) };
-    if count < 0 {
-      Err(io::Error::last_os_error())
-    } else {
-      Ok(count as usize)
-    }
+    let event: Value = serde_json::from_slice(buf.strip_suffix(b"\n").unwrap_or(buf))?;
+    let source = event["source"].as_str().unwrap_or("runtime");
+    let record = serde_json::json!({
+      "timestamp": event["timestamp"],
+      "level": event["level"],
+      "source": format!("eos.{source}@aether-v{}", env!("CARGO_PKG_VERSION")),
+      "message": event["message"],
+      "event_code": event["event_code"],
+      "run_id": event["run_id"],
+      "correlation_id": event["correlation_id"],
+      "node_path": event["node_path"],
+      "fields": event["fields"],
+    });
+    crate::diagnostics::append_record(&crate::diagnostics::directory(), &record)?;
+    Ok(buf.len())
   }
 
   fn flush(&mut self) -> io::Result<()> {
@@ -145,8 +142,8 @@ pub fn valid_digest(value: &str) -> bool {
 pub fn graph_pointer(path: &str) -> Option<String> {
   let parts: Vec<_> = path.split('/').collect();
   let segments = match parts.as_slice() {
-    ["eos", layer, group, node] => [*layer, *group, *node],
-    ["cores", "eos", "layers", layer, "groups", group, "nodes", node] => [*layer, *group, *node],
+    ["isos", layer, group, node] => [*layer, *group, *node],
+    ["cores", "isos", "layers", layer, "groups", group, "nodes", node] => [*layer, *group, *node],
     _ => return None,
   };
   if !segments.iter().all(|part| {
@@ -159,7 +156,7 @@ pub fn graph_pointer(path: &str) -> Option<String> {
   }
   let escape = |part: &str| part.replace('~', "~0").replace('/', "~1");
   let pointer = format!(
-    "/cores/eos/layers/{}/groups/{}/nodes/{}",
+    "/cores/isos/layers/{}/groups/{}/nodes/{}",
     escape(segments[0]),
     escape(segments[1]),
     escape(segments[2])
@@ -177,15 +174,18 @@ pub enum Event<'a> {
     stage: Stage,
     reason: Reason,
   },
+  NodeMismatch {
+    mismatch_code: &'a str,
+  },
   Stopping,
   Stopped,
   PackageAdmitted {
     release_sha256: &'a str,
     payload_sha256: &'a str,
   },
-  PackageProvenanceUnavailable,
   BackendReady,
   BackendLost,
+  ListenerLost,
   StopUnconfirmed,
   SkillStopUnconfirmed,
   SkillExecution {
@@ -203,23 +203,9 @@ pub enum Event<'a> {
   },
 }
 
-#[derive(Clone, Hash, Eq, PartialEq)]
-struct WarningKey {
-  code: &'static str,
-  node_path: Option<String>,
-}
-
-struct Window {
-  emitted_at: u64,
-  suppressed: u32,
-}
-
 struct Inner<W> {
   writer: W,
   failed: bool,
-  warnings: HashMap<WarningKey, Window>,
-  overflow: u32,
-  overflow_at: u64,
 }
 
 struct WireEvent<'a> {
@@ -235,7 +221,7 @@ struct WireEvent<'a> {
 pub struct EventSink<W: Write, C: Clock> {
   source: Source,
   run_id: String,
-  clock: C,
+  _clock: C,
   inner: Mutex<Inner<W>>,
 }
 
@@ -247,13 +233,10 @@ impl<W: Write, C: Clock> EventSink<W, C> {
     Ok(Self {
       source,
       run_id,
-      clock,
+      _clock: clock,
       inner: Mutex::new(Inner {
         writer,
         failed: false,
-        warnings: HashMap::new(),
-        overflow: 0,
-        overflow_at: 0,
       }),
     })
   }
@@ -288,82 +271,9 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         "event stream disabled",
       ));
     }
-    if matches!(event, Event::PackageProvenanceUnavailable) {
-      let now = self.clock.monotonic_ns();
-      let key = WarningKey {
-        code: "eos_package_provenance_unavailable",
-        node_path: pointer.clone(),
-      };
-      if let Some(window) = inner.warnings.get_mut(&key) {
-        if now.saturating_sub(window.emitted_at) < WINDOW_NS {
-          window.suppressed = window.suppressed.saturating_add(1);
-          return Ok(());
-        }
-        let count = std::mem::take(&mut window.suppressed);
-        window.emitted_at = now;
-        let result = self.write_event(
-          &mut inner.writer,
-          event,
-          pointer.as_deref(),
-          correlation_id,
-          (count > 0).then_some(count),
-        );
-        inner.failed = result.is_err();
-        return result;
-      }
-      if inner.warnings.len() >= MAX_KEYS {
-        if let Some(oldest) = inner
-          .warnings
-          .iter()
-          .min_by_key(|(_, window)| window.emitted_at)
-          .map(|(key, _)| key.clone())
-        {
-          let evicted = inner
-            .warnings
-            .remove(&oldest)
-            .expect("selected warning key");
-          inner.overflow = inner.overflow.saturating_add(evicted.suppressed);
-        }
-      }
-      inner.warnings.insert(
-        key,
-        Window {
-          emitted_at: now,
-          suppressed: 0,
-        },
-      );
-    }
-    let mut result = self.write_event(
-      &mut inner.writer,
-      event,
-      pointer.as_deref(),
-      correlation_id,
-      None,
-    );
-    if result.is_ok() && inner.overflow > 0 {
-      let now = self.clock.monotonic_ns();
-      if inner.overflow_at == 0 || now.saturating_sub(inner.overflow_at) >= WINDOW_NS {
-        let count = std::mem::take(&mut inner.overflow);
-        inner.overflow_at = now;
-        result = self.write_overflow(&mut inner.writer, count);
-      }
-    }
+    let result = self.write_event(&mut inner.writer, event, pointer.as_deref(), correlation_id);
     inner.failed = result.is_err();
     result
-  }
-
-  fn write_overflow(&self, writer: &mut W, count: u32) -> io::Result<()> {
-    self.write(
-      writer,
-      WireEvent {
-        level: "warn",
-        code: "eos_events_suppressed",
-        node_path: None,
-        correlation_id: None,
-        message: "EOS repeated events suppressed",
-        fields: json!({"suppressed_count":count}),
-      },
-    )
   }
 
   fn write_event(
@@ -372,19 +282,19 @@ impl<W: Write, C: Clock> EventSink<W, C> {
     event: Event<'_>,
     node_path: Option<&str>,
     correlation_id: Option<&str>,
-    suppressed: Option<u32>,
   ) -> io::Result<()> {
     let prefix = self.source.as_str();
     if self.source != Source::Eos
       && matches!(
         event,
         Event::PackageAdmitted { .. }
-          | Event::PackageProvenanceUnavailable
           | Event::BackendReady
           | Event::BackendLost
+          | Event::ListenerLost
           | Event::StopUnconfirmed
           | Event::SkillStopUnconfirmed
           | Event::SkillExecution { .. }
+          | Event::NodeMismatch { .. }
       )
     {
       return Err(io::Error::new(
@@ -392,7 +302,7 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         "backend event source differs",
       ));
     }
-    let (level, code, message, mut fields) = match event {
+    let (level, code, message, fields) = match event {
       Event::Starting => (
         "info",
         format!("{prefix}_starting"),
@@ -419,6 +329,23 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         format!("EOS {prefix} failed to start"),
         json!({"state":"failed","stage":stage.as_str(),"reason_code":reason.as_str()}),
       ),
+      Event::NodeMismatch { mismatch_code } => {
+        if !matches!(
+          mismatch_code,
+          "unknown_type" | "version" | "package" | "adapter" | "placement"
+        ) {
+          return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid node mismatch code",
+          ));
+        }
+        (
+          "error",
+          "eos_node_mismatch".into(),
+          "EOS graph node does not match its registered type".into(),
+          json!({"state":"failed","mismatch_code":mismatch_code}),
+        )
+      }
       Event::Stopping => (
         "info",
         format!("{prefix}_stopping"),
@@ -451,12 +378,6 @@ impl<W: Write, C: Clock> EventSink<W, C> {
           json!({"package_id":"island/mujoco-sim","package_version":"0.1.1","release_sha256":release_sha256,"payload_sha256":payload_sha256}),
         )
       }
-      Event::PackageProvenanceUnavailable => (
-        "warn",
-        "eos_package_provenance_unavailable".into(),
-        "EOS backend package provenance unavailable".into(),
-        json!({"package_id":"island/mujoco-sim","package_version":"0.1.1"}),
-      ),
       Event::BackendReady => (
         "info",
         "eos_backend_ready".into(),
@@ -468,6 +389,12 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         "eos_backend_lost".into(),
         "EOS backend child exited".into(),
         json!({"state":"failed","reason_code":"child_exited"}),
+      ),
+      Event::ListenerLost => (
+        "error",
+        "eos_listener_lost".into(),
+        "EOS gRPC listener exited unexpectedly".into(),
+        json!({"state":"failed","reason_code":"listener_lost"}),
       ),
       Event::StopUnconfirmed => (
         "error",
@@ -557,11 +484,6 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         )
       }
     };
-    if let Some(count) = suppressed {
-      if let Some(map) = fields.as_object_mut() {
-        map.insert("suppressed_count".into(), json!(count));
-      }
-    }
     self.write(
       writer,
       WireEvent {
@@ -595,18 +517,11 @@ impl<W: Write, C: Clock> EventSink<W, C> {
         "invalid event template",
       ));
     }
-    let mut record = Map::new();
-    record.insert("timestamp".into(), json!(utc_timestamp()));
-    record.insert("level".into(), json!(level));
-    record.insert("source".into(), json!(self.source.as_str()));
-    record.insert("core".into(), json!("eos"));
-    record.insert("node_path".into(), json!(node_path));
-    record.insert("event_code".into(), json!(code));
-    record.insert("run_id".into(), json!(self.run_id));
-    record.insert("correlation_id".into(), json!(correlation_id));
-    record.insert("message".into(), json!(message));
-    record.insert("fields".into(), fields);
-    let mut line = serde_json::to_vec(&record)?;
+    let mut line = format!(
+      "{{\"timestamp\":{},\"level\":{},\"core\":\"eos\",\"source\":{},\"event_code\":{},\"message\":{},\"run_id\":{},\"correlation_id\":{},\"node_path\":{},\"fields\":{}}}",
+      json!(utc_timestamp()), json!(level), json!(self.source.as_str()), json!(code),
+      json!(message), json!(self.run_id), json!(correlation_id), json!(node_path), fields
+    ).into_bytes();
     line.push(b'\n');
     if line.len() > MAX_LINE {
       return Err(io::Error::new(
@@ -665,6 +580,27 @@ mod tests {
   use crate::time::ManualClock;
 
   #[test]
+  fn listener_loss_is_a_fixed_eos_error() {
+    let sink = EventSink::new(
+      Source::Eos,
+      "run_7".into(),
+      Vec::new(),
+      ManualClock::new(1, None),
+    )
+    .unwrap();
+    sink.emit(Event::ListenerLost, None).unwrap();
+    let output = sink.inner.lock().unwrap().writer.clone();
+    let event: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(event["level"], "error");
+    assert_eq!(event["event_code"], "eos_listener_lost");
+    assert_eq!(event["message"], "EOS gRPC listener exited unexpectedly");
+    assert_eq!(
+      event["fields"],
+      json!({"state":"failed","reason_code":"listener_lost"})
+    );
+  }
+
+  #[test]
   fn ids_digests_and_saved_graph_pointer_are_bounded() {
     assert!(valid_run_id("run_7"));
     assert!(valid_run_id(&local_run_id()));
@@ -673,40 +609,10 @@ mod tests {
     assert!(valid_digest(&"a".repeat(64)));
     assert!(!valid_digest(&"A".repeat(64)));
     assert_eq!(
-      graph_pointer("eos/process/mujoco/sim").as_deref(),
-      Some("/cores/eos/layers/process/groups/mujoco/nodes/sim")
+      graph_pointer("isos/eos_process/mujoco/sim").as_deref(),
+      Some("/cores/isos/layers/eos_process/groups/mujoco/nodes/sim")
     );
-    assert!(graph_pointer("eos/process/mujoco/invalid~id").is_none());
-  }
-
-  #[test]
-  fn first_warning_and_terminal_survive_ten_thousand_repeats() {
-    let clock = ManualClock::new(1, None);
-    let sink = EventSink::new(Source::Eos, "run_7".into(), Vec::new(), clock).unwrap();
-    for _ in 0..10_000 {
-      sink
-        .emit(Event::PackageProvenanceUnavailable, None)
-        .unwrap();
-    }
-    sink.clock.advance_ns(WINDOW_NS);
-    sink
-      .emit(Event::PackageProvenanceUnavailable, None)
-      .unwrap();
-    sink
-      .emit(Event::BackendLost, Some("eos/process/mujoco/sim"))
-      .unwrap();
-    let inner = sink.inner.lock().unwrap();
-    let lines: Vec<Value> = String::from_utf8(inner.writer.clone())
-      .unwrap()
-      .lines()
-      .map(|line| serde_json::from_str(line).unwrap())
-      .collect();
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines[1]["fields"]["suppressed_count"], 9999);
-    assert_eq!(lines[2]["event_code"], "eos_backend_lost");
-    assert!(lines
-      .iter()
-      .all(|line| serde_json::to_vec(line).unwrap().len() < MAX_LINE));
+    assert!(graph_pointer("isos/eos_process/mujoco/invalid~id").is_none());
   }
 
   #[test]
@@ -801,55 +707,6 @@ mod tests {
     ] {
       assert!(!skill_fields.contains_key(forbidden));
     }
-  }
-
-  #[test]
-  fn warning_keys_are_bounded_and_overflow_is_summarized() {
-    let clock = ManualClock::new(1, None);
-    let sink = EventSink::new(Source::Eos, "run_7".into(), Vec::new(), clock).unwrap();
-    for index in 0..MAX_KEYS {
-      let path = format!("eos/process/mujoco/n{index}");
-      sink
-        .emit(Event::PackageProvenanceUnavailable, Some(&path))
-        .unwrap();
-      sink.clock.advance_ns(1);
-    }
-    for _ in 0..50 {
-      sink
-        .emit(
-          Event::PackageProvenanceUnavailable,
-          Some("eos/process/mujoco/n0"),
-        )
-        .unwrap();
-    }
-    for index in MAX_KEYS..300 {
-      let path = format!("eos/process/mujoco/n{index}");
-      sink
-        .emit(Event::PackageProvenanceUnavailable, Some(&path))
-        .unwrap();
-    }
-    let inner = sink.inner.lock().unwrap();
-    assert_eq!(inner.warnings.len(), MAX_KEYS);
-    let lines: Vec<Value> = String::from_utf8(inner.writer.clone())
-      .unwrap()
-      .lines()
-      .map(|line| serde_json::from_str(line).unwrap())
-      .collect();
-    assert_eq!(lines.len(), 301);
-    assert_eq!(
-      lines[256]["event_code"],
-      "eos_package_provenance_unavailable"
-    );
-    assert_eq!(
-      lines[256]["node_path"],
-      "/cores/eos/layers/process/groups/mujoco/nodes/n256"
-    );
-    assert_eq!(lines[257]["event_code"], "eos_events_suppressed");
-    assert_eq!(lines[257]["fields"]["suppressed_count"], 50);
-    assert_eq!(
-      lines[300]["node_path"],
-      "/cores/eos/layers/process/groups/mujoco/nodes/n299"
-    );
   }
 
   #[test]

@@ -45,16 +45,18 @@ where = ["src"]
 exclude = ["*.tests", "*.tests.*"]
 
 [tool.setuptools.package-data]
-"egia.contracts" = ["**/*.json"]
+"ei.contracts" = ["**/*.json"]
 
 [tool.pytest.ini_options]
+cache_dir = "../data/cache/tools/pytest-ei"
 asyncio_mode = "auto"
 testpaths = ["tests", "src"]
 # Private programs are a separate import root in a source checkout.
 pythonpath = [".", "libexec"]
 
 [tool.ruff]
-# `libexec/egia_ext/` and `tests/` are repository-local roots, not third-party imports.
+cache-dir = "../data/cache/tools/ruff-ei"
+# `libexec/ei_ext/` and `tests/` are repository-local roots, not third-party imports.
 src = [".", "src", "libexec"]
 indent-width = 2
 extend-exclude = [
@@ -70,7 +72,7 @@ extend-exclude = [
 [tool.ruff.lint.per-file-ignores]
 # An absent or broken opt/ package degrades the optional feature, never startup;
 # the composition root catches whatever the optional import raises.
-"src/egia/main.py" = ["BLE001"]
+"src/ei/main.py" = ["BLE001"]
 "src/island/generated/gateway_pb2.py" = ["F401", "I001", "UP009"]
 "src/island/generated/gateway_pb2_grpc.py" = ["F401", "I001"]
 "src/island/generated/skills_pb2.py" = ["F401", "I001", "UP009"]
@@ -98,76 +100,76 @@ executionEnvironments = [
 ]
 
 [tool.importlinter]
-# Private EGIA extensions ship outside the wheel but their boundary remains
+# Private EI extensions ship outside the wheel but their boundary remains
 # CI-enforced. Run from the repository root.
-root_packages = ["egia", "island", "egia_ext"]
+root_packages = ["ei", "island", "ei_ext"]
 
 [[tool.importlinter.contracts]]
-name = "lib imports no egia module"
+name = "lib imports no ei module"
 type = "forbidden"
-source_modules = ["egia.lib"]
+source_modules = ["ei.lib"]
 forbidden_modules = [
-  "egia.api",
-  "egia.internal",
-  "egia.contracts",
-  "egia.bin",
-  "egia.core",
-  "egia.opt",
-  "egia_ext",
+  "ei.api",
+  "ei.internal",
+  "ei.contracts",
+  "ei.bin",
+  "ei.core",
+  "ei.opt",
+  "ei_ext",
 ]
 
 [[tool.importlinter.contracts]]
 name = "core imports no opt"
 type = "forbidden"
-source_modules = ["egia.core"]
-forbidden_modules = ["egia.opt"]
+source_modules = ["ei.core"]
+forbidden_modules = ["ei.opt"]
 
 [[tool.importlinter.contracts]]
 name = "opt imports no core"
 type = "forbidden"
-source_modules = ["egia.opt"]
-forbidden_modules = ["egia.core"]
+source_modules = ["ei.opt"]
+forbidden_modules = ["ei.core"]
 
 # Simulation and any other out-of-process backend see the leaf utilities and
 # the wire contracts, nothing else: core hands extensions only `lib`.
 [[tool.importlinter.contracts]]
-name = "egia ext imports no egia implementation"
+name = "ei ext imports no ei implementation"
 type = "forbidden"
-source_modules = ["egia_ext"]
+source_modules = ["ei_ext"]
 forbidden_modules = [
-  "egia.api",
-  "egia.internal",
-  "egia.bin",
-  "egia.core",
-  "egia.opt",
+  "ei.api",
+  "ei.internal",
+  "ei.bin",
+  "ei.core",
+  "ei.opt",
 ]
 
 [[tool.importlinter.contracts]]
-name = "egia imports no private extensions"
+name = "ei imports no private extensions"
 type = "forbidden"
-source_modules = ["egia"]
-forbidden_modules = ["egia_ext"]
+source_modules = ["ei"]
+forbidden_modules = ["ei_ext"]
 
 # Inside core the pipeline is acyclic. Listed consumer-first: data flows the
-# other way (link -> perception -> queue -> context -> decision), and `egia.io`
+# other way (link -> perception -> queue -> context -> decision), and `ei.io`
 # projects the result northbound from above core, so it may read everything
-# below it (io.md: "egia.io may import core; core never imports io"). On the
+# below it (io.md: "ei.io may import core; core never imports io"). On the
 # egress half, decision sits above safety and the primitive registry
 # and the sole egress gate), and safety forwards to link.
 [[tool.importlinter.contracts]]
 name = "core pipeline layers"
 type = "layers"
 layers = [
-  "egia.io",
-  "egia.core.decision",
-  "egia.core.safety",
-  "egia.core.registry",
-  "egia.core.monitor",
-  "egia.core.memory",
-  "egia.core.context",
-  "egia.core.perception",
-  "egia.core.missions",
-  "egia.core.link",
+  "ei.io",
+  "ei.core.decision",
+  "ei.core.safety",
+  "ei.core.registry",
+  "ei.core.monitor",
+  "ei.core.memory",
+  "ei.core.context",
+  "ei.core.perception",
+  "ei.core.missions",
+  "ei.core.link",
 ]
 
 [dependency-groups]

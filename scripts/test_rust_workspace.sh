@@ -6,7 +6,7 @@ export PATH="${HOME}/.cargo/bin:${PATH}"
 cd "$repo_root"
 
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-log_dir="$repo_root/logs/test/$run_id"
+log_dir="$repo_root/data/test/$run_id"
 mkdir -p "$log_dir"
 {
   printf 'run_id=%s\n' "$run_id"

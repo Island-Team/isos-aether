@@ -1,25 +1,25 @@
-# UI 节点事件
+# 按钮激活事件
 
-本契约供通过注册输出端口发出用户输入的 IsosUI 节点使用。IsOS 当前为首个按键状态生产者提供 `POST /api/isos/v1/nodes/events`。端点检查本地 UI 的 Host 与 Origin，检查活动运行及保存的修订，解析图中声明的路径，并从网关节点设置推导运动值。浏览器不能提供速度或归属方端点。
+[English](../../../../docs/isos/interfaces/ui/node-events.md) · [节点类型](../node/README_cn.md)
+
+IsosUI 通过 `POST /api/isos/v1/nodes/events` 将注册按钮节点的一次通用激活发送给 IsOS。IsOS 在转发到私有 EI 所有者之前验证本地 Host 和 Origin、活动运行、已保存修订以及经过 EI 和 EOS 的准确声明路径。浏览器不能选择机械臂、关节目标、所有者地址或执行器授权。
 
 ```json
-{"schema_version":"0.1.0","source_node":"isosui/input/keyboard/drive","output":"state","data_type":"key_state","run_id":"run-1","active_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","payload":{"state":"pressed","activation_id":"press-1","sequence":1}}
+{
+  "schema_version": "0.2.0",
+  "source_node": "isos/ui/button/trigger",
+  "output": "activation",
+  "data_type": "button_activation@v0.2",
+  "run_id": "run-1",
+  "active_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "payload": { "event_id": "click-1", "kind": "activate" }
+}
 ```
 
-| 字段 | 类型／单位 | 含义与验证 | 缺失／默认值 |
-| --- | --- | --- | --- |
-| `schema_version` | 准确字符串／负载版本 | `0.1.0`。 | 必填。 |
-| `source_node` | 规范字符串／四段节点路径 | 活动图中的注册 UI 生产者；最长 200 字节，四个非空路径段，仅允许 ASCII 字母、数字、`_`、`-` 或 `.`。 | 必填。 |
-| `output` | 准确字符串／输出端口 | 此生产者使用 `state`；必须由注册类型声明。 | 必填。 |
-| `data_type` | 准确字符串／注册类型 | 已声明输出使用 `key_state`。 | 必填。 |
-| `run_id` | 字符串／活动运行身份 | 防止前一次运行的事件影响当前运行；1–128 字节。 | 必填。 |
-| `active_revision` | 小写 64 位十六进制字符串／保存图 SHA-256 | 将事件约束到已准入图。 | 必填。 |
-| `payload.state` | 枚举／按键状态 | `pressed`、`refresh` 或 `released`。 | 必填。 |
-| `payload.activation_id` | 非空字符串／按键持续身份 | 将一次物理按住和续租分组；1–64 个 ASCII 字母、数字、`_` 或 `-`；同一次运行内不得复用（每个来源及运行最多记录 65,536 次已结束按住）。 | 必填。 |
-| `payload.sequence` | 正整数／事件顺序 | 在一次激活中严格递增；过期或乱序事件不能续租。 | 必填。 |
+所有字段必填，未知字段会被拒绝。`source_node` 有四个 ASCII 路径段，每段最多 48 字节，只使用字母、数字、`_` 或 `-`。`event_id` 为 1–64 个 ASCII 字母、数字、`_`、`-` 或 `.`；`run_id` 使用相同语法，最多 128 字节。修订为 64 个小写十六进制字符。请求体最多 2048 字节。不同点击使用新事件 ID；结果不确定的点击保留原 ID。
 
-成功事件返回 IsOS 封套，其中 `data.command_id` 是生成的归属方命令身份，`data.state` 为 `active` 或 `released`。归属方响应字段不会转发。
+节点图必须有一条获准路径，从按钮经过 EI 输入、认知、安全，再到 EOS 入口、技能、调度器和模拟机械臂。IsOS 在 EI 所有者套接字上发送 `{core:"ei",op:"activate",run_id,revision,source_node,event_id,kind}`。EOS 预留命令后，成功提交返回事件 ID、命令 ID 和 `accepted` 状态。重复 ID 返回已记录状态，不会再次运动。浏览器的提交请求不等待机械臂运动完成。
 
-生产者选择的按键或组合键是节点设置，不是事件字段。网关的目标绑定路径及 `x_m_s`、`y_m_s`、`yaw_rad_s`（米每秒及弧度每秒）、`valid_for_ms`（50–500 毫秒）都是保存的设置。IsosUI 在按住期间发送续租；IsOS 将续租限制为最高 20 Hz，同时始终允许有效的释放。按键抬起、失去焦点或卸载时释放；续租中断也会使租约到期。归属方决定物理驱动和停止。参见[控制路径](../../design/control-path_cn.md)和[注册选择器](../nodes/selectors_cn.md)。
+`POST /api/isos/v1/nodes/events/result` 读取关联结果，不会重新提交运动。准确请求是 `{schema_version:"0.2.0",source_node,run_id,active_revision,event_id}`，身份与提交相同。IsOS 验证活动运行、已保存节点图和声明路径，向 EI 查询结果，并在回复前重新检查运行。响应包含 `event_id`、`command_id` 和 `status`：`accepted`、`running`、`succeeded`、`failed`、`cancelled` 或 `outcome_unknown`。只有 `succeeded` 包含六个有限的 `joint_positions_rad` 值。IsosUI 读取此接口，直到得到终态或达到有界等待时间；后续查询继续使用相同事件 ID。
 
-[English](../../../../docs/isos/interfaces/ui/node-events.md)
+提交字段无效返回 `400 node_event_invalid`，请求体过大返回 `413 node_event_oversized`，运行或图过期返回 `409 run_fence_stale` 或 `graph_fence_stale`，路径无效返回 `422 node_route_invalid` 或 `node_edges_invalid`。结果查询无效时按情况返回 `400 node_result_invalid`、`413 node_result_oversized`、`422 node_route_invalid` 或 `503 owner_result_unavailable`、`owner_result_invalid`。所有者传输故障或提交结果不确定时返回 `503 owner_outcome_unknown`；考虑再次提交前，使用同一事件 ID 查询结果。Stop 在工作进程退出前关闭准入。

@@ -332,6 +332,11 @@ impl Release {
           data_type.id
         );
         ensure!(
+          jsonschema::validator_for(&data_type.schema).is_ok(),
+          "{}: schema is invalid",
+          data_type.id
+        );
+        ensure!(
           (1..=100_000_000).contains(&data_type.max_payload_bytes),
           "{}: max_payload_bytes must be 1..100000000",
           data_type.id
@@ -344,7 +349,7 @@ impl Release {
           .and_then(Value::as_str)
           .ok_or_else(|| anyhow::anyhow!("contributed node type requires id"))?;
         ensure!(
-          (id.ends_with("@v0.1") || id.ends_with("@v1.0")) && type_ids.insert(id),
+          id.starts_with("isos.") && id.ends_with("@v0.2") && type_ids.insert(id),
           "invalid or duplicate contributed node type {id}"
         );
         for field in [
@@ -405,7 +410,9 @@ impl Release {
           .ok_or_else(|| anyhow::anyhow!("process declaration lacks a contributed node type"))?;
         ensure!(
           process_types.insert(&process.node_type)
-            && node_type["layer"] == "process"
+            && (node_type["layer"] == "process"
+              || (process.node_type == "isos.eos_process.mujoco@v0.2"
+                && node_type["layer"] == "eos_process"))
             && node_type["lifecycle"] == "process"
             && node_type["core"]
               .as_str()
@@ -686,10 +693,10 @@ mod tests {
     for (id, type_id, resource_kind) in [
       (
         "field/sensor-rig",
-        "field.process.capture@v0.1",
+        "isos.process.capture@v0.2",
         "calibration",
       ),
-      ("studio/synth-bank", "studio.process.render@v0.1", "preset"),
+      ("studio/synth-bank", "isos.process.render@v0.2", "preset"),
     ] {
       let release = serde_json::json!({
         "contract":"isos.package@v1", "schema_version":"0.1.0",
@@ -699,7 +706,7 @@ mod tests {
           "url":"https://github.com/vendor/package/releases/download/v1.2.3/package.tar.gz",
           "size_bytes":1,"sha256":"b".repeat(64)}],
         "node_contributions":{
-          "node_types":[{"id":type_id,"core":"eos","layer":"process","group":"component",
+          "node_types":[{"id":type_id,"core":"isos","layer":"process","group":"component",
             "kind":"software","description":"Verified package process",
             "lifecycle":"process","capabilities":[],
             "settings":[{"name":"selection","data_type":"string","required":true,
@@ -707,7 +714,8 @@ mod tests {
                 "resource":"selection","package_from":"node.package"}}],
             "inputs":[],"outputs":[{"name":"result","data_type":"generic.record@v1.0","required":true,
               "description":"Bounded result record",
-              "transport":"in_process","delivery_mode":"message","cardinality":"one"}]}],
+              "transport":"in_process","delivery_mode":"message","cardinality":"one",
+              "contract":{"owner":"isos","id":"generic-record","version":"1.0"}}]}],
           "data_types":[{"id":"generic.record@v1.0","version":"1.0",
             "purpose":"Bounded record","media_type":"application/json","codec":"json_v1",
             "schema":{"type":"object"},"max_payload_bytes":4096}],

@@ -16,3 +16,8 @@
 
 # Extensionless launcher wrappers must remain executable by Linux shells.
 /bin/* text eol=lf
+
+# EI generated gateway bindings
+/ei/src/island/generated/gateway_pb2.py linguist-generated=true
+/ei/src/island/generated/gateway_pb2.pyi linguist-generated=true
+/ei/src/island/generated/gateway_pb2_grpc.py linguist-generated=true

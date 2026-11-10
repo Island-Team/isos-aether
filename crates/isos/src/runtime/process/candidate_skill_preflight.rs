@@ -1,6 +1,10 @@
 //! Closed private EOS catalog probe before a managed replacement stops its old run.
+#![expect(
+  dead_code,
+  reason = "test-only candidate skill preflight regression harness"
+)]
 use crate::{
-  app::config::Paths, domain::graph::graph_compat, runtime::process,
+  app::config::Paths, domain::graph::graph_contract, runtime::process,
   runtime::process::skill_selection,
 };
 use anyhow::{Context, Result, ensure};
@@ -60,7 +64,7 @@ pub struct Inputs {
   selection_sha256: String,
   generation: String,
   revision: String,
-  libraries: Vec<skill_selection::SelectedLibrary>,
+  executables: Vec<skill_selection::SelectedExecutable>,
   node_types: Vec<String>,
   specs_sha256: String,
   selectors: BTreeMap<String, String>,
@@ -129,7 +133,7 @@ impl Inputs {
       selection_sha256: "a".repeat(64),
       generation: "b".repeat(64),
       revision: "c".repeat(64),
-      libraries: vec![skill_selection::SelectedLibrary {
+      executables: vec![skill_selection::SelectedExecutable {
         package_id: "test/verified".into(),
         package_version: "0.1.0".into(),
         package_root: String::new(),
@@ -137,8 +141,8 @@ impl Inputs {
         receipt_sha256: String::new(),
         release_sha256: String::new(),
         payload_sha256: String::new(),
-        library: "lib/x.skill.so".into(),
-        library_sha256: "d".repeat(64),
+        executable: "lib/x.skill".into(),
+        executable_sha256: "d".repeat(64),
       }],
       node_types: Vec::new(),
       specs_sha256: String::new(),
@@ -161,7 +165,7 @@ impl Inputs {
     };
     let saved_bytes = fs::read(paths.node_graph_path(name))?;
     ensure!(
-      graph_compat::revision(&saved_bytes) == revision,
+      graph_contract::revision(&saved_bytes) == revision,
       "saved graph revision changed"
     );
     let graph: Value = serde_json::from_slice(&saved_bytes)?;
@@ -176,7 +180,7 @@ impl Inputs {
     ensure!(
       selected_inventory.schema_version == 1
         && selected_inventory.active_revision == revision
-        && !selected_inventory.libraries.is_empty(),
+        && !selected_inventory.executables.is_empty(),
       "invalid selected skill inventory"
     );
     let profile = PathBuf::from(required_option(&spec.settings.command, "--profile")?);
@@ -228,7 +232,7 @@ impl Inputs {
       selection: PathBuf::from(selected),
       generation,
       revision: revision.to_owned(),
-      libraries: selected_inventory.libraries,
+      executables: selected_inventory.executables,
       node_types,
       specs_sha256: sha(format!("{specs:?}").as_bytes()),
       selectors,
@@ -266,7 +270,7 @@ impl Inputs {
   pub fn launch_recheck(&self, paths: &Paths, name: &str) -> Result<()> {
     let saved_bytes = fs::read(paths.node_graph_path(name))?;
     ensure!(
-      graph_compat::revision(&saved_bytes) == self.revision,
+      graph_contract::revision(&saved_bytes) == self.revision,
       "saved graph revision changed"
     );
     let graph: Value = serde_json::from_slice(&saved_bytes)?;
@@ -327,9 +331,9 @@ impl Inputs {
         run_id: run_id.to_owned(),
         revision: self.revision.clone(),
         generation: self.generation.clone(),
-        package_id: self.libraries.first().map(|lib| lib.package_id.clone()),
+        package_id: self.executables.first().map(|lib| lib.package_id.clone()),
         package_version: self
-          .libraries
+          .executables
           .first()
           .map(|lib| lib.package_version.clone()),
       }),
@@ -346,16 +350,16 @@ struct Success {
   generation: String,
   run_id: String,
   selection_sha256: String,
-  libraries: Vec<LibraryEcho>,
+  executables: Vec<ExecutableEcho>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LibraryEcho {
+struct ExecutableEcho {
   package_id: String,
   package_version: String,
-  library: String,
-  library_sha256: String,
+  executable: String,
+  executable_sha256: String,
   abi_version: u32,
   skill_count: u32,
 }
@@ -395,10 +399,13 @@ fn closed_pair(stage: &str, code: &str) -> Option<(&'static str, &'static str)> 
         "package_invalid",
         "package_changed",
         "package_unsafe",
-        "library_changed",
+        "executable_changed",
       ],
     ),
-    ("elf", &["library_not_elf", "library_dependency_unsafe"]),
+    (
+      "elf",
+      &["executable_not_elf", "executable_dependency_unsafe"],
+    ),
     (
       "worker",
       &[
@@ -412,7 +419,7 @@ fn closed_pair(stage: &str, code: &str) -> Option<(&'static str, &'static str)> 
     (
       "abi",
       &[
-        "abi_library_invalid",
+        "abi_executable_invalid",
         "abi_descriptor_invalid",
         "abi_schema_invalid",
         "abi_capability_unowned",
@@ -462,15 +469,15 @@ fn parse(
       || result.generation != inputs.generation
       || result.run_id != run_id
       || result.selection_sha256 != inputs.selection_sha256
-      || result.libraries.len() != inputs.libraries.len()
+      || result.executables.len() != inputs.executables.len()
     {
       return Err(invalid());
     }
-    for (got, expected) in result.libraries.iter().zip(&inputs.libraries) {
+    for (got, expected) in result.executables.iter().zip(&inputs.executables) {
       if got.package_id != expected.package_id
         || got.package_version != expected.package_version
-        || got.library != expected.library
-        || got.library_sha256 != expected.library_sha256
+        || got.executable != expected.executable
+        || got.executable_sha256 != expected.executable_sha256
         || got.abi_version != 2
         || !(1..=256).contains(&got.skill_count)
       {
@@ -711,7 +718,7 @@ mod tests {
     ))
     .unwrap();
     let success = &cases["success_result"];
-    let entry = &success["libraries"][0];
+    let entry = &success["executables"][0];
     (
       Inputs {
         executable: PathBuf::from("/bin/true"),
@@ -722,11 +729,11 @@ mod tests {
         selection_sha256: success["selection_sha256"].as_str().unwrap().into(),
         generation: success["generation"].as_str().unwrap().into(),
         revision: success["active_revision"].as_str().unwrap().into(),
-        libraries: vec![skill_selection::SelectedLibrary {
+        executables: vec![skill_selection::SelectedExecutable {
           package_id: entry["package_id"].as_str().unwrap().into(),
           package_version: entry["package_version"].as_str().unwrap().into(),
-          library: entry["library"].as_str().unwrap().into(),
-          library_sha256: entry["library_sha256"].as_str().unwrap().into(),
+          executable: entry["executable"].as_str().unwrap().into(),
+          executable_sha256: entry["executable_sha256"].as_str().unwrap().into(),
           package_root: String::new(),
           payload_root: String::new(),
           receipt_sha256: String::new(),
@@ -795,7 +802,7 @@ mod tests {
       );
     }
     let mut mismatch = cases["success_result"].clone();
-    mismatch["libraries"][0]["library_sha256"] = Value::String("0".repeat(64));
+    mismatch["executables"][0]["executable_sha256"] = Value::String("0".repeat(64));
     assert_eq!(
       parse(
         ExitStatus::from_raw(0),

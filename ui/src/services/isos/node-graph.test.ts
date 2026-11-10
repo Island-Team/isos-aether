@@ -1,29 +1,48 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyNodeGraph, combineNodeTypeCatalogs, controlProcesses, stopProcesses, getCoreReadiness, getGraphCatalogSnapshot, graphCatalogReadOnlyReason, previewBackendLink, getInstalledPackages, getLogPage, getNodeOptions, getNodeSets, installBackend, linkBackend, nodeGraphReadOnlyReason, previewNodeSet, validateNodeGraph, type NodeGraph, type NodeSetDefinition, type NodeTypeDefinition } from './node-graph';
+import { applyNodeGraph, combineNodeTypeCatalogs, controlProcesses, stopProcesses, getCoreReadiness, getGraphCatalogSnapshot, getNewNodeGraph, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, graphCatalogReadOnlyReason, previewBackendLink, getInstalledPackages, getCurrentLogPage, getNodeOptions, getNodeSets, installBackend, linkBackend, nodeGraphReadOnlyReason, previewNodeSet, validateNodeGraph, type NodeGraph, type NodeSetDefinition, type NodeTypeDefinition } from './node-graph';
 import { request } from './api-client';
 
 vi.mock('./api-client', () => ({ request: vi.fn() }));
 
-describe('graph reader compatibility', () => {
-  it('edits only the selected 0.2.0 isos core and keeps legacy graphs read-only', () => {
+describe('current graph reader', () => {
+  it('uses explicit blank and named pool endpoints with revision fences', async () => {
+    const blank: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
+    vi.mocked(request).mockClear().mockResolvedValueOnce({ revision: 'old', graph: blank })
+      .mockResolvedValueOnce({ graphs: [] }).mockResolvedValueOnce({ name: 'sample', revision: 'saved', graph: blank })
+      .mockResolvedValueOnce({ name: 'sample', revision: 'new', graph: blank });
+    await getNewNodeGraph(); await getGraphPool(); await getGraphPoolEntry('sample'); await putGraphPoolEntry('sample', 'saved', blank);
+    expect(vi.mocked(request).mock.calls).toEqual([
+      ['/graph/new'], ['/graph-pool'], ['/graph-pool/sample'],
+      ['/graph-pool/sample', 'PUT', { schema_version: '0.1.0', revision: 'saved', graph: blank }],
+    ]);
+  });
+  it('edits only the selected 0.2.0 isos core and rejects unsupported graphs', () => {
     const type: NodeTypeDefinition = { id: 'isos.eos_hardware.base@v0.2', core: 'isos', layer: 'eos_hardware', group: 'base', kind: 'base', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [] };
-    const current: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_hardware: { groups: { base: { nodes: { drive: { id: 'drive', node_type: type.id, label: 'Drive', description: '' } } } } } } } } };
+    const current: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_hardware: { groups: { base: { nodes: { drive: { id: 'drive', node_type: type.id, label: 'Drive', description: '' } } } } } } }, ei: { layers: {} }, eos: { layers: {} } } };
     expect(nodeGraphReadOnlyReason({ revision: 'r', graph: current }, [type])).toBeNull();
-    expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, version: '0.1.0' } }, [type])).toContain('migration');
-    expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, cores: { ...current.cores, eos: { layers: {} } } } }, [type])).toContain('only the isos core');
+    expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, version: '9.9.9' } }, [type])).toContain('Unsupported graph version');
+    expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, cores: { ...current.cores, other: { layers: {} } } } }, [type])).toContain('requires the isos, ei, and eos cores');
   });
   const knownType: NodeTypeDefinition = { id: 'isos.eos_dispatcher.control@v0.2', core: 'isos', layer: 'eos_dispatcher', group: 'control', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [], outputs: [] };
-  const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { id: 'command', node_type: knownType.id, label: 'Command', description: 'Admission', future_metadata: { retained: true } } } } } } } } }, future_graph_field: 'retained' };
+  const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { id: 'command', node_type: knownType.id, label: 'Command', description: 'Admission', future_metadata: { retained: true } } } } } } } }, ei: { layers: {} }, eos: { layers: {} } }, future_graph_field: 'retained' };
 
   it('uses the server read-only state and preserves additive fields', () => {
-    const document = { revision: 'saved', graph, read_only: true, diagnostics: [{ path: '/version', code: 'migration_required', message: 'Migrate this graph.' }] };
-    expect(nodeGraphReadOnlyReason(document, [knownType])).toBe('Migrate this graph.');
+    const document = { revision: 'saved', graph, read_only: true, diagnostics: [{ path: '/version', code: 'unsupported_graph', message: 'Graph is read-only.' }] };
+    expect(nodeGraphReadOnlyReason(document, [knownType])).toBe('Graph is read-only.');
     expect(JSON.parse(JSON.stringify(document.graph)).cores.isos.layers.eos_dispatcher.groups.control.nodes.command.future_metadata).toEqual({ retained: true });
+  });
+  it('accepts logical service bindings and keeps their catalog metadata', () => {
+    const typed: NodeTypeDefinition = { ...knownType, service_inputs: { eos: { owner: 'eos', service: 'dispatcher', version: 'v0.2', protocol: 'grpc', carrier: 'tcp', required: true } } };
+    const bound = structuredClone(graph);
+    bound.cores.isos.layers.eos_dispatcher.groups.control.nodes.command.service_bindings = { eos: { owner: 'eos', service: 'dispatcher', version: 'v0.2' } };
+    expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: bound }, [typed])).toBeNull();
+    expect(JSON.parse(JSON.stringify(bound)).cores.isos.layers.eos_dispatcher.groups.control.nodes.command.service_bindings).toEqual({ eos: { owner: 'eos', service: 'dispatcher', version: 'v0.2' } });
+    expect(typed.service_inputs?.eos.carrier).toBe('tcp');
   });
 
   it('blocks unknown versions, unknown types, and missing catalog without server guidance', () => {
-    expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: { ...graph, version: '2.0.0' } }, [knownType])).toContain('migration');
-    expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: { ...graph, cores: { isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { ...graph.cores.isos.layers.eos_dispatcher.groups.control.nodes.command, node_type: 'isos.eos_dispatcher.control@v0.3' } } } } } } } } } }, [knownType])).toContain('Unsupported node type');
+    expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: { ...graph, version: '2.0.0' } }, [knownType])).toContain('Unsupported graph version');
+    expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: { ...graph, cores: { ...graph.cores, isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { ...graph.cores.isos.layers.eos_dispatcher.groups.control.nodes.command, node_type: 'isos.eos_dispatcher.control@v0.3' } } } } } } } } } }, [knownType])).toContain('Unsupported node type');
     expect(nodeGraphReadOnlyReason({ revision: 'saved', graph }, null)).toContain('catalog is unavailable');
     expect(nodeGraphReadOnlyReason({ revision: 'saved', graph }, [knownType])).toBeNull();
   });
@@ -125,26 +144,26 @@ describe('graph reader compatibility', () => {
   });
 });
 
-describe('unified log API', () => {
-  it('requests a specific source, minimum severity, and cursor', async () => {
-    vi.mocked(request).mockClear().mockResolvedValue({ lines: [], next_cursor: null, rotated: false });
-    await getLogPage('eos/core', 'warn', 'page 1', 500);
-    expect(vi.mocked(request).mock.calls).toEqual([
-      ['/runtime/logs?source=eos%2Fcore&level=warn&limit=200&cursor=page+1'],
-    ]);
+describe('current log API', () => {
+  it('requests scoped logs with a bounded limit', async () => {
+    const page = { scope: { kind: 'deployment_run', run_id: 'r1', active_revision: null }, anchor: { kind: 'first_ready_or_failure', state: 'pending', event: null }, lines: [], diagnostics: [], next_cursor: 'lc1.next', rotated: false };
+    vi.mocked(request).mockClear().mockResolvedValue(page);
+    await getCurrentLogPage({ source: 'eos/core', level: 'warn', cursor: 'lc1.page', limit: 500 });
+    expect(vi.mocked(request).mock.calls[0][0]).toContain('view=current');
+    expect(vi.mocked(request).mock.calls[0][0]).toContain('limit=200');
   });
 });
 
 describe('IsOS v1 graph and process API', () => {
   it('sends v1 request bodies for validate, apply, and run', async () => {
-    const graph: NodeGraph = { version: '1.0.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
     vi.mocked(request).mockClear().mockResolvedValue({});
     await validateNodeGraph(graph);
-    await applyNodeGraph('saved-revision', graph);
+    await applyNodeGraph('demo', 'saved-revision');
     await controlProcesses('run', 'saved-revision');
     expect(vi.mocked(request).mock.calls).toEqual([
       ['/graph/validate', 'POST', { schema_version: '0.1.0', graph }],
-      ['/graph', 'PUT', { schema_version: '0.1.0', revision: 'saved-revision', graph }],
+      ['/graph', 'PUT', { schema_version: '0.1.0', pool_name: 'demo', revision: 'saved-revision' }],
       ['/runtime/control', 'POST', { schema_version: '0.1.0', operation: 'run', revision: 'saved-revision' }],
     ]);
   });
@@ -159,7 +178,7 @@ describe('IsOS v1 graph and process API', () => {
 describe('package node set API', () => {
   it('lists installed contributions and previews composition without applying a graph revision', async () => {
     vi.mocked(request).mockClear();
-    const graph: NodeGraph = { version: '1.0.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
     const set: NodeSetDefinition = { package: { id: 'island/mujoco-sim', version: '0.1.1' }, id: 'hardware', parameters: { scene: { type: 'string', default: 'demo' } }, nodes: [] };
     vi.mocked(request).mockResolvedValueOnce({ sets: [set] }).mockResolvedValueOnce({ graph, added_paths: [] });
     expect(await getNodeSets()).toEqual({ sets: [set] });
@@ -195,7 +214,7 @@ describe('generic package acquisition API', () => {
 
 describe('readiness and local bundle preview API', () => {
   it('reads configured core readiness and previews bundle identity before linking', async () => {
-    const graph: NodeGraph = { version: '1.0.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
     vi.mocked(request).mockClear().mockResolvedValueOnce({ cores: [] }).mockResolvedValueOnce({ id: 'island/mujoco-sim', version: '0.1.1', ready: true, issues: [] }).mockResolvedValueOnce({ adapter_families: [], primitive_bindings: [], targets: [] });
     await getCoreReadiness();
     await previewBackendLink('/opt/mujoco', '/opt/mujoco/release.json');
@@ -207,7 +226,7 @@ describe('readiness and local bundle preview API', () => {
     ]);
   });
   it('retains P03 setting groups and draft revision metadata', async () => {
-    const graph: NodeGraph = { version: '0.1.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
     const reply = { adapter_families: [], primitive_bindings: [], targets: [], graph_revision: null, read_only: false, setting_options: [{ node_path: 'eos/process/mujoco/simulator', setting: 'scene', selected: 'pick-place', options: [{ value: 'pick-place', label: 'Pick and place', description: 'Scene', available: false, reason_code: 'package_changed', reason: 'Relink release' }] }] };
     vi.mocked(request).mockClear().mockResolvedValueOnce(reply);
     expect(await getNodeOptions(graph)).toEqual(reply);

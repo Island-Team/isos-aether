@@ -14,7 +14,7 @@ Admission is a single sequence: exact pin → release contract and payload recei
 | Unknown resource ID or changed resource bytes | Typed resource diagnostic | No child spawn or graph publication. |
 | Stale saved revision or run fence | Conflict diagnostic | No active replacement. |
 
-Direct install/link errors use an empty graph pointer; graph-time errors use the actual selected node pointer. Diagnostics contain a stable code, stage, exact pin, sanitized message, and canonical pointer; they never expose local paths, raw metadata, or secrets. See [HTTP packages](../../develop/http/packages.md) for the response envelope.
+Direct install/link errors use an empty graph pointer; graph-time errors use the actual selected node pointer. Diagnostics contain a stable code, stage, exact pin, sanitized message, and canonical pointer; they never expose local paths, raw metadata, or secrets. See [HTTP packages](../http/packages.md) for the response envelope.
 
 ## Reader and feature preflight
 
@@ -46,4 +46,3 @@ IsOS checks graph structure, exact pins and verified contributions before consum
 | `reader.requested` | object / requested claim | Applicable graph version, full type, feature, and exact package pin; inapplicable values are null. |
 | `reader.supported` | object / advertised claims | Sorted graph versions, type versions, full IDs, and features; untrusted claims are empty arrays. |
 
-Example bounded diagnostic (the JSON object is shared with Chinese documentation): `{"diagnostics":[{"code":"reader_feature_unsupported","path":"/cores/eos/layers/interface/groups/gate/nodes/preview/node_type","message":"selected owner lacks vision-gate; choose a compatible build","stage":"feature","reader":{"core":"eos","binary":"aether-runtime","binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requested":{"graph_version":"0.1.0","node_type":"eos.interface.camera_gate@v0.1","feature":"vision-gate","package":null},"supported":{"graph_versions":["0.1.0"],"node_type_versions":["0.1"],"node_types":["eos.interface.camera_gate@v0.1"],"features":[]}}}]}`. A verified `compatible_upgrade` can only name an exact checked release; listing it never installs or applies it. The owner migration gate is in [TODO](../../maintenance/todo.md).

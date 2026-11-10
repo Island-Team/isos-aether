@@ -1,6 +1,6 @@
 //! Selector options derived from the EOS registry and the current draft graph.
 use crate::{
-  app::config::Paths, domain::graph::graph_compat, domain::launch as package_process,
+  app::config::Paths, domain::graph::graph_contract, domain::launch as package_process,
   domain::packages, runtime::process,
 };
 use anyhow::{Context, Result, ensure};
@@ -9,15 +9,15 @@ use std::collections::BTreeMap;
 
 fn device_kind<'a>(catalog: &'a Value, node_type: &str) -> Option<&'a str> {
   catalog["types"].as_array()?.iter().find(|entry| {
-    entry["id"] == node_type && entry["core"] == "eos" && entry["layer"] == "hardware"
+    entry["id"] == node_type && entry["core"] == "isos" && entry["layer"] == "eos_hardware"
   })?["kind"]
     .as_str()
 }
 
 pub fn compose(graph: &Value, catalog: &Value) -> Result<Value> {
   ensure!(
-    graph["version"] == "1.0.0" || graph["version"] == "0.1.0",
-    "node graph must be version 1.0.0 or 0.1.0"
+    graph["version"] == "0.2.0",
+    "node graph must be version 0.2.0"
   );
   let families = catalog["adapter_families"]
     .as_array()
@@ -43,8 +43,11 @@ pub fn compose(graph: &Value, catalog: &Value) -> Result<Value> {
   }
   let mut primitive_bindings = Vec::new();
   for (kind, node_type) in [
-    ("base", "eos.dispatcher.primitive_base@v1.0"),
-    ("manipulator", "eos.dispatcher.primitive_manipulator@v1.0"),
+    ("base", "isos.eos_dispatcher.primitive_base@v0.2"),
+    (
+      "manipulator",
+      "isos.eos_dispatcher.primitive_manipulator@v0.2",
+    ),
   ] {
     let primitives: Vec<_> = specs.iter().filter(|spec| spec["device_class"] == kind).map(|spec| json!({
             "name":spec["name"],"version":spec["version"],"movement_type":spec["movement_type"],"description":spec["description"]
@@ -201,20 +204,13 @@ fn declared_process<'a>(
   verified: &'a packages::VerifiedPackage,
   node_type: &str,
 ) -> Option<&'a crate::domain::registry::release::ProcessDeclaration> {
-  let source_type = if node_type == "isos.eos_process.mujoco@v0.2"
-    && packages::is_published_mujoco_legacy(&verified.release)
-  {
-    "eos.process.mujoco@v0.1"
-  } else {
-    node_type
-  };
   verified
     .release
     .node_contributions
     .as_ref()?
     .processes
     .iter()
-    .find(|process| process.node_type == source_type)
+    .find(|process| process.node_type == node_type)
 }
 
 fn resource_rows(
@@ -266,7 +262,13 @@ fn check_selectors(definition: &Value, node: &Value, pointer: &str) -> Result<()
               && filter.values().all(Value::is_string)
           });
         let ui_selector = selector == &json!({"provider":"ui","resource":"keys"});
-        let allowed = package_selector || graph_selector || ui_selector;
+        let owner_selector = selector["provider"] == "owner"
+          && selector["resource"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+          && selector.get("package_from").is_none()
+          && selector.get("filter").is_none();
+        let allowed = package_selector || graph_selector || ui_selector || owner_selector;
         if !allowed {
           return Err(option_error(
             "node_option_selector_invalid",
@@ -281,6 +283,8 @@ fn check_selectors(definition: &Value, node: &Value, pointer: &str) -> Result<()
             } else if ui_selector {
               (1..=64).contains(&value.len())
                 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            } else if owner_selector {
+              (1..=128).contains(&value.len()) && !value.chars().any(char::is_control)
             } else {
               node_path(value)
             }
@@ -361,12 +365,12 @@ fn graph_selector_rows(graph: &Value, catalog: &Value, filter: &Value) -> Vec<Va
 
 /// Project selectors from the current exact draft and exact verified package pins.
 pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Result<Value> {
-  if let Some(diagnostic) = graph_compat::admission_diagnostic(graph, Some(catalog)) {
+  if let Some(diagnostic) = graph_contract::admission_diagnostic(graph, Some(catalog)) {
     anyhow::bail!(diagnostic);
   }
   let mut data = compose(graph, catalog)?;
   let mut groups: BTreeMap<(String, String), Value> = BTreeMap::new();
-  if graph["version"] == "0.1.0" {
+  if graph["version"] == "0.2.0" {
     let mut nodes = Vec::new();
     if let Some(cores) = graph["cores"].as_object() {
       for (core_id, core) in cores {
@@ -462,17 +466,134 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
       }
     }
   }
+  for role in ["eos", "ei"] {
+    let prefix = if role == "eos" { "eos_" } else { "ei_" };
+    let legacy_selected = graph["cores"]["isos"]["layers"]
+      .as_object()
+      .is_some_and(|layers| layers.keys().any(|name| name.starts_with(prefix)));
+    let selected = legacy_selected
+      || graph["cores"][role]["layers"]
+        .as_object()
+        .is_some_and(|layers| !layers.is_empty());
+    if !selected {
+      continue;
+    }
+    let revision = graph_contract::revision(&serde_json::to_vec(graph)?);
+    let reply = crate::runtime::owners::core_setup::preview_options(
+      paths, "default", role, graph, &revision,
+    )?;
+    ensure!(
+      reply["ok"] == true,
+      "{role} owner options rejected the draft"
+    );
+    let rows = reply["catalog"]["setting_options"]
+      .as_array()
+      .with_context(|| format!("{role} owner options lack setting_options"))?;
+    ensure!(
+      rows.len() <= 512,
+      "{role} owner returned too many setting option groups"
+    );
+    for row in rows {
+      let path = row["node_path"]
+        .as_str()
+        .context("owner option node_path is missing")?;
+      let setting = row["setting"]
+        .as_str()
+        .context("owner option setting is missing")?;
+      ensure!(
+        path.len() <= 256 && setting.len() <= 128,
+        "owner option identity is too long"
+      );
+      let parts: Vec<_> = path.split('/').collect();
+      ensure!(
+        parts.len() == 4
+          && ((parts[0] == "isos" && parts[1].starts_with(prefix)) || parts[0] == role),
+        "owner option path is outside its projection"
+      );
+      let node = graph
+        .pointer(&format!(
+          "/cores/{}/layers/{}/groups/{}/nodes/{}",
+          parts[0], parts[1], parts[2], parts[3]
+        ))
+        .context("owner option node is absent from draft")?;
+      let selected = if setting == "adapter.type"
+        || setting == "adapter.settings.device_id"
+        || setting == "adapter.settings.simulator_node"
+      {
+        ensure!(
+          role == "eos"
+            && ((parts[0] == "isos" && parts[1] == "eos_hardware")
+              || (parts[0] == "eos" && parts[1] == "hardware")),
+          "owner adapter selector is outside EOS hardware"
+        );
+        match setting {
+          "adapter.type" => node["adapter"]["type"].as_str(),
+          "adapter.settings.device_id" => node["adapter"]["settings"]["device_id"].as_str(),
+          _ => node["adapter"]["settings"]["simulator_node"].as_str(),
+        }
+      } else {
+        let definition = catalog["types"]
+          .as_array()
+          .and_then(|types| types.iter().find(|item| item["id"] == node["node_type"]))
+          .context("owner selector type is not registered")?;
+        ensure!(
+          definition["settings"]
+            .as_array()
+            .is_some_and(|settings| settings
+              .iter()
+              .any(|field| field["name"] == setting && field["selector"]["provider"] == "owner")),
+          "owner option setting is not declared by the type"
+        );
+        node["settings"][setting].as_str()
+      };
+      ensure!(
+        row["selected"].as_str() == selected || (row["selected"].is_null() && selected.is_none()),
+        "owner option selected value differs from draft"
+      );
+      let options = row["options"]
+        .as_array()
+        .context("owner option choices are missing")?;
+      ensure!(options.len() <= 512, "owner returned too many choices");
+      let mut seen = std::collections::BTreeSet::new();
+      for option in options {
+        let value = option["value"]
+          .as_str()
+          .context("owner choice value is missing")?;
+        ensure!(
+          !value.is_empty() && value.len() <= 128 && seen.insert(value),
+          "owner choice value is invalid or duplicated"
+        );
+        ensure!(
+          option["label"]
+            .as_str()
+            .is_some_and(|text| text.len() <= 256)
+            && option["description"]
+              .as_str()
+              .is_some_and(|text| text.len() <= 1024)
+            && option["available"].is_boolean()
+            && option.get("reason_code").is_none_or(
+              |value| value.is_null() || value.as_str().is_some_and(|text| text.len() <= 128)
+            )
+            && option.get("reason").is_none_or(
+              |value| value.is_null() || value.as_str().is_some_and(|text| text.len() <= 1024)
+            ),
+          "owner choice metadata is invalid"
+        );
+      }
+      ensure!(
+        groups
+          .insert((path.to_owned(), setting.to_owned()), row.clone())
+          .is_none(),
+        "owner option group duplicates a selector"
+      );
+    }
+  }
   data["setting_options"] = json!(groups.into_values().collect::<Vec<_>>());
   Ok(data)
 }
 
 pub fn for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
-  if let Some(diagnostic) = graph_compat::version_diagnostic(graph) {
-    anyhow::bail!(diagnostic);
-  }
-  if graph["version"] == "0.1.0"
-    && let Some(diagnostic) = graph_compat::admission_diagnostic(graph, None)
-  {
+  if let Some(diagnostic) = graph_contract::version_diagnostic(graph) {
     anyhow::bail!(diagnostic);
   }
   let catalog = process::catalog_for_option_graph(paths, graph)?;
@@ -483,65 +604,26 @@ pub fn for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
 mod tests {
   use super::*;
   #[test]
-  fn owner_stage_fields_reach_node_option_selector_validation() {
-    let mut stages = Vec::new();
-    for id in [
-      "egia.link.gateway@v0.1",
-      "egia.perception.admission@v0.1",
-      "egia.context.builder@v0.1",
-      "egia.missions.queue@v0.1",
-      "egia.decision.planner@v0.1",
-      "egia.safety.gate@v0.1",
-      "egia.monitor.health@v0.1",
-    ] {
-      let (core, layer, group) = graph_compat::target_placement(id).unwrap();
-      stages.push(json!({"id":id,"core":core,"layer":layer,"group":group,
-                "description":"owner stage","inputs":[],"outputs":[],
-                "settings_fields":[{"name":"controller.model","label":"Controller model",
-                    "description":"Owner model binding","required":false,"type":"string"}]}));
-    }
-    let mut catalog = json!({"types":[],"data_types":[]});
-    let reply = json!({"ok":true,"catalog":{"stage_types":stages,"data_types":[],"routed_edges":[
-        {"source_type":"egia.link.gateway@v0.1","output":"resource","target_type":"egia.perception.admission@v0.1","input":"resource","controls":["priority","frequency_hz"]},
-        {"source_type":"egia.perception.admission@v0.1","output":"observations","target_type":"egia.context.builder@v0.1","input":"observations","controls":["priority","frequency_hz"]}
-    ]}});
-    process::merge_egia_stage_catalog(&mut catalog, &reply).unwrap();
-    let descriptor = catalog["types"]
-      .as_array()
-      .unwrap()
-      .iter()
-      .find(|stage| stage["id"] == "egia.decision.planner@v0.1")
-      .unwrap();
-    assert_eq!(descriptor["settings"][0]["name"], "controller.model");
-    let node = json!({"node_type":"egia.decision.planner@v0.1"});
-    let pointer = "/cores/egia/layers/cognition/groups/decision/nodes/planner";
-    check_selectors(descriptor, &node, pointer).unwrap();
-
-    // If a future owner advertises a selector, the option route must see
-    // and reject it until its availability provider has a contract.
-    let mut future = reply;
-    future["catalog"]["stage_types"][4]["settings_fields"][0]["selector"] =
-      json!({"provider":"registry","resource":"model"});
-    let mut catalog = json!({"types":[],"data_types":[]});
-    process::merge_egia_stage_catalog(&mut catalog, &future).unwrap();
-    let descriptor = catalog["types"]
-      .as_array()
-      .unwrap()
-      .iter()
-      .find(|stage| stage["id"] == "egia.decision.planner@v0.1")
-      .unwrap();
-    let error = check_selectors(descriptor, &node, pointer).unwrap_err();
-    let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
-    assert_eq!(failure.code, "node_option_selector_invalid");
-    assert_eq!(failure.path, format!("{pointer}/settings/controller.model"));
+  fn health_wrapper_has_no_runtime_selector() {
+    let descriptor = json!({"id":"ei.cognition.context.builder@v0.2","settings":[]});
+    let node = json!({"id":"builder","node_type":"ei.cognition.context.builder@v0.2"});
+    check_selectors(
+      &descriptor,
+      &node,
+      "/cores/ei/layers/cognition/groups/context/nodes/builder",
+    )
+    .unwrap();
   }
 
   #[test]
   fn selector_uses_short_paths_and_availability() {
-    let graph = json!({"version":"1.0.0","cores":{"eos":{"layers":{"hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"eos.hardware.base@v1.0","adapter":{"type":"vendor-v1"}}}}}}}}}});
-    let catalog = json!({"types":[{"id":"eos.dispatcher.primitive_base@v1.0"},{"id":"eos.hardware.base@v1.0","core":"eos","layer":"hardware","kind":"base"}],"adapter_families":[{"id":"vendor-v1","device_kinds":["base"],"transport":"unix_socket","description":"sim","compiled":true}],"primitive_specs":[{"name":"base.velocity","version":"1.0.0","device_class":"base","movement_type":"body_velocity","description":"velocity"}]});
+    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"isos.eos_hardware.base@v0.2","adapter":{"type":"vendor-v1"}}}}}}}}}});
+    let catalog = json!({"types":[{"id":"isos.eos_dispatcher.primitive_base@v0.2"},{"id":"isos.eos_hardware.base@v0.2","core":"isos","layer":"eos_hardware","kind":"base"}],"adapter_families":[{"id":"vendor-v1","device_kinds":["base"],"transport":"unix_socket","description":"sim","compiled":true}],"primitive_specs":[{"name":"base.velocity","version":"1.0.0","device_class":"base","movement_type":"body_velocity","description":"velocity"}]});
     let options = compose(&graph, &catalog).unwrap();
-    assert_eq!(options["targets"][0]["path"], "eos/hardware/base/drive");
+    assert_eq!(
+      options["targets"][0]["path"],
+      "isos/eos_hardware/base/drive"
+    );
     assert_eq!(options["targets"][0]["available"], true);
     assert_eq!(
       options["primitive_bindings"][0]["primitives"][0]["name"],
@@ -551,8 +633,8 @@ mod tests {
 
   #[test]
   fn selector_declaration_and_ids_fail_at_exact_pointer() {
-    let pointer = "/cores/eos/layers/process/groups/demo/nodes/simulator";
-    let node = json!({"node_type":"vendor.process.demo@v1","package":{"id":"vendor/demo","version":"1.0.0"},"settings":{"model":"small"}});
+    let pointer = "/cores/isos/layers/process/groups/demo/nodes/simulator";
+    let node = json!({"node_type":"vendor.process.demo@v0.2","package":{"id":"vendor/demo","version":"1.0.0"},"settings":{"model":"small"}});
     let invalid = json!({"settings":[{"name":"model","selector":{"provider":"package","resource":"other","package_from":"node.package"}}]});
     let failure = check_selectors(&invalid, &node, pointer).unwrap_err();
     let failure = failure.downcast_ref::<packages::PackageFailure>().unwrap();
@@ -575,8 +657,8 @@ mod tests {
   fn ui_key_selector_accepts_bounded_code_without_package_identity() {
     let definition =
       json!({"settings":[{"name":"key","selector":{"provider":"ui","resource":"keys"}}]});
-    let mut node = json!({"node_type":"isosui.input.keyboard@v0.1","settings":{"key":"KeyW"}});
-    let pointer = "/cores/isosui/layers/input/groups/keyboard/nodes/drive";
+    let mut node = json!({"node_type":"isos.ui.keyboard@v0.2","settings":{"key":"KeyW"}});
+    let pointer = "/cores/isos/layers/ui/groups/keyboard/nodes/drive";
     check_selectors(&definition, &node, pointer).unwrap();
     node["settings"]["key"] = json!("/tmp/unsafe");
     assert!(check_selectors(&definition, &node, pointer).is_err());
@@ -585,10 +667,10 @@ mod tests {
   #[test]
   fn package_process_selector_is_identity_agnostic() {
     for (package, node_type, selected) in [
-      ("field/sensor-rig", "field.process.capture@v0.1", "camera-a"),
+      ("field/sensor-rig", "field.process.capture@v0.2", "camera-a"),
       (
         "studio/synth-bank",
-        "studio.process.render@v0.1",
+        "studio.process.render@v0.2",
         "preset-b",
       ),
     ] {
@@ -601,7 +683,7 @@ mod tests {
       check_selectors(
         &definition,
         &node,
-        "/cores/eos/layers/process/groups/component/nodes/instance",
+        "/cores/isos/layers/process/groups/component/nodes/instance",
       )
       .unwrap();
 
@@ -610,7 +692,7 @@ mod tests {
       let failure = check_selectors(
         &definition,
         &invalid,
-        "/cores/eos/layers/process/groups/component/nodes/instance",
+        "/cores/isos/layers/process/groups/component/nodes/instance",
       )
       .unwrap_err();
       assert_eq!(
@@ -626,33 +708,33 @@ mod tests {
 
   #[test]
   fn graph_selector_uses_registered_capability_and_port_not_package_identity() {
-    let filter = json!({"core":"eos","capability":"primitive_binding",
+    let filter = json!({"core":"isos","capability":"primitive_binding",
       "output_data_type":"base_movement","output_transport":"in_process"});
-    let graph = json!({"cores":{"eos":{"layers":{"dispatcher":{"groups":{"base":{"nodes":{
-      "target":{"node_type":"vendor.binding@v0.1"},
-      "wrong":{"node_type":"vendor.other@v0.1"}
+    let graph = json!({"cores":{"isos":{"layers":{"eos_dispatcher":{"groups":{"base":{"nodes":{
+      "target":{"node_type":"vendor.binding@v0.2"},
+      "wrong":{"node_type":"vendor.other@v0.2"}
     }}}}}}}});
     let catalog = json!({"types":[
-      {"id":"vendor.binding@v0.1","description":"Verified primitive binding",
+      {"id":"vendor.binding@v0.2","description":"Verified primitive binding",
         "capabilities":["primitive_binding"],"outputs":[{"data_type":"base_movement","transport":"in_process"}]},
-      {"id":"vendor.other@v0.1","description":"Unrelated output",
+      {"id":"vendor.other@v0.2","description":"Unrelated output",
         "capabilities":["primitive_binding"],"outputs":[{"data_type":"status","transport":"in_process"}]}
     ]});
     let rows = graph_selector_rows(&graph, &catalog, &filter);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["value"], "eos/dispatcher/base/target");
+    assert_eq!(rows[0]["value"], "isos/eos_dispatcher/base/target");
     let definition = json!({"settings":[{"name":"target","selector":{
       "provider":"graph","resource":"node","filter":filter}}]});
     check_selectors(
       &definition,
-      &json!({"settings":{"target":"eos/dispatcher/base/target"}}),
+      &json!({"settings":{"target":"isos/eos_dispatcher/base/target"}}),
       "/node",
     )
     .unwrap();
     let projected = group(
       "isos/interface/gateway/bridge",
       "target",
-      Some("eos/dispatcher/base/missing".into()),
+      Some("isos/eos_dispatcher/base/missing".into()),
       rows,
       "graph_node_unavailable",
     );
@@ -661,7 +743,7 @@ mod tests {
         .as_array()
         .unwrap()
         .iter()
-        .any(|row| row["value"] == "eos/dispatcher/base/missing" && row["available"] == false)
+        .any(|row| row["value"] == "isos/eos_dispatcher/base/missing" && row["available"] == false)
     );
   }
 }

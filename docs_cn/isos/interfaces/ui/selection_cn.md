@@ -1,6 +1,6 @@
 # 通用输出数据选择
 
-[English](../../../../docs/isos/interfaces/ui/selection.md) · [呈现 HTTP](../../develop/http/presentations_cn.md) · [发布类型](../packages/release_cn.md)
+[English](../../../../docs/isos/interfaces/ui/selection.md) · [呈现 HTTP](../http/presentations_cn.md) · [发布类型](../packages/release_cn.md)
 
 ## 概览
 
@@ -8,7 +8,7 @@
 
 ## 类型来源
 
-[节点数据类型](../nodes/data-types_cn.md)是 `id`、`version`、`purpose`、`media_type`、`codec`、`schema` 和 `max_payload_bytes` 字段的唯一权威来源。注册输出端口绑定该类型；归属方描述符再绑定节点路径、端口、表示、交付方式、不透明端点 ID、运行 ID 和图修订。字段见[呈现描述符](presentation_cn.md)。IsOS 只选择元数据，不取得负载字节或端点授权。
+[节点数据类型](../node/data-types_cn.md)是 `id`、`version`、`purpose`、`media_type`、`codec`、`schema` 和 `max_payload_bytes` 字段的唯一权威来源。注册输出端口绑定该类型；归属方描述符再绑定节点路径、端口、表示、交付方式、不透明端点 ID、运行 ID 和图修订。字段见[呈现描述符](presentation_cn.md)。IsOS 只选择元数据，不取得负载字节或端点授权。
 
 ## 表示族
 
@@ -16,4 +16,4 @@ JSON 记录和文本使用 `json` 与 `text`；标记为 `time_series` 的 JSON 
 
 ## 可用性
 
-当前 IsOS 路由执行输入和 运行／修订检查后返回 503，因为选定 owner 尚未发布已验证公开描述符。精确请求和当前错误见[呈现](../../develop/http/presentations_cn.md)。Stop、Restart 与 Apply 会使先前选择失效。
+当前 IsOS 路由执行输入和 运行／修订检查后返回 503，因为选定 owner 尚未发布已验证公开描述符。精确请求和当前错误见[呈现](../http/presentations_cn.md)。Stop、Restart 与 Apply 会使先前选择失效。

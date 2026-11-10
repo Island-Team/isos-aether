@@ -242,8 +242,8 @@ def run_forever(targets: list[Target]) -> None:
 
 
 def start_backend() -> None:
-  """Start a detached tunnel worker and write its output under ``var/``."""
-  log_dir = REPOSITORY_ROOT / "var"
+  """Start a detached tunnel worker and write its output under EI logs."""
+  log_dir = REPOSITORY_ROOT / "data/ei/log"
   log_dir.mkdir(parents=True, exist_ok=True)
   log_path = log_dir / "ssh-tunnel.log"
   with log_path.open("ab") as log:

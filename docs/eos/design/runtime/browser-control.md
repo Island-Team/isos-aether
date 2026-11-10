@@ -1,0 +1,13 @@
+# Inspect a browser primitive result
+
+[中文](../../../../docs_cn/eos/design/runtime/browser-control_cn.md) · [R07 owner contract](../../interfaces/control.md#r07-authorized-browser-result) · [R07 design](browser-results.md) · [Architecture](../architecture.md)
+
+**The R07 managed browser route is merged and qualified for the first mock-base primitive demo.** Build and select EOS and IsosUI through IsOS, install or link the verified device package, and choose an available scene and graph node set. Validate and Apply the graph revision before launching. IsOS owns the saved bytes, package pins and active revision; EOS reads the applied projection and owns live health and Dispatcher admission. Physical MuJoCo stop and broader actuator control are covered by the separate R06 gate.
+
+After IsOS reports the deployment running, inspect its saved and active revision and EOS live readiness. In the EOS panel, select one **active primitive binding instance**. The panel shows its registered type and instance descriptions, one graph target, movement type and units, plus owner-reported target health. A draft binding or an unchanged display name alone does not authorize a command. Obtain EOS monotonic time through the loopback bridge, submit the typed `primitive_typed` payload with the active saved-byte revision and a fresh command ID, and keep the local `sending` state until EOS returns that ID and a status. The browser never supplies the private grant or an independent hardware target.
+
+An `InProgress` acknowledgement follows a durable `Prepared` journal write and may arrive before adapter release. It proves only that EOS retained the command ID; EOS checks typed movement limits before this acknowledgement. If the submission response is lost, keep the ID and use the guarded read; never send the movement again. EOS admits at most eight such browser submissions at once, and a full lane gives a durable `Rejected` result for a valid new ID. Stop remains available through IsOS while a result is pending.
+
+
+**Q01 EOS producer implemented; IsOS admission and selected-pin replay pending:** The bridge writes a sanitized result event under the current run after a valid private response. The published browser command ID remains 1–128 UTF-8 bytes. IsosUI-generated `ui-<UUID>` IDs are logged exactly as `correlation_id`; a different valid ID maps to the deterministic token in the [event contract](../../interfaces/events.md). Query `GET /api/isos/v1/logs?view=current&source=bridge&correlation_id=<token>` while the ordinary rotated segment remains retained. The page's unfiltered anchor is the first ready or failure event; it is not the command result. A missing line or collector gap does not change the EOS journal result.
+

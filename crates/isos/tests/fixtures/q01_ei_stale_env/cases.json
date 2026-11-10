@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "field": "env",
+      "settings": {"env": {"EI_Q01_STALE_TEST": "1"}},
+      "path": "/cores/isos/layers/process/groups/component/nodes/ei/settings/env/EI_Q01_STALE_TEST"
+    },
+    {
+      "field": "env_from",
+      "settings": {"env_from": {"EI_Q01_STALE_TEST": "INHERITED_TEST_FLAG"}},
+      "path": "/cores/isos/layers/process/groups/component/nodes/ei/settings/env_from/EI_Q01_STALE_TEST"
+    }
+  ],
+  "code": "ei_test_reserved_env",
+  "stage": "graph"
+}

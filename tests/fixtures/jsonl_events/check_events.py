@@ -15,13 +15,13 @@ TOP = {
 }
 FIELD_KEYS = {
     "state", "stage", "reason_code", "package_id", "package_version",
-    "release_sha256", "payload_sha256", "node_count", "suppressed_count",
+    "release_sha256", "payload_sha256", "node_count",
 }
 ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 CODE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,48}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-PATH = re.compile(r"/cores/eos/layers/(?:[^~/\x00-\x1f]|~[01])+/groups/(?:[^~/\x00-\x1f]|~[01])+/nodes/(?:[^~/\x00-\x1f]|~[01])+\Z")
+PATH = re.compile(r"/cores/isos/layers/(?:[^~/\x00-\x1f]|~[01])+/groups/(?:[^~/\x00-\x1f]|~[01])+/nodes/(?:[^~/\x00-\x1f]|~[01])+\Z")
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
 
 
@@ -76,9 +76,9 @@ def valid(event: object) -> bool:
                 return False
         else:
             return False
-        if key in ("node_count", "suppressed_count") and (type(value) is not int):
+        if key == "node_count" and (type(value) is not int):
             return False
-        if key not in ("node_count", "suppressed_count") and not isinstance(value, str):
+        if key != "node_count" and not isinstance(value, str):
             return False
     enums = {
         "state": {"starting", "ready", "failed", "stopping", "stopped"},
@@ -134,8 +134,8 @@ def main() -> None:
         english, chinese,
         ROOT / "docs/eos/design/runtime/events.md",
         ROOT / "docs_cn/eos/design/runtime/events_cn.md",
-        ROOT / "docs/eos/usage/README.md",
-        ROOT / "docs_cn/eos/usage/README_cn.md",
+        ROOT / "docs/eos/start/README.md",
+        ROOT / "docs_cn/eos/start/README_cn.md",
         ROOT / "docs/eos/interfaces/README.md",
         ROOT / "docs_cn/eos/interfaces/README_cn.md",
         ROOT / "docs/eos/design/runtime/README.md",
@@ -143,19 +143,18 @@ def main() -> None:
         FIXTURE / "README.md", FIXTURE / "README_cn.md",
     ):
         check_links(path)
-    for token in ("run_id", "correlation_id", "eos_package_admitted", "eos_backend_lost", "eos_events_suppressed", "--backend-release-sha256", "--backend-payload-sha256"):
+    for token in ("run_id", "correlation_id", "eos_package_admitted", "eos_backend_lost", "--package-process", "isos.package-process@v1"):
         assert token in english.read_text() and token in chinese.read_text(), token
     case_list = cases["cases"]
     ids = [case["id"] for case in case_list]
-    assert len(ids) == 30 and len(ids) == len(set(ids))
-    assert {case["boundary"] for case in case_list} == {"handoff", "lifecycle", "package", "stop", "privacy", "suppression", "sink"}
+    assert len(ids) == 27 and len(ids) == len(set(ids))
+    assert {case["boundary"] for case in case_list} == {"handoff", "lifecycle", "package", "stop", "privacy", "sink"}
     by_id = {case["id"]: case for case in case_list}
     assert by_id["managed_package_provenance"]["expected"]["release_sha256"] == examples[0]["fields"]["release_sha256"]
     assert by_id["managed_package_provenance"]["expected"]["payload_sha256"] == examples[0]["fields"]["payload_sha256"]
     assert by_id["prelaunch_receipt_change"]["expected"]["eos_event_count"] == 0
     assert by_id["forged_child_identity"]["expected"]["no_forged_aggregation"] is True
     assert by_id["correlated_operation"]["expected"]["raw_arguments_absent"] is True
-    assert by_id["terminal_bypasses_suppression"]["expected"]["emissions"] == 1
     assert by_id["safe_stop_before_reap"]["expected"]["stop_before_backend_reap"] is True
     assert by_id["redact_untrusted_inputs"]["expected"]["forbidden_tokens"]
     assert by_id["saved_graph_pointer"]["expected"]["node_path"] == examples[0]["node_path"]
@@ -174,8 +173,8 @@ def main() -> None:
         ("run_id", "bad/id"), ("timestamp", "2026-11-01T08:00:00Z"),
         ("level", "verbose"), ("core", "egia"), ("source", "bridge"),
         ("node_path", "/home/private"),
-        ("node_path", "eos/process/mujoco/sim"),
-        ("node_path", "/cores/eos/layers/process/groups/mujoco/nodes/bad~2escape"),
+        ("node_path", "isos/eos_process/mujoco/sim"),
+        ("node_path", "/cores/isos/layers/eos_process/groups/mujoco/nodes/bad~2escape"),
         ("message", "bad\nline"), ("fields", {"raw_prompt": "private"}),
         ("fields", {"nested": {"secret": "x"}}),
     ]

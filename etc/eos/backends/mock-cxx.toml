@@ -1,110 +1,119 @@
-version = "1.0.0"
+version = "0.2.0"
 
 [robot]
 id = "demo-0"
 name = "EOS v2 demo"
 
-[cores.eos.layers.hardware.groups.camera.nodes.front]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.front]
 id = "front"
-node_type = "eos.hardware.camera@v1.0"
+node_type = "isos.eos_hardware.camera@v0.2"
 label = "Front RGB-D camera"
 description = "Loopback aligned RGB and depth frames"
 frame_id = "front_camera_optical"
 capabilities = ["rgb8", "aligned_depth_u16"]
 
-[cores.eos.layers.hardware.groups.camera.nodes.front.adapter]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.front.adapter]
 type = "mock-cxx"
 
-[cores.eos.layers.hardware.groups.camera.nodes.front.health_timing]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.front.health_timing]
 poll_interval_ms = 100
 stale_after_ms = 500
 
-[cores.eos.layers.hardware.groups.camera.nodes.front.observation]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.front.observation]
 max_rate_hz = 30.0
 max_payload_bytes = 8388608
 
-[cores.eos.layers.hardware.groups.base.nodes.drive]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive]
 id = "drive"
-node_type = "eos.hardware.base@v1.0"
+node_type = "isos.eos_hardware.base@v0.2"
 label = "Planar base"
 description = "Loopback differential drive controller"
 frame_id = "base_link"
 capabilities = ["body_velocity"]
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.adapter]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.adapter]
 type = "mock-cxx"
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.health_timing]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.health_timing]
 poll_interval_ms = 100
 stale_after_ms = 500
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.observation]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.observation]
 max_rate_hz = 50.0
 max_payload_bytes = 4096
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.movement]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.movement]
 modes = ["body_velocity"]
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.movement.limits]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.movement.limits]
 max_linear_m_s = 1.0
 max_angular_rad_s = 1.5
 max_velocity_lease_ms = 500
 max_translation_m = 5.0
 max_rotation_rad = 3.14159
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm]
 id = "arm"
-node_type = "eos.hardware.manipulator@v1.0"
+node_type = "isos.eos_hardware.manipulator@v0.2"
 label = "Six axis arm"
 description = "Loopback joint and Cartesian command receiver"
 frame_id = "arm_base"
 joint_names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 capabilities = ["joint_positions", "end_effector_pose"]
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.adapter]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.adapter]
 type = "mock-cxx"
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.health_timing]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.health_timing]
 poll_interval_ms = 100
 stale_after_ms = 500
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.observation]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.observation]
 max_rate_hz = 50.0
 max_payload_bytes = 4096
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.movement]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.movement]
 modes = ["joint_positions", "end_effector_pose"]
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.movement.limits]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.movement.limits]
 max_joint_position_rad = 3.14
 max_joint_speed_rad_s = 1.0
 max_end_effector_speed_m_s = 0.2
 max_end_effector_translation_m = 1.0
 
-[cores.eos.layers.dispatcher.groups.control.nodes.command]
+[cores.isos.layers.eos_dispatcher.groups.control.nodes.command]
 id = "command"
-node_type = "eos.dispatcher.control@v1.0"
+node_type = "isos.eos_dispatcher.control@v0.2"
 label = "EOS command dispatcher"
 description = "Software node that admits movement through configured hardware nodes"
 capabilities = ["admission", "status"]
-references = ["cores/eos/layers/hardware/groups/base/nodes/drive", "cores/eos/layers/hardware/groups/manipulator/nodes/arm"]
+references = ["cores/isos/layers/eos_hardware/groups/base/nodes/drive", "cores/isos/layers/eos_hardware/groups/manipulator/nodes/arm"]
 
-[cores.egia.layers.common.groups.process.nodes.guard]
-id = "guard"
-node_type = "egia.common.guard@v1.0"
-label = "EGIA request guard"
-description = "Design-only guard for EOS control requests"
-capabilities = ["request_guard"]
-references = ["cores/eos/layers/dispatcher/groups/control/nodes/command"]
+[cores.isos.layers.eos_hardware.groups.base.nodes.drive.inputs.command]
+node = "cores/isos/layers/eos_dispatcher/groups/base/nodes/velocity"
+output = "command"
 
-[cores.eos.layers.hardware.groups.base.nodes.drive.inputs.command]
-node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
-output = "base_command"
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm.inputs.command]
+node = "cores/isos/layers/eos_dispatcher/groups/manipulator/nodes/movej"
+output = "command"
 
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm.inputs.command]
-node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
-output = "manipulator_command"
 
-[cores.eos.layers.dispatcher.groups.control.nodes.command.inputs.request]
-node = "cores/egia/layers/common/groups/process/nodes/guard"
-output = "request"
+[cores.isos.layers.eos_dispatcher.groups.base.nodes.velocity]
+id = "velocity"
+node_type = "isos.eos_dispatcher.primitive_base@v0.2"
+label = "Base velocity"
+description = "Admitted base velocity binding"
+[cores.isos.layers.eos_dispatcher.groups.base.nodes.velocity.settings]
+primitive_name = "base.velocity"
+primitive_version = "1.0.0"
+movement_type = "body_velocity"
+
+[cores.isos.layers.eos_dispatcher.groups.manipulator.nodes.movej]
+id = "movej"
+node_type = "isos.eos_dispatcher.primitive_manipulator@v0.2"
+label = "Arm movej"
+description = "Admitted arm joint binding"
+[cores.isos.layers.eos_dispatcher.groups.manipulator.nodes.movej.settings]
+primitive_name = "arm.movej"
+primitive_version = "1.0.0"
+movement_type = "joint_positions"

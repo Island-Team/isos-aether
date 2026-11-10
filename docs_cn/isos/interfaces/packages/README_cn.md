@@ -7,6 +7,6 @@
 - [进程](process_cn.md)定义归属方运行进程的入口、生命周期适配器、主机输入和资源引用。
 - [验证](verification_cn.md)解释图发布或启动前进行的精确锁定、文件、目录和归属方能力检查。
 
-[注册节点契约](../nodes/README_cn.md)对软件包及内置节点使用相同的类型和端口规则。[核心交接](../cores/handoff_cn.md)把已验证进程绑定到一个运行及修订。
+[注册节点契约](../node/README_cn.md)对软件包及内置节点使用相同的类型和端口规则。[核心交接](../core/handoff_cn.md)把已验证进程绑定到一个运行及修订。
 
 [English](../../../../docs/isos/interfaces/packages/README.md)

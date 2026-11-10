@@ -57,7 +57,17 @@ impl<S: Subscriber> Layer<S> for ManagerLayer {
       "workbench_failed" => "IsOS workbench failed",
       _ => "IsOS manager event",
     };
-    let _ = self.0.append_event("isos", &level, &fields.code, message);
+    // Private diagnostics retain the actual cause; the shared event stays sanitized.
+    if let Err(error) = self.0.append_diagnostic(
+      &level,
+      &fields.code,
+      &format!("{}: {}", event.metadata().target(), fields.message),
+    ) {
+      eprintln!("isos log sink failed: {error:#}");
+    }
+    if let Err(error) = self.0.append_event("isos", &level, &fields.code, message) {
+      eprintln!("isos event sink failed: {error:#}");
+    }
   }
 }
 

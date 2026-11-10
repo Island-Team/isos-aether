@@ -1,4 +1,5 @@
 //! Direct-child lifecycle, readiness, and dependent stop supervision.
+#![expect(dead_code, reason = "test-only legacy supervisor regression harness")]
 
 use super::*;
 
@@ -23,12 +24,7 @@ fn selected_eos_stop_parts(graph: &Value, backend: &str) -> Vec<(String, String)
   if backend.is_empty() {
     return parts;
   }
-  let unified = graph["version"] == "0.2.0";
-  let hardware = if unified {
-    "/cores/isos/layers/eos_hardware/groups"
-  } else {
-    "/cores/eos/layers/hardware/groups"
-  };
+  let hardware = "/cores/isos/layers/eos_hardware/groups";
   let Some(groups) = graph.pointer(hardware).and_then(Value::as_object) else {
     return parts;
   };
@@ -43,12 +39,7 @@ fn selected_eos_stop_parts(graph: &Value, backend: &str) -> Vec<(String, String)
           .as_array()
           .is_some_and(|references| references.iter().any(|reference| reference == backend))
       {
-        let prefix = if unified {
-          "isos/eos_hardware"
-        } else {
-          "eos/hardware"
-        };
-        parts.push((format!("{prefix}/{group}/{id}"), group.clone()));
+        parts.push((format!("isos/eos_hardware/{group}/{id}"), group.clone()));
       }
     }
   }
@@ -271,22 +262,21 @@ impl Supervisor {
     let mut admitted_nodes = BTreeSet::new();
     if let Ok(bytes) = fs::read(paths.node_graph_path(deployment))
       && let Ok(graph) = serde_json::from_slice::<Value>(&bytes)
+      && let Some(layers) = graph
+        .pointer("/cores/isos/layers")
+        .and_then(Value::as_object)
     {
-      for core in ["eos", "egia"] {
-        if let Some(layers) = graph
-          .pointer(&format!("/cores/{core}/layers"))
-          .and_then(Value::as_object)
-        {
-          for (layer, entry) in layers {
-            if let Some(groups) = entry.get("groups").and_then(Value::as_object) {
-              for (group, entry) in groups {
-                if let Some(nodes) = entry.get("nodes").and_then(Value::as_object) {
-                  for node in nodes.keys() {
-                    admitted_nodes.insert(format!(
-                      "/cores/{core}/layers/{layer}/groups/{group}/nodes/{node}"
-                    ));
-                  }
-                }
+      for (layer, entry) in layers {
+        if !layer.starts_with("eos_") && !layer.starts_with("ei_") {
+          continue;
+        }
+        if let Some(groups) = entry.get("groups").and_then(Value::as_object) {
+          for (group, entry) in groups {
+            if let Some(nodes) = entry.get("nodes").and_then(Value::as_object) {
+              for node in nodes.keys() {
+                admitted_nodes.insert(format!(
+                  "/cores/isos/layers/{layer}/groups/{group}/nodes/{node}"
+                ));
               }
             }
           }
@@ -345,23 +335,13 @@ impl Supervisor {
     if let Ok(bytes) = fs::read(self.paths.node_graph_path(&self.deployment))
       && let Ok(graph) = serde_json::from_slice::<Value>(&bytes)
     {
-      let unified = graph["version"] == "0.2.0";
-      let process = if unified {
-        "/cores/isos/layers/eos_process/groups"
-      } else {
-        "/cores/eos/layers/process/groups"
-      };
+      let process = "/cores/isos/layers/eos_process/groups";
       if let Some(groups) = graph.pointer(process).and_then(Value::as_object) {
         for (group, family) in groups {
           if let Some(nodes) = family.get("nodes").and_then(Value::as_object) {
             for (id, node) in nodes {
               if node.get("package").is_some() {
-                let prefix = if unified {
-                  "isos/eos_process"
-                } else {
-                  "eos/process"
-                };
-                self.eos_backend = format!("{prefix}/{group}/{id}");
+                self.eos_backend = format!("isos/eos_process/{group}/{id}");
               }
             }
           }
@@ -387,7 +367,7 @@ impl Supervisor {
   }
   pub fn prepare_vision(&mut self, revision: &str) -> Result<()> {
     if crate::runtime::process::vision_binding::selected_gate()?.is_none()
-      && !crate::domain::graph::graph_compat::read(&self.paths.node_graph_path(&self.deployment))
+      && !crate::domain::graph::graph_contract::read(&self.paths.node_graph_path(&self.deployment))
         .ok()
         .is_some_and(|saved| saved.value["version"] == "0.2.0")
     {
@@ -489,7 +469,7 @@ impl Supervisor {
     secrets: &BTreeMap<String, std::ffi::OsString>,
     secret_sources: &BTreeSet<String>,
   ) -> Result<(Child, Option<Receiver<log_store::EosStdout>>)> {
-    crate::runtime::owners::egia_state::reject_test_env_spec(spec)?;
+    crate::runtime::owners::ei_state::reject_test_env_spec(spec)?;
     if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
       if let Some(inputs) = &self.candidate_skill_inputs {
         inputs.launch_recheck(&self.paths, &self.deployment)?;
@@ -588,25 +568,45 @@ impl Supervisor {
               .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
           "invalid payload digest"
         );
-        let owner_dir = self.logs.root().join("owner/eos");
+      }
+      if spec.id == "eos" {
+        let owner_dir = self
+          .logs
+          .root()
+          .ancestors()
+          .nth(4)
+          .unwrap_or(self.logs.root())
+          .join("eos/log")
+          .join(self.logs.root().file_name().unwrap_or_default());
         fs::create_dir_all(&owner_dir)?;
-        fs::set_permissions(
-          self.logs.root().join("owner"),
-          fs::Permissions::from_mode(0o700),
-        )?;
         fs::set_permissions(&owner_dir, fs::Permissions::from_mode(0o700))?;
         command.arg("--log-dir").arg(owner_dir);
       }
     }
     command.args(&arguments);
-    let managed_egia = spec.id == "egia"
-      && spec.settings.role.as_deref() == Some("egia")
+    let managed_ei = spec.id == "ei"
+      && spec.settings.role.as_deref() == Some("ei")
       && self.control_grants.is_some();
     crate::runtime::process::skill_selection::scrub_inherited(&mut command);
-    if managed_egia {
+    if managed_ei {
       command.env_remove("ISLAND_STATE");
     }
     command.envs(&spec.settings.env);
+    if let Some(data) = self.logs.root().ancestors().nth(4) {
+      let deployment = self
+        .logs
+        .root()
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("default");
+      if matches!(spec.id.as_str(), "eos" | "bridge" | "config") {
+        command.env("EOS_LOG_DIR", data.join("eos/log").join(deployment));
+      }
+      if spec.id == "ei" {
+        command.env("EI_LOG_DIR", data.join("ei/log").join(deployment));
+        command.env("EI_DEPLOYMENT", deployment);
+      }
+    }
     for reserved in control_grants::RESERVED_ENVS {
       command.env_remove(reserved);
     }
@@ -642,7 +642,10 @@ impl Supervisor {
         command.arg("--owner-vision-socket").arg(socket);
       }
     }
-    if spec.id == "egia" && spec.settings.role.as_deref() == Some("egia") {
+    if matches!(spec.id.as_str(), "eos" | "bridge" | "config") {
+      command.env("ISOS_RUN_ID", &self.run_id);
+    }
+    if spec.id == "ei" && spec.settings.role.as_deref() == Some("ei") {
       command.env("ISOS_RUN_ID", &self.run_id);
     }
     if let Some(cwd) = &spec.settings.cwd {
@@ -656,7 +659,7 @@ impl Supervisor {
     let parent_pid = std::process::id();
     unsafe {
       command.pre_exec(move || {
-        if managed_egia {
+        if managed_ei {
           libc::umask(0o077);
         }
         if libc::setsid() < 0 {
@@ -675,14 +678,14 @@ impl Supervisor {
       .spawn()
       .with_context(|| format!("spawn {}", spec.id))?;
     let pid = child.id();
-    let source = if matches!(spec.settings.role.as_deref(), Some("eos" | "egia")) {
+    let source = if matches!(spec.settings.role.as_deref(), Some("eos" | "ei")) {
       spec.id.clone()
     } else {
       format!("unselected-{}", spec.id)
     };
     let skill_pins = spec
       .settings
-      .skill_libraries
+      .skill_executables
       .iter()
       .map(|entry| (entry.package.id.clone(), entry.package.version.clone()))
       .collect::<BTreeSet<_>>();
@@ -782,22 +785,6 @@ impl Supervisor {
       } else {
         Instant::now() >= no_probe_grace
       };
-      let owner_ready = if matches!(spec.settings.role.as_deref(), Some("eos" | "egia")) {
-        let expected = format!("{}_ready", spec.id);
-        self
-          .logs
-          .tail_filtered(&spec.id, 100, None)
-          .ok()
-          .is_some_and(|events| {
-            events.iter().any(|event| {
-              event["run_id"].as_str() == Some(self.run_id.as_str())
-                && event["pid"].as_u64() == Some(child.id() as u64)
-                && event["event_code"].as_str() == Some(expected.as_str())
-            })
-          })
-      } else {
-        true
-      };
       let vision_ready = if let Some(bundle) = &self.control_grants {
         match spec.id.as_str() {
           "eos" => bundle.vision_template().is_none_or(|template| {
@@ -811,7 +798,7 @@ impl Supervisor {
       } else {
         true
       };
-      if ready && owner_ready && vision_ready {
+      if ready && vision_ready {
         return Ok(());
       }
       ensure!(
@@ -871,6 +858,14 @@ impl Supervisor {
         );
       }
       let empty = BTreeMap::new();
+      if let Err(error) = self.logs.append_supervisor(
+        &spec.id,
+        "info",
+        "child_spawning",
+        "Starting declared child process",
+      ) {
+        eprintln!("isos supervisor log sink failed: {error:#}");
+      }
       let (mut child, eos_stdout) = self.spawn(
         spec,
         secrets.get(&spec.id).unwrap_or(&empty),
@@ -878,6 +873,14 @@ impl Supervisor {
       )?;
       let identity = leader_identity(child.id() as i32).ok();
       if let Err(error) = self.wait_ready(spec, &mut child) {
+        if let Err(log_error) = self.logs.append_supervisor(
+          &spec.id,
+          "error",
+          "child_readiness_failed",
+          &format!("{error:#}"),
+        ) {
+          eprintln!("isos supervisor log sink failed: {log_error:#}");
+        }
         self.running.insert(
           spec.id.clone(),
           Running {
@@ -890,6 +893,14 @@ impl Supervisor {
         );
         self.order.push(spec.id.clone());
         return Err(error);
+      }
+      if let Err(error) = self.logs.append_supervisor(
+        &spec.id,
+        "info",
+        "child_ready",
+        &format!("Child process ready pid={}", child.id()),
+      ) {
+        eprintln!("isos supervisor log sink failed: {error:#}");
       }
       self.running.insert(
         spec.id.clone(),
@@ -1314,6 +1325,37 @@ impl Drop for Supervisor {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn admitted_event_nodes_follow_single_core_owner_layers() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data"),
+      runtime: temp.path().join("run"),
+    };
+    paths.prepare().unwrap();
+    fs::create_dir_all(paths.config.join("graph-pool")).unwrap();
+    fs::write(
+      paths.node_graph_path("test"),
+      serde_json::json!({
+        "version":"0.2.0", "cores":{"isos":{"layers":{
+          "eos_process":{"groups":{"mujoco":{"nodes":{"simulator":{}}}}},
+          "ei_cognition":{"groups":{"context":{"nodes":{"builder":{}}}}},
+          "ui":{"groups":{"keyboard":{"nodes":{"drive":{}}}}}
+        }}}
+      })
+      .to_string(),
+    )
+    .unwrap();
+    let admitted = Supervisor::new(&paths, "test")
+      .unwrap()
+      .admitted_nodes
+      .clone();
+    assert!(admitted.contains("/cores/isos/layers/eos_process/groups/mujoco/nodes/simulator"));
+    assert!(admitted.contains("/cores/isos/layers/ei_cognition/groups/context/nodes/builder"));
+    assert!(!admitted.contains("/cores/isos/layers/ui/groups/keyboard/nodes/drive"));
+  }
   use serde_json::json;
   use std::os::unix::fs::MetadataExt;
   use std::os::unix::net::UnixListener;
@@ -1321,17 +1363,20 @@ mod tests {
 
   #[test]
   fn stop_parts_follow_declared_backend_and_hardware_groups() {
-    let graph = json!({"cores":{"eos":{"layers":{"hardware":{"groups":{
-      "base":{"nodes":{"drive":{"adapter":{"settings":{"backend":"eos/process/simulator/main"}},"references":["eos/process/simulator/main"],"movement":{}}}},
-      "manipulator":{"nodes":{"arm":{"adapter":{"settings":{"backend":"eos/process/simulator/main"}},"references":["eos/process/simulator/main"],"movement":{}}}},
-      "camera":{"nodes":{"front":{"adapter":{"settings":{"backend":"eos/process/simulator/main"}}}}},
-      "other":{"nodes":{"elsewhere":{"adapter":{"settings":{"backend":"eos/process/other/main"}},"movement":{}}}}
+    let graph = json!({"cores":{"isos":{"layers":{"eos_hardware":{"groups":{
+      "base":{"nodes":{"drive":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}},"references":["isos/eos_process/simulator/main"],"movement":{}}}},
+      "manipulator":{"nodes":{"arm":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}},"references":["isos/eos_process/simulator/main"],"movement":{}}}},
+      "camera":{"nodes":{"front":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}}}}},
+      "other":{"nodes":{"elsewhere":{"adapter":{"settings":{"backend":"isos/eos_process/other/main"}},"movement":{}}}}
     }}}}}});
     assert_eq!(
-      selected_eos_stop_parts(&graph, "eos/process/simulator/main"),
+      selected_eos_stop_parts(&graph, "isos/eos_process/simulator/main"),
       vec![
-        ("eos/hardware/base/drive".into(), "base".into()),
-        ("eos/hardware/manipulator/arm".into(), "manipulator".into())
+        ("isos/eos_hardware/base/drive".into(), "base".into()),
+        (
+          "isos/eos_hardware/manipulator/arm".into(),
+          "manipulator".into()
+        )
       ]
     );
   }
@@ -1421,11 +1466,11 @@ mod tests {
       runtime: temp.path().join("run"),
     };
     paths.prepare().unwrap();
-    fs::create_dir_all(paths.config.join("deployments")).unwrap();
+    fs::create_dir_all(paths.config.join("graph-pool")).unwrap();
     fs::write(
       paths.node_graph_path("test"),
       serde_json::json!({
-          "cores": {"eos": {"layers": {"process": {"groups": {"worker": {
+          "version":"0.2.0","cores": {"isos": {"layers": {"eos_process": {"groups": {"worker": {
               "nodes": {"sim": {"id": "sim", "package": {"id":"sample/worker","version":"0.1.0"}}}
           }}}}}}
       })
@@ -1442,7 +1487,7 @@ print(json.dumps({'timestamp':'2026-11-01T10:00:01.000Z','level':'info','source'
 def stop(sig,frame):
     if os.getenv('R06_HOLD_EOF'):
         subprocess.Popen(['/bin/sleep','2'],start_new_session=True,stdout=sys.stdout,stderr=subprocess.DEVNULL)
-    receipt={'schema_version':1,'type':'eos_terminal_stop','run_id':os.getenv('R06_RECEIPT_RUN',run),'eos_pid':os.getpid(),'active_revision':'__REV__','backend_node':'eos/process/worker/sim','backend_pid':1234,'backend_pgid':1234,'generation_id':'00112233445566778899aabbccddeeff','stop_epoch':'1','admission_closed':True,'parts':[],'backend_group_drained':True,'backend_reaped':True,'sockets_removed':True,'outcome':'confirmed','reason_code':None}
+    receipt={'schema_version':1,'type':'eos_terminal_stop','run_id':os.getenv('R06_RECEIPT_RUN',run),'eos_pid':os.getpid(),'active_revision':'__REV__','backend_node':'isos/eos_process/worker/sim','backend_pid':1234,'backend_pgid':1234,'generation_id':'00112233445566778899aabbccddeeff','stop_epoch':'1','admission_closed':True,'parts':[],'backend_group_drained':True,'backend_reaped':True,'sockets_removed':True,'outcome':'confirmed','reason_code':None}
     print(json.dumps(receipt,separators=(',',':')),flush=True)
     sys.exit(0)
 signal.signal(signal.SIGTERM,stop)
@@ -1547,7 +1592,7 @@ while True: time.sleep(.05)
       &script,
       r#"#!/bin/sh
 set -eu
-for name in EOS_CONTROL_GRANTS_FILE EGIA_EOS_CONTROL_GRANT_FILE AETHER_BRIDGE_CONTROL_GRANT_FILE; do
+for name in EOS_CONTROL_GRANTS_FILE EI_EOS_CONTROL_GRANT_FILE AETHER_BRIDGE_CONTROL_GRANT_FILE; do
   eval 'value=${'"$name"'-}'
   if [ -n "$value" ]; then printf '%s\n' "$name" >> "$CAPTURE_PATH"; fi
 done
@@ -1560,7 +1605,7 @@ sleep 10
     let run_id = supervisor.run_id().to_owned();
     supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
     let mut specs = Vec::new();
-    for id in ["eos", "config", "egia", "bridge", "other"] {
+    for id in ["eos", "config", "ei", "bridge", "other"] {
       let capture = temp.path().join(format!("{id}.env"));
       let spec = ProcessSpec {
         id: id.into(),
@@ -1570,7 +1615,7 @@ sleep 10
             "env":{
                 "CAPTURE_PATH":capture,
                 "EOS_CONTROL_GRANTS_FILE":"authored-fake",
-                "EGIA_EOS_CONTROL_GRANT_FILE":"authored-fake",
+                "EI_EOS_CONTROL_GRANT_FILE":"authored-fake",
                 "AETHER_BRIDGE_CONTROL_GRANT_FILE":"authored-fake"
             },
             "start_timeout_ms":1000
@@ -1585,7 +1630,7 @@ sleep 10
     for (id, expected) in [
       ("eos", "EOS_CONTROL_GRANTS_FILE\n"),
       ("config", ""),
-      ("egia", "EGIA_EOS_CONTROL_GRANT_FILE\n"),
+      ("ei", "EI_EOS_CONTROL_GRANT_FILE\n"),
       ("bridge", "AETHER_BRIDGE_CONTROL_GRANT_FILE\n"),
       ("other", ""),
     ] {
@@ -1600,7 +1645,7 @@ sleep 10
   }
 
   #[test]
-  fn managed_egia_scrubs_inherited_state_and_uses_private_umask() {
+  fn managed_ei_scrubs_inherited_state_and_uses_private_umask() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Paths {
       config: temp.path().join("config"),
@@ -1608,26 +1653,26 @@ sleep 10
       runtime: temp.path().join("run"),
     };
     paths.prepare().unwrap();
-    let capture = temp.path().join("egia-state-env");
+    let capture = temp.path().join("ei-state-env");
     let script = temp.path().join("capture-state.sh");
     fs::write(
             &script,
             r#"#!/bin/sh
-mkdir -p "$2/egia/missions"
+mkdir -p "$2/ei/missions"
 printf '%s|%s\n' "${ISLAND_STATE-unset}" "$(umask)" > "$CAPTURE_PATH"
-printf '{"timestamp":"2026-11-02T10:00:01.000Z","level":"info","source":"egia","core":"egia","event_code":"egia_ready","run_id":"%s","message":"EGIA ready","fields":{"generation":1}}\n' "$ISOS_RUN_ID" >&2
+printf '{"timestamp":"2026-11-02T10:00:01.000Z","level":"info","source":"ei","core":"ei","event_code":"ei_ready","run_id":"%s","message":"EI ready","fields":{"generation":1}}\n' "$ISOS_RUN_ID" >&2
 sleep 10
 "#,
         )
         .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut supervisor = Supervisor::new(&paths, "egia-state-test").unwrap();
+    let mut supervisor = Supervisor::new(&paths, "ei-state-test").unwrap();
     supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
     let spec = ProcessSpec {
-      id: "egia".into(),
-      path: "isos/process/component/egia".into(),
+      id: "ei".into(),
+      path: "isos/process/component/ei".into(),
       settings: serde_json::from_value(serde_json::json!({
-          "command":[script], "role":"egia", "env":{"CAPTURE_PATH":capture},
+          "command":[script], "role":"ei", "env":{"CAPTURE_PATH":capture},
           "start_timeout_ms":1000
       }))
       .unwrap(),
@@ -1635,11 +1680,13 @@ sleep 10
       fingerprint: None,
     };
     let mut specs = [spec];
-    crate::runtime::owners::egia_state::prepare(&paths, "egia-state-test", &mut specs).unwrap();
+    crate::runtime::owners::ei_state::prepare(&paths, "ei-state-test", &mut specs).unwrap();
     supervisor.start(&specs).unwrap();
     let output = wait_for_file(&capture, 1);
     assert_eq!(output.trim(), "unset|0077");
-    let mission_dir = paths.data.join("state/egia-state-test/egia/missions");
+    let mission_dir = paths
+      .owner_data("ei")
+      .join("state/ei-state-test/ei/missions");
     assert_eq!(
       fs::symlink_metadata(&mission_dir)
         .unwrap()
@@ -1651,9 +1698,9 @@ sleep 10
     supervisor.stop();
     let mut next = [specs[0].clone()];
     next[0].settings.command.truncate(1);
-    crate::runtime::owners::egia_state::prepare(&paths, "egia-state-test", &mut next).unwrap();
+    crate::runtime::owners::ei_state::prepare(&paths, "ei-state-test", &mut next).unwrap();
     assert_eq!(next[0].settings.command, specs[0].settings.command);
-    let mut restarted = Supervisor::new(&paths, "egia-state-test").unwrap();
+    let mut restarted = Supervisor::new(&paths, "ei-state-test").unwrap();
     restarted.prepare_control_grants(&"b".repeat(64)).unwrap();
     restarted.start(&next).unwrap();
     assert_eq!(wait_for_file(&capture, 1).trim(), "unset|0077");
@@ -1661,7 +1708,7 @@ sleep 10
   }
 
   #[test]
-  fn egia_spawn_rechecks_q01_test_env_targets() {
+  fn ei_spawn_rechecks_q01_test_env_targets() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Paths {
       config: temp.path().join("config"),
@@ -1672,10 +1719,10 @@ sleep 10
     let supervisor = Supervisor::new(&paths, "q01-env-guard").unwrap();
     for field in ["env", "env_from"] {
       let mut spec = ProcessSpec {
-        id: "egia".into(),
-        path: "isos/process/component/egia".into(),
+        id: "ei".into(),
+        path: "isos/process/component/ei".into(),
         settings: serde_json::from_value(serde_json::json!({
-            "command":["/bin/true"], "role":"egia"
+            "command":["/bin/true"], "role":"ei"
         }))
         .unwrap(),
         package: None,
@@ -1685,24 +1732,24 @@ sleep 10
         spec
           .settings
           .env
-          .insert("EGIA_Q01_STALE_TEST".into(), "1".into());
+          .insert("EI_Q01_STALE_TEST".into(), "1".into());
       } else {
         spec
           .settings
           .env_from
-          .insert("EGIA_Q01_STALE_TEST".into(), "INHERITED_TEST_FLAG".into());
+          .insert("EI_Q01_STALE_TEST".into(), "INHERITED_TEST_FLAG".into());
       }
       let error = supervisor
         .spawn(&spec, &BTreeMap::new(), &BTreeSet::new())
         .unwrap_err();
       let diagnostic = error
-        .downcast_ref::<crate::runtime::owners::egia_state::Diagnostic>()
+        .downcast_ref::<crate::runtime::owners::ei_state::Diagnostic>()
         .unwrap();
-      assert_eq!(diagnostic.code, "egia_test_reserved_env");
+      assert_eq!(diagnostic.code, "ei_test_reserved_env");
       assert_eq!(
         diagnostic.path,
         format!(
-          "/cores/isos/layers/process/groups/component/nodes/egia/settings/{field}/EGIA_Q01_STALE_TEST"
+          "/cores/isos/layers/process/groups/component/nodes/ei/settings/{field}/EI_Q01_STALE_TEST"
         )
       );
     }
@@ -1773,34 +1820,17 @@ sleep 10
     panic!("child did not write the expected record");
   }
 
-  #[test]
-  fn backend_resolution_failure_carries_exact_package_identity() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    paths.prepare().unwrap();
-    let graph = serde_json::json!({"version":"1.0.0","robot":{"id":"r","name":"R"},"cores":{"eos":{"layers":{"process":{"groups":{"worker":{"nodes":{"sim":{"id":"sim","node_type":"eos.process.worker@v1","package":{"id":"sample/worker","version":"0.1.1"},"settings":{}}}}}}}}}}).to_string();
-    let error = project_with_packages(&paths, &graph).unwrap_err();
-    let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
-    assert_eq!(failure.id, "sample/worker");
-    assert_eq!(failure.version, "0.1.1");
-    assert_eq!(failure.stage, "manifest");
-  }
-
   fn graph(settings: &str) -> String {
     let settings: Value = serde_json::from_str(settings).unwrap();
     serde_json::json!({
-        "version": "1.0.0",
-        "robot": {"id": "r", "name": "R"},
-        "cores": {"isos": {"layers": {"process": {"groups": {"component": {
-            "nodes": {"eos": {
-                "id": "eos", "node_type": "isos.process.component@v1.1",
-                "settings": settings
-            }}
-        }}}}}}
+      "version": "0.2.0",
+      "robot": {"id": "r", "name": "R"},
+      "cores": {"isos": {"layers": {"process": {"groups": {"component": {
+        "nodes": {"eos": {
+          "id": "eos", "node_type": "isos.process.component@v0.2",
+          "settings": settings
+        }}
+      }}}}}}
     })
     .to_string()
   }
@@ -1809,17 +1839,17 @@ sleep 10
   fn projection_rejects_wrong_type_placement_and_unbounded_launch() {
     let source = graph(r#"{"command":["/bin/sleep","1"]}"#);
     assert_eq!(project(&source).unwrap()[0].id, "eos");
-    assert!(project(&source.replace("v1.1", "v2.0")).is_err());
+    assert!(project(&source.replace("v0.2", "v2.0")).is_err());
     assert!(project(&source.replace("\"process\"", "\"hardware\"")).is_err());
     assert!(project(&graph(r#"{"command":["sleep","1"]}"#)).is_err());
     let toml = r#"
-version = "1.0.0"
+version = "0.2.0"
 [robot]
 id = "r"
 name = "R"
 [cores.isos.layers.process.groups.component.nodes.eos]
 id = "eos"
-node_type = "isos.process.component@v1.1"
+node_type = "isos.process.component@v0.2"
 label = "EOS"
 description = "runtime"
 [cores.isos.layers.process.groups.component.nodes.eos.settings]
@@ -1875,103 +1905,6 @@ command = ["/bin/sleep", "1"]
     spec.settings.ready_tcp = Some("127.0.0.1:16000".into());
     specs.insert(spec.id.clone(), spec);
     assert!(validate_listener_ports(&specs).is_err());
-  }
-
-  #[test]
-  fn selected_real_child_binds_run_pid_and_stderr_only() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    let script = temp.path().join("selected-eos");
-    fs::write(&script, r#"#!/bin/sh
-run=''
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = '--run-id' ]; then run="$2"; shift 2; else shift; fi
-done
-printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","event_code":"eos_ready","run_id":"%s","message":"EOS runtime ready","fields":{"state":"ready","node_count":1}}\n' "$run" >&2
-printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","event_code":"eos_ready","run_id":"%s","message":"EOS runtime ready","fields":{"state":"ready","node_count":1}}\n' "$run"
-sleep 2
-"#).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut spec = project(&graph(&serde_json::json!({"command":[script]}).to_string()))
-      .unwrap()
-      .remove(0);
-    spec.settings.role = Some("eos".into());
-    let mut supervisor = Supervisor::new(&paths, "default").unwrap();
-    let run_id = supervisor.run_id().to_owned();
-    supervisor.start(&[spec]).unwrap();
-    let pid = supervisor.status_snapshot()[0].pid;
-    let logs = log_store::LogStore::new(&paths, "default").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let line = loop {
-      let lines = logs.read("eos", None, 10).unwrap();
-      if let Some(line) = lines["lines"].as_array().unwrap().first() {
-        break line.clone();
-      }
-      assert!(
-        Instant::now() < deadline,
-        "selected child event did not arrive"
-      );
-      thread::sleep(Duration::from_millis(10));
-    };
-    assert_eq!(line["run_id"], run_id);
-    assert_eq!(line["pid"], pid);
-    assert_eq!(
-      logs.read("eos", None, 10).unwrap()["lines"]
-        .as_array()
-        .unwrap()
-        .len(),
-      1
-    );
-    assert!(logs.root().join("owner/eos/stdout.log").is_file());
-    assert!(logs.root().join("owner/eos/stderr.log").is_file());
-    fs::remove_file(logs.root().join("events.log")).unwrap();
-    fs::create_dir(logs.root().join("events.log")).unwrap();
-    let mut later = line.clone();
-    later["event_code"] = serde_json::json!("eos_stopping");
-    later["message"] = serde_json::json!("EOS eos stopping");
-    later["fields"] = serde_json::json!({"state":"stopping"});
-    assert!(logs.append_selected(&later).is_err());
-    let stop_started = Instant::now();
-    supervisor.stop();
-    assert!(stop_started.elapsed() < Duration::from_secs(1));
-    assert!(log_store::counters().1 > 0);
-  }
-
-  #[test]
-  fn selected_egia_run_binding_overrides_authored_environment() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    let script = temp.path().join("selected-egia");
-    fs::write(&script, r#"#!/bin/sh
-printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"egia","core":"egia","event_code":"egia_ready","run_id":"%s","message":"EGIA ready","fields":{"generation":1}}\n' "$ISOS_RUN_ID" >&2
-sleep 2
-"#).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut spec = project(&graph(
-      &serde_json::json!({"command":[script],"env":{"ISOS_RUN_ID":"r-spoof"}}).to_string(),
-    ))
-    .unwrap()
-    .remove(0);
-    spec.id = "egia".into();
-    spec.path = "isos/process/component/egia".into();
-    spec.settings.role = Some("egia".into());
-    let mut supervisor = Supervisor::new(&paths, "default").unwrap();
-    let run_id = supervisor.run_id().to_owned();
-    supervisor.start(&[spec]).unwrap();
-    let lines = log_store::LogStore::new(&paths, "default")
-      .unwrap()
-      .read("egia", None, 10)
-      .unwrap();
-    assert_eq!(lines["lines"][0]["run_id"], run_id);
-    supervisor.stop();
   }
 
   #[test]
@@ -2060,25 +1993,6 @@ sleep 2
   }
 
   #[test]
-  fn target_validation_rejects_cross_owner_reference_before_eos_projection() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    paths.prepare().unwrap();
-    let mut graph = crate::domain::graph::starter::draft(&paths, "default").unwrap();
-    graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]["references"] =
-      serde_json::json!(["isos/process/component/eos"]);
-    let error = validate_value_with_profile(&paths, &graph, Path::new("/bin/true"))
-      .unwrap_err()
-      .to_string();
-    assert!(error.contains("cross_core_link_unavailable"), "{error}");
-    assert!(error.contains("/references/0"), "{error}");
-  }
-
-  #[test]
   fn restarts_failing_child_with_bounded_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Paths {
@@ -2110,9 +2024,9 @@ sleep 2
     };
     let mut source: Value =
       serde_json::from_str(&graph(r#"{"command":["/bin/sleep","0.1"]}"#)).unwrap();
-    source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["egia"] = serde_json::json!({
-        "id": "egia",
-        "node_type": "isos.process.component@v1.1",
+    source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["ei"] = serde_json::json!({
+        "id": "ei",
+        "node_type": "isos.process.component@v0.2",
         "settings": {
             "command": ["/bin/sleep", "30"],
             "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"]
@@ -2124,7 +2038,7 @@ sleep 2
         .iter()
         .map(|spec| spec.id.as_str())
         .collect::<Vec<_>>(),
-      ["eos", "egia"]
+      ["eos", "ei"]
     );
     let mut supervisor = Supervisor::new(&paths, "test").unwrap();
     supervisor.start(&specs).unwrap();
@@ -2212,12 +2126,12 @@ sleep 2
     let source = "ISOS_P04_ISOLATION_SOURCE_9A6D1";
     unsafe { std::env::set_var(source, "private-value") };
     let eos_file = temp.path().join("eos.txt");
-    let egia_file = temp.path().join("egia.txt");
+    let ei_file = temp.path().join("ei.txt");
     let script = temp.path().join("record.sh");
     fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EGIA_API_KEY-unset}}\" > \"$1\"\nsleep 30\n"
+                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EI_API_KEY-unset}}\" > \"$1\"\nsleep 30\n"
             ),
         )
         .unwrap();
@@ -2228,21 +2142,18 @@ sleep 2
             path: format!("isos/process/component/{id}"),
             settings: serde_json::from_value(serde_json::json!({
                 "command": [script, output],
-                "env_from": if secret { serde_json::json!({"EGIA_API_KEY":source}) } else { serde_json::json!({}) },
+                "env_from": if secret { serde_json::json!({"EI_API_KEY":source}) } else { serde_json::json!({}) },
             }))
             .unwrap(),
             package: None,
             fingerprint: None,
         }
     };
-    let specs = [
-      make("eos", &eos_file, false),
-      make("egia", &egia_file, true),
-    ];
+    let specs = [make("eos", &eos_file, false), make("ei", &ei_file, true)];
     let mut supervisor = Supervisor::new(&paths, "test").unwrap();
-    assert_eq!(supervisor.start(&specs).unwrap(), ["eos", "egia"]);
+    assert_eq!(supervisor.start(&specs).unwrap(), ["eos", "ei"]);
     assert_eq!(wait_for_file(&eos_file, 1), "unset|unset\n");
-    assert_eq!(wait_for_file(&egia_file, 1), "unset|private-value\n");
+    assert_eq!(wait_for_file(&ei_file, 1), "unset|private-value\n");
     supervisor.stop();
     unsafe { std::env::remove_var(source) };
   }
@@ -2262,7 +2173,7 @@ sleep 2
     fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EGIA_API_KEY-unset}}\" >> \"$1\"\nsleep 30\n"
+                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EI_API_KEY-unset}}\" >> \"$1\"\nsleep 30\n"
             ),
         )
         .unwrap();
@@ -2280,12 +2191,12 @@ sleep 2
       fingerprint: None,
     };
     let dependent = ProcessSpec {
-      id: "egia".into(),
-      path: "isos/process/component/egia".into(),
+      id: "ei".into(),
+      path: "isos/process/component/ei".into(),
       settings: serde_json::from_value(serde_json::json!({
           "command": [script, record],
           "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"],
-          "env_from": {"EGIA_API_KEY": source}
+          "env_from": {"EI_API_KEY": source}
       }))
       .unwrap(),
       package: None,

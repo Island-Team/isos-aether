@@ -12,6 +12,6 @@ This page explains the typed descriptor used by the pure selector. It is for own
 | `endpoint_id` | string / opaque key | Identifies a producer route; it is not a URL or private grant. | Required. |
 | `run_id`, `graph_revision` | strings / run ID and SHA-256 | Fence the descriptor to one active run and graph revision. | Required. |
 
-The pure [selector](selection.md) checks field shape, codec/media/method compatibility, payload bound, and requested run/revision. Registered port/type binding is an upstream owner-admission responsibility; the current HTTP route cannot perform live descriptor selection. The [HTTP contract](../../develop/http/presentations.md) defines its current request and errors.
+The pure [selector](selection.md) checks field shape, codec/media/method compatibility, payload bound, and requested run/revision. Registered port/type binding is an upstream owner-admission responsibility; the current HTTP route cannot perform live descriptor selection. The [HTTP contract](../http/presentations.md) defines its current request and errors.
 
 [中文](../../../../docs_cn/isos/interfaces/ui/presentation_cn.md)

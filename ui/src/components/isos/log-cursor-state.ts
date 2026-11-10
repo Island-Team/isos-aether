@@ -21,9 +21,7 @@ function sameScope(a: LogScope | null, b: LogScope): boolean {
 /** Rotation preserves retained rows; only an owner-reported scope change clears them. */
 export function acceptCurrentLogPage(state: CurrentLogState, page: CurrentLogPage): CurrentLogState {
   const changed = state.scope !== null && !sameScope(state.scope, page.scope);
-  const lines = page.anchor.state === 'found'
-    ? [...(changed ? [] : state.lines), ...page.lines].slice(-1000)
-    : [];
+  const lines = [...(changed ? [] : state.lines), ...page.lines].slice(-1000);
   const acknowledgedDiagnostics = changed ? {} : { ...state.acknowledgedDiagnostics };
   const byCode = new Map<LogDiagnosticCode, LogDiagnostic>((changed ? [] : state.diagnostics).map((item) => [item.code, item]));
   for (const item of page.diagnostics) {

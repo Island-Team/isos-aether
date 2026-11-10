@@ -1,10 +1,9 @@
 # 托管例行关闭与持久安全状态
 
-[归属方契约](../../../../docs/eos/interfaces/simulator-stop.md) · [Dispatcher](../../../../docs/eos/design/runtime/dispatcher.md) · [M5 验证](../../../../docs/island/implementation-todo.md)
+[归属方契约](../../../../docs/eos/interfaces/simulator-stop.md) · Dispatcher · M5 验证
 
 ## 问题与边界
 
-R06 的所选子进程回执证明：IsOS 替换运行实例前，EOS 已停止两个 MuJoCo 执行器、清空并回收其直接子进程组，并移除套接字。现有 `StopGuard` 对每次例行 IsOS Stop 或 Restart 都调用 `Dispatcher::emergency_stop()`，同时在日志中持久设置 `estop_latched=true`。因此，即使 IsOS 已收到确认的停止回执，新 EOS 进程也会正确地把 `base.velocity` 和 `arm.movej` 标为不可用。Q01 回放在 EGIA 规划器目录处发现了这一点；延长等待或在测试中清除日志都会掩盖安全状态。
 
 实现应区分归属方请求的**托管例行关闭**与真正的 `safety.estop`。不新增公开重置操作、图字段、授权凭据、执行器入口或协议标识。真正的急停锁存保持持久；Stop、Restart、普通 `robot.stop` 或新的模拟器代际都不能清除它。崩溃、结果不明的运动释放、物理停止或子进程回收继续以拒绝运行为默认结果。
 
@@ -16,15 +15,9 @@ R06 的所选子进程回执证明：IsOS 替换运行实例前，EOS 已停止�
 4. 仅在上述条件均成立且没有尚在执行的公开停止操作时，EOS 才可利用已证明的更新物理停止 epoch，持久栅栏终态结果不明的运动并保留其机器人抑制，再在同一日志锁下解除**本次关闭标记及其目标列表**。非终态或旧格式未解决运动仍阻止解除。写入失败时回执为未知。此操作绝不修改 `robot_inhibited` 或 `estop_latched`；两者均可独立保持为真。当前进程直至退出仍保持关闭和内存抑制，绝不恢复运动。随后只发布一次所选 stdout 原始回执；IsOS 仍须核验严格回执和 EOS 成功退出，才能启动新运行实例。
 5. 任何条件未知时，关闭标记保持持久；迟到的适配器结果不得清除它。若真正的 `safety.estop` 在关闭前或关闭期间锁存，即使例行物理停止和子进程回收都已确认，锁存仍为真。新 EOS 运行实例继续把运动标为不可用，直到另行规定并授权安全恢复。
 
-历史操作 ID 和旧的有效控制记录读取方式保持不变。设置关闭标记后、解除前崩溃，会使下一 EOS 代际保持抑制。解除后、所选回执发布前崩溃，仍会由 IsOS 的未知依赖停止记录阻止新运行；历史日志行不能将其升级为确认。旧运行的操作 ID 仅可查询，不能凭新运行授权再次提交。
-
-## 验证
-
-使用假时钟和阻塞适配器测试证明：物理停止抢占延迟的运动，日志意图写入停滞不会延迟物理停止，单独的物理成功响应不能清除栅栏。对既有急停和既有机器人抑制，在其他条件均获证的例行 Stop 中分别测试：停止回执可以确认，但下一运行实例仍须因各自独立的安全状态而拒绝运动。先前处于 `Releasing` 的运动，只有旧物理释放已受栅栏限制且其日志记录持久标记为已解决时，停止回执才可确认；既有抑制继续保留。若期限内该运动仍未解决，关闭标记维持待处理且回执为 unknown。另行测试并发急停、日志写入失败、部分双设备停止证明、子进程强制终止和回执写入失败；每种未获证明的停止或持久化失败都不得产生确认回执，且必须保留所需安全状态。真实的 IsOS→EOS→MuJoCo Stop 与显式 Restart 回放须证明：保存修订不变、旧回执及回收确认、新子进程代际与授权、EGIA 精确规划器绑定就绪、新操作 ID 对应唯一 EOS 日志终态、旧 ID 不可见，以及最终 Stop 确认。完整日志和离线篡改拒绝验证器存入 `logs/test/<run-id>/`。
 
 ## 归属方实现的限定范围证据（2026-11-02）
 
-托管 EOS 子进程测试使用隔离的已生成图、运行范围校验文件及严格套接字模拟器 stub。两次 confirmed 例行停止均回收子进程，使 `.control` 保持 `1.1.0`、`shutdown_pending:false` 和 `estop_latched:false`；第二个归属方代际重新打开同一日志。第三次双设备部分停止返回 `unknown`，保留 `shutdown_pending:true`，并未创建急停锁存。Dispatcher 测试覆盖延迟运动、标记持久化或解除失败、已接纳急停锁存写入暂时失败后例行标记成功写入、既有抑制与急停、已接纳公开停止的串行化，以及终态不明运动的持久栅栏。选中配置若缺少旧的不明运动目标，不得声称已为该目标建立物理栅栏。这是 EOS 归属方证据；跨归属方 IsOS Restart 和 EGIA 规划器回放仍是单独的 Q01 门槛。
 
 从此工作树根目录运行以下可复现命令：
 
@@ -33,8 +26,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=1
 cargo build --workspace
-python3 scripts/check_doc_links.py docs/eos/interfaces/simulator-stop.md docs/eos/usage/mujoco.md docs_cn/eos/interfaces/simulator-stop_cn.md docs_cn/eos/usage/mujoco_cn.md
+python3 scripts/check_doc_links.py docs/eos/interfaces/simulator-stop.md docs/eos/design/process/mujoco-operations.md docs_cn/eos/interfaces/simulator-stop_cn.md docs_cn/eos/design/process/mujoco-operations_cn.md
 git diff --check
 ```
 
-均已通过；完整输出保存于 `logs/test/20261102-managed-shutdown/`。此处不作吞吐量或延迟声称。
+均已通过；完整输出保存于 `data/test/20261102-managed-shutdown/`。此处不作吞吐量或延迟声称。

@@ -1,10 +1,7 @@
 //! Bounded, on-demand setup adapters for the saved node graph.
-use crate::{
-  app::config::{self, Paths},
-  domain::graph::graph_compat,
-  domain::packages,
-  runtime::process,
-};
+use crate::{app::config::Paths, domain::graph::graph_contract, domain::packages};
+#[cfg(test)]
+use crate::app::config;
 use anyhow::{Context, Result, bail, ensure};
 use crate::interfaces::setup::SetupReply;
 use serde_json::{Value, json};
@@ -27,7 +24,7 @@ const MAX_FILES: usize = 32;
 const MAX_FILE: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 const SETUP_SCHEMA_VERSION: u32 = 2;
-pub(crate) const EGIA_NORTHBOUND_PORT: u16 = 16060;
+pub(crate) const EI_NORTHBOUND_PORT: u16 = 16060;
 
 fn revision(bytes: &[u8]) -> String {
   hex::encode(Sha256::digest(bytes))
@@ -36,18 +33,17 @@ fn revision(bytes: &[u8]) -> String {
 fn selected_adapter(paths: &Paths, role: &str) -> Result<PathBuf> {
   match role {
     "eos" => crate::runtime::process::core_bins::resolve("aether-profile"),
-    "egia" => {
+    "ei" => {
       let _ = paths;
       let directory = PathBuf::from(
         std::env::var_os("ISOS_EI_BIN_DIR")
-          .or_else(|| std::env::var_os("ISOS_EGIA_BIN_DIR"))
           .context("configure paths.ei_bin_dir before enabling EI")?,
       );
       ensure!(directory.is_absolute(), "ISOS_EI_BIN_DIR must be absolute");
-      let path = directory.join("egia-config");
+      let path = directory.join("ei-config");
       ensure!(
         path.is_file(),
-        "EGIA setup adapter missing at {}",
+        "EI setup adapter missing at {}",
         path.display()
       );
       Ok(path)
@@ -117,6 +113,9 @@ fn listener(value: Option<String>, default: u16) -> Result<Value> {
 }
 
 fn eos_gateway_port(graph: &Value) -> Result<u16> {
+  if graph["cores"].get("eos").is_some() {
+    return Ok(16200);
+  }
   let pointer = "/cores/isos/layers/process/groups/component/nodes/eos/settings/args";
   let args = graph
     .pointer(pointer)
@@ -151,7 +150,7 @@ pub(crate) fn endpoints(paths: &Paths, name: &str, graph: &Value) -> Result<Valu
   let api_port = crate::app::server::local_port()?;
   let eos_socket = command_arg(graph, "eos", "--socket")?
     .map(PathBuf::from)
-    .unwrap_or_else(|| paths.runtime.join(format!("{name}-eos.sock")));
+    .unwrap_or_else(|| paths.owner_runtime("eos").join(format!("{name}-eos.sock")));
   ensure!(
     eos_socket.is_absolute(),
     "EOS --socket must be an absolute path"
@@ -163,7 +162,7 @@ pub(crate) fn endpoints(paths: &Paths, name: &str, graph: &Value) -> Result<Valu
     api_port,
     eos_control["port"].as_u64().unwrap() as u16,
     eos_catalog["port"].as_u64().unwrap() as u16,
-    EGIA_NORTHBOUND_PORT,
+    EI_NORTHBOUND_PORT,
     gateway_port,
   ];
   ensure!(
@@ -175,7 +174,7 @@ pub(crate) fn endpoints(paths: &Paths, name: &str, graph: &Value) -> Result<Valu
       "eos_control":eos_control,
       "eos_catalog":eos_catalog,
       "eos_gateway":{"transport":"tcp","host":"127.0.0.1","port":gateway_port},
-      "egia_northbound":listener(None,EGIA_NORTHBOUND_PORT)?,
+      "ei_northbound":listener(None,EI_NORTHBOUND_PORT)?,
       "eos_socket":{"path":eos_socket}
   }))
 }
@@ -208,17 +207,12 @@ fn request_with_packages(
   graph_revision: &str,
   packages: Vec<Value>,
 ) -> Result<Value> {
-  ensure!(matches!(role, "eos" | "egia"), "unknown setup core");
+  ensure!(matches!(role, "eos" | "ei"), "unknown setup core");
   ensure!(
-    matches!(op, "catalog" | "validate" | "render"),
+    matches!(op, "catalog" | "options" | "validate" | "render"),
     "unknown setup operation"
   );
-  let owner_graph = if graph["version"] == "0.2.0" {
-    let owner = if role == "egia" { "ei" } else { role };
-    crate::domain::graph::single_core::owner_projection(graph, owner)?
-  } else {
-    graph.clone()
-  };
+  let owner_graph = crate::domain::graph::single_core::owner_projection(graph, role)?;
   let request = json!({"schema_version":SETUP_SCHEMA_VERSION,"op":op,"core":role,"revision":graph_revision,
         "graph":owner_graph,"endpoints":endpoints(paths,name,graph)?,"packages":packages});
   ensure!(
@@ -327,12 +321,21 @@ fn invoke_with_env(
     output.len() <= reply_limit,
     "setup adapter response exceeds limit"
   );
-  ensure!(
-    status.unwrap().success(),
-    "setup adapter failed; inspect the selected owner's private diagnostics"
-  );
+  let status = status.unwrap();
+  if !status.success() && status.code() != Some(2) {
+    bail!("setup adapter failed; inspect the selected owner's private diagnostics");
+  }
   let reply: Value = crate::runtime::process::reader_features::parse_unique_json(&output)
     .context("parse setup adapter response")?;
+  validate_reply(request, &reply)?;
+  ensure!(
+    status.success() || reply["ok"] == false,
+    "setup adapter exited with rejection status but reported success"
+  );
+  Ok(reply)
+}
+
+fn validate_reply(request: &Value, reply: &Value) -> Result<()> {
   let typed: SetupReply =
     serde_json::from_value(reply.clone()).context("setup adapter response violates schema 2")?;
   ensure!(
@@ -352,7 +355,7 @@ fn invoke_with_env(
           && typed.files.is_empty(),
         "setup identity reply has invalid fields"
       ),
-      Some("catalog") => ensure!(
+      Some("catalog" | "options") => ensure!(
         typed.catalog.as_ref().is_some_and(Value::is_object)
           && typed.identity.is_none()
           && typed.files.is_empty(),
@@ -387,6 +390,38 @@ fn invoke_with_env(
     typed.ok || !typed.diagnostics.is_empty(),
     "setup adapter rejected request without diagnostics"
   );
+  Ok(())
+}
+
+fn invoke_managed(
+  paths: &Paths,
+  role: &str,
+  request: &Value,
+  environment: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Value> {
+  let reply = if paths.socket().exists() {
+    let reply = super::owner_services::setup(paths, role, request)?;
+    validate_reply(request, &reply)?;
+    reply
+  } else {
+    invoke_with_env(&selected_adapter(paths, role)?, request, environment)?
+  };
+  if reply["ok"] == false {
+    for diagnostic in reply["diagnostics"]
+      .as_array()
+      .into_iter()
+      .flatten()
+      .take(32)
+    {
+      tracing::warn!(
+        event_code = "setup_owner_diagnostic",
+        owner = role,
+        path = diagnostic["path"].as_str().unwrap_or(""),
+        code = diagnostic["code"].as_str().unwrap_or(""),
+        "Selected owner rejected node graph"
+      );
+    }
+  }
   Ok(reply)
 }
 
@@ -420,17 +455,6 @@ fn safe_file(role: &str, entry: &Value) -> Result<(PathBuf, Vec<u8>)> {
   Ok((relative.to_path_buf(), content))
 }
 
-fn verify_unified_ei_overlay(bytes: &[u8], graph: &Value, revision: &str) -> Result<()> {
-  let actual: Value = serde_json::from_slice(bytes).context("EI stage overlay is not JSON")?;
-  let mut expected = crate::domain::graph::single_core::owner_projection(graph, "ei")?;
-  expected["revision"] = Value::String(revision.to_owned());
-  ensure!(
-    actual == expected,
-    "EI stage overlay differs from selected graph revision or projection"
-  );
-  Ok(())
-}
-
 pub fn call(
   paths: &Paths,
   name: &str,
@@ -439,14 +463,49 @@ pub fn call(
   graph: &Value,
   graph_revision: &str,
 ) -> Result<Value> {
-  if !graph_compat::uses_revisioned_generation(graph) {
-    graph_compat::admit_legacy_mapped(graph, process::catalog().ok().as_ref())?;
-  }
-  // For 0.1.0, the caller admits the graph against its selected package
-  // catalog. Resolving that catalog here would recursively call EGIA setup.
   let request = request(paths, name, role, op, graph, graph_revision)?;
-  let environment = if role == "egia" {
-    Some(crate::domain::graph::generated_v2::egia_launch_env(graph)?)
+  let environment = if role == "ei" {
+    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+  } else {
+    None
+  };
+  invoke_managed(paths, role, &request, environment.as_ref())
+}
+
+/// Preview draft selector options against the selected adapter binary. A
+/// persistent owner may still be running an older admitted generation; draft
+/// editing does not alter that owner. Apply revalidates with the owner.
+pub fn preview_options(
+  paths: &Paths,
+  name: &str,
+  role: &str,
+  graph: &Value,
+  graph_revision: &str,
+) -> Result<Value> {
+  let request = request(paths, name, role, "options", graph, graph_revision)?;
+  let environment = if role == "ei" {
+    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+  } else {
+    None
+  };
+  invoke_with_env(
+    &selected_adapter(paths, role)?,
+    &request,
+    environment.as_ref(),
+  )
+}
+
+/// Read draft types from the same selected adapter used for option previews.
+pub fn preview_catalog(
+  paths: &Paths,
+  name: &str,
+  role: &str,
+  graph: &Value,
+  graph_revision: &str,
+) -> Result<Value> {
+  let request = request(paths, name, role, "catalog", graph, graph_revision)?;
+  let environment = if role == "ei" {
+    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -472,7 +531,7 @@ pub fn catalog_with_verified_packages(
   // the owner catalog is merged. Global discovery could admit an unrelated
   // identity or reject a contributed type before its sidecar is loaded.
   ensure!(
-    graph_compat::uses_revisioned_generation(graph),
+    graph_contract::uses_revisioned_generation(graph),
     "selected catalog requires a revisioned graph"
   );
   let packages = verified.iter().map(|package| {
@@ -487,16 +546,12 @@ pub fn catalog_with_verified_packages(
     graph_revision,
     packages,
   )?;
-  let environment = if role == "egia" {
-    Some(crate::domain::graph::generated_v2::egia_launch_env(graph)?)
+  let environment = if role == "ei" {
+    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
   } else {
     None
   };
-  invoke_with_env(
-    &selected_adapter(paths, role)?,
-    &request,
-    environment.as_ref(),
-  )
+  invoke_managed(paths, role, &request, environment.as_ref())
 }
 
 pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
@@ -504,14 +559,15 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
 }
 
 pub fn identity_for_graph(paths: &Paths, role: &str, graph: &Value) -> Result<Value> {
-  ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
-  let environment = if role == "egia" {
-    Some(crate::domain::graph::generated_v2::egia_launch_env(graph)?)
+  ensure!(matches!(role, "eos" | "ei"), "unknown setup core {role}");
+  let environment = if role == "ei" {
+    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
   } else {
     None
   };
-  let reply = invoke_with_env(
-    &selected_adapter(paths, role)?,
+  let reply = invoke_managed(
+    paths,
+    role,
     &json!({"schema_version":SETUP_SCHEMA_VERSION,"op":"identity","core":role}),
     environment.as_ref(),
   )?;
@@ -551,9 +607,10 @@ fn identity_with_env(
   role: &str,
   environment: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<Value> {
-  ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
-  let reply = invoke_with_env(
-    &selected_adapter(paths, role)?,
+  ensure!(matches!(role, "eos" | "ei"), "unknown setup core {role}");
+  let reply = invoke_managed(
+    paths,
+    role,
     &json!({"schema_version":SETUP_SCHEMA_VERSION,"op":"identity","core":role}),
     environment,
   )?;
@@ -568,33 +625,29 @@ fn identity_with_env(
 pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result<()> {
   let graph_path = paths.node_graph_path(name);
   let saved =
-    graph_compat::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
+    graph_contract::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
   ensure!(
     saved.revision == expected_revision,
     "node graph revision changed during setup"
   );
   let graph = saved.value;
-  if graph_compat::uses_revisioned_generation(&graph) {
-    let proposal = crate::domain::graph::graph_migration::Proposal {
-      graph: graph.clone(),
-      bytes: Vec::new(),
-      revision: expected_revision.to_owned(),
-      changes: Vec::new(),
-    };
-    let prepared = crate::domain::graph::graph_migration::prepare(paths, name, &proposal)
-      .map_err(anyhow::Error::new)?;
-    verify_rendered_snapshot(paths, name, &graph, expected_revision, &prepared.files)?;
-    verify_launch_inputs(paths, name)?;
-    return Ok(());
-  }
-  graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
-  let files = render_graph(paths, name, &graph, expected_revision)?;
-  let _lock = crate::runtime::lock::Lock::take(paths)?;
   ensure!(
-    revision(&fs::read(&graph_path)?) == expected_revision,
-    "node graph revision changed during setup"
+    !graph
+      .pointer("/cores/isos/layers")
+      .and_then(Value::as_object)
+      .is_some_and(serde_json::Map::is_empty),
+    "saved graph is empty; add nodes and Apply before Run"
   );
-  write_rendered(paths, name, files)
+  let proposal = crate::domain::graph::graph_apply::Proposal {
+    graph: graph.clone(),
+    bytes: Vec::new(),
+    revision: expected_revision.to_owned(),
+  };
+  let prepared = crate::domain::graph::graph_apply::prepare(paths, name, &proposal)
+    .map_err(anyhow::Error::new)?;
+  verify_rendered_snapshot(paths, name, &graph, expected_revision, &prepared.files)?;
+  verify_launch_inputs(paths, name)?;
+  Ok(())
 }
 
 /// Revalidate a previously applied graph against the currently configured cores.
@@ -602,60 +655,23 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
 pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
   let graph_path = paths.node_graph_path(name);
   let saved =
-    graph_compat::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
-  if graph_compat::uses_revisioned_generation(&saved.value) {
-    if !snapshot_root(paths, name, &saved.revision).exists()
-      && !paths.generated(name).join("selection.json").exists()
-      && !paths
-        .generated(name)
-        .join("v2/required")
-        .join(format!("{}.json", saved.revision))
-        .exists()
-    {
-      return Ok(None);
-    }
-    verify_launch_inputs(paths, name).map_err(|error| {
-            anyhow::anyhow!(
-                "0.1.0 generated inputs are stale or invalid: {error:#}; restore the selected inputs or Apply the same saved revision again; `isos init` keeps the generation immutable"
-            )
-        })?;
-    return Ok(None);
-  }
-  if !paths
-    .generated(name)
-    .join("core-setup/launch-inputs.json")
-    .is_file()
+    graph_contract::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
+  if !snapshot_root(paths, name, &saved.revision).exists()
+    && !paths.generated(name).join("selection.json").exists()
+    && !paths
+      .generated(name)
+      .join("v2/required")
+      .join(format!("{}.json", saved.revision))
+      .exists()
   {
     return Ok(None);
   }
-  let graph = saved.value;
-  if let Some(diagnostic) = graph_compat::version_diagnostic(&graph) {
-    bail!(
-      "saved graph version is incompatible: {diagnostic}; run `isos init` to create a v1 starter after resolving migration; {} was left untouched",
-      graph_path.display()
-    );
-  }
-  graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
-  ensure!(
-    graph["version"] == "1.0.0",
-    "saved graph version {} cannot be refreshed as graph format 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",
-    graph["version"],
-    graph_path.display()
-  );
-  crate::runtime::process::validate_value(paths, &graph)?;
-  let specs =
-    crate::runtime::process::project_with_packages(paths, &serde_json::to_string(&graph)?)?;
-  let catalog = process::catalog_for_graph(paths, &graph)?;
-  crate::runtime::process::reader_features::check(paths, &graph, &specs, &catalog)?;
-  let expected_revision = saved.revision;
-  let files = render_graph(paths, name, &graph, &expected_revision)?;
-  let _lock = crate::runtime::lock::Lock::take(paths)?;
-  ensure!(
-    revision(&fs::read(&graph_path)?) == expected_revision,
-    "node graph changed during init; retry after saving the graph"
-  );
-  write_rendered(paths, name, files)?;
-  Ok(Some(expected_revision))
+  verify_launch_inputs(paths, name).map_err(|error| {
+            anyhow::anyhow!(
+                "generated inputs are stale or invalid: {error:#}; restore the selected inputs or Apply the same saved revision again; `isos init` keeps the generation immutable"
+            )
+        })?;
+  Ok(None)
 }
 
 pub fn render_graph(
@@ -664,27 +680,22 @@ pub fn render_graph(
   graph: &Value,
   expected_revision: &str,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>> {
-  let egia_process = ei_owner_selected(graph);
-  let eos_selected = graph["cores"].get("eos").is_some()
-    || (graph["version"] == "0.2.0"
-      && graph
-        .pointer("/cores/isos/layers")
-        .and_then(Value::as_object)
-        .is_some_and(|layers| layers.keys().any(|name| name.starts_with("eos_"))));
-  let roles = ["eos", "egia"]
+  let ei_process = ei_owner_selected(graph);
+  let eos_selected = graph["cores"].get("eos").is_some();
+  let roles = ["eos", "ei"]
     .into_iter()
-    .filter(|role| *role == "eos" && eos_selected || *role == "egia" && egia_process);
+    .filter(|role| *role == "eos" && eos_selected || *role == "ei" && ei_process);
   let mut files = Vec::new();
   let mut seen_files = BTreeSet::new();
   for role in roles {
     let reply = call(paths, name, role, "render", graph, expected_revision).map_err(|error| {
-      if graph_compat::uses_revisioned_generation(graph) {
+      if graph_contract::uses_revisioned_generation(graph) {
         anyhow::Error::new(crate::domain::graph::generated_v2::owner_rejected(role))
       } else {
         error
       }
     })?;
-    if graph_compat::uses_revisioned_generation(graph) && reply["ok"] != true {
+    if graph_contract::uses_revisioned_generation(graph) && reply["ok"] != true {
       return Err(crate::domain::graph::generated_v2::owner_rejected(role).into());
     }
     ensure!(
@@ -698,13 +709,9 @@ pub fn render_graph(
       "setup adapter returned too many files"
     );
     for entry in entries {
-      let directory = if role == "egia" && graph["version"] == "0.2.0" {
-        "ei"
-      } else {
-        role
-      };
+      let directory = role;
       let file = safe_file(directory, entry).map_err(|error| {
-        if graph_compat::uses_revisioned_generation(graph) {
+        if graph_contract::uses_revisioned_generation(graph) {
           anyhow::Error::new(crate::domain::graph::generated_v2::unsafe_render())
         } else {
           error
@@ -714,66 +721,23 @@ pub fn render_graph(
         seen_files.insert(file.0.clone()),
         "duplicate setup file path"
       );
-      if role == "egia" && graph["version"] == "0.1.0" && file.0 == Path::new("egia/stages.json") {
-        let mut expected = serde_json::to_vec(&json!({
-            "revision":expected_revision,
-            "version":graph["version"],
-            "cores":{"egia":graph["cores"]["egia"]}
-        }))?;
-        expected.push(b'\n');
-        ensure!(
-          file.1 == expected,
-          "EGIA stage overlay differs from saved graph revision"
-        );
-      }
-      if role == "egia" && graph["version"] == "0.2.0" && file.0 == Path::new("ei/stages.json") {
-        verify_unified_ei_overlay(&file.1, graph, expected_revision)?;
-      }
       files.push(file);
-    }
-    if role == "egia" && graph["version"] == "0.1.0" {
-      let has_stage = graph_compat::has_egia_stages(graph);
-      ensure!(
-        !has_stage || seen_files.contains(Path::new("egia/stages.json")),
-        "EGIA owner omitted stage overlay for registered stages"
-      );
-      ensure!(
-        has_stage || !seen_files.contains(Path::new("egia/stages.json")),
-        "EGIA owner emitted stage overlay without registered stages"
-      );
-    }
-    if role == "egia"
-      && graph["version"] == "0.2.0"
-      && graph
-        .pointer("/cores/isos/layers")
-        .and_then(Value::as_object)
-        .is_some_and(|layers| layers.keys().any(|name| name.starts_with("ei_")))
-    {
-      ensure!(
-        seen_files.contains(Path::new("ei/stages.json")),
-        "EI owner omitted stage overlay for registered stages"
-      );
     }
   }
   let mut inputs = Vec::new();
   if eos_selected {
-    for binary in [
-      "aether-profile",
-      "aether-runtime",
-      "aether-http-bridge",
-      "aether-config-server",
-    ] {
+    for binary in ["aether-profile", "aether-runtime"] {
       let path = crate::runtime::process::core_bins::resolve(binary)?;
       inputs.push(
         json!({"core":"eos","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}),
       );
     }
   }
-  if egia_process {
-    for binary in ["egia-config", "egia"] {
-      let path = selected_adapter(paths, "egia")?.with_file_name(binary);
+  if ei_process {
+    for binary in ["ei-config", "ei"] {
+      let path = selected_adapter(paths, "ei")?.with_file_name(binary);
       inputs.push(
-        json!({"core":"egia","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}),
+        json!({"core":"ei","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}),
       );
     }
   }
@@ -785,16 +749,13 @@ pub fn render_graph(
 }
 
 fn ei_owner_selected(graph: &Value) -> bool {
-  graph_compat::has_unified_ei_layers(graph)
-    || graph
-      .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
-      .is_some_and(|node| node["enabled"] != false)
+  graph["cores"].get("ei").is_some()
 }
 
 pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
   let graph_path = paths.node_graph_path(name);
-  let saved = graph_compat::read(&graph_path)?;
-  let file = if graph_compat::uses_revisioned_generation(&saved.value) {
+  let saved = graph_contract::read(&graph_path)?;
+  let file = if graph_contract::uses_revisioned_generation(&saved.value) {
     verify_revisioned(paths, name, &saved.value, &saved.revision)?;
     crate::domain::graph::generated_v2::selected_root(paths, name, &saved.value, &saved.revision)?
       .join("core-setup/launch-inputs.json")
@@ -807,7 +768,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
       file.display()
     )
   })?)?;
-  let remedy = if graph_compat::uses_revisioned_generation(&saved.value) {
+  let remedy = if graph_contract::uses_revisioned_generation(&saved.value) {
     "restore the pinned binary or create a new graph revision and Apply"
   } else {
     "run `isos init`, then restart"
@@ -825,10 +786,10 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
           .as_str()
           .context("launch input binary is missing")?,
       )?,
-      Some("egia") => selected_adapter(paths, "egia")?.with_file_name(
+      Some("ei") => selected_adapter(paths, "ei")?.with_file_name(
         input["binary"]
           .as_str()
-          .context("EGIA launch input binary missing")?,
+          .context("EI launch input binary missing")?,
       ),
       _ => bail!("unknown launch input core"),
     };
@@ -988,39 +949,50 @@ pub fn verify_rendered_snapshot(
   Ok(())
 }
 
-pub fn write_rendered(paths: &Paths, name: &str, files: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
-  let generated = paths.generated(name);
-  fs::create_dir_all(&generated)?;
-  let root = generated.join("core-setup");
-  let staging = tempfile::Builder::new()
-    .prefix("core-setup-")
-    .tempdir_in(&generated)?;
-  for (relative, content) in files {
-    config::atomic_write(&staging.path().join(relative), &content)?;
-  }
-  let backup = generated.join("core-setup.previous");
-  if backup.exists() {
-    fs::remove_dir_all(&backup)?;
-  }
-  if root.exists() {
-    fs::rename(&root, &backup)?;
-  }
-  if let Err(error) = fs::rename(staging.path(), &root) {
-    if backup.exists() {
-      let _ = fs::rename(&backup, &root);
-    }
-    return Err(error.into());
-  }
-  if backup.exists() {
-    fs::remove_dir_all(backup)?;
-  }
-  Ok(())
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::os::unix::fs::PermissionsExt;
+
+  #[test]
+  fn draft_options_use_selected_adapter_with_manager_socket_present() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path());
+    paths.prepare().unwrap();
+    fs::write(paths.socket(), b"stale manager socket placeholder").unwrap();
+    let graph: Value = serde_json::from_slice(
+      &fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json"),
+      )
+      .unwrap(),
+    )
+    .unwrap();
+    let revision =
+      crate::domain::graph::graph_contract::revision(&serde_json::to_vec(&graph).unwrap());
+    let reply = preview_options(&paths, "default", "eos", &graph, &revision).unwrap();
+    assert_eq!(reply["ok"], true);
+    assert!(reply["catalog"]["setting_options"].is_array());
+  }
+
+  #[test]
+  fn pooled_demo_options_use_one_selected_adapter_generation() {
+    if std::env::var_os("ISOS_EI_BIN_DIR").is_none() {
+      return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path());
+    paths.prepare().unwrap();
+    fs::write(paths.socket(), b"stale manager socket placeholder").unwrap();
+    let graph: Value = serde_json::from_slice(
+      &fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json"),
+      )
+      .unwrap(),
+    )
+    .unwrap();
+    let options = crate::domain::graph::node_options::for_graph(&paths, &graph).unwrap();
+    assert!(options["setting_options"].is_array());
+  }
 
   #[test]
   fn setup_identity_requires_exact_supported_owner_version() {
@@ -1044,34 +1016,39 @@ mod tests {
   }
 
   #[test]
-  fn unified_ei_overlay_must_match_revision_and_exact_projection() {
-    let graph = json!({"version":"0.2.0","robot":{"id":"r"},"cores":{"isos":{"layers":{"ei_io":{"groups":{}},"eos_dispatcher":{"groups":{}}}}}});
-    let mut expected = crate::domain::graph::single_core::owner_projection(&graph, "ei").unwrap();
-    expected["revision"] = json!("selected");
-    assert!(
-      verify_unified_ei_overlay(&serde_json::to_vec(&expected).unwrap(), &graph, "selected")
-        .is_ok()
-    );
-    expected["revision"] = json!("stale");
-    assert!(
-      verify_unified_ei_overlay(&serde_json::to_vec(&expected).unwrap(), &graph, "selected")
-        .is_err()
-    );
-    expected["revision"] = json!("selected");
-    expected["cores"]["isos"]["layers"]["eos_dispatcher"] = json!({"groups":{}});
-    assert!(
-      verify_unified_ei_overlay(&serde_json::to_vec(&expected).unwrap(), &graph, "selected")
-        .is_err()
-    );
+  fn owner_projection_keeps_only_its_core_layers() {
+    let graph = json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{
+      "isos":{"layers":{"ui":{"groups":{}}}},
+      "ei":{"layers":{"io":{"groups":{}},"cognition":{"groups":{}},"governance":{"groups":{}}}},
+      "eos":{"layers":{"interface":{"groups":{}},"dispatcher":{"groups":{}},"hardware":{"groups":{}}}}
+    }});
+    let ei = crate::domain::graph::single_core::owner_projection(&graph, "ei").unwrap();
+    let eos = crate::domain::graph::single_core::owner_projection(&graph, "eos").unwrap();
+    assert!(ei.pointer("/cores/ei/layers/io").is_some());
+    assert!(ei.pointer("/cores/eos").is_none());
+    assert!(eos.pointer("/cores/eos/layers/hardware").is_some());
+    assert!(eos.pointer("/cores/ei").is_none());
   }
 
   #[test]
-  fn unified_ei_layers_select_owner_without_legacy_process_node() {
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"ei_io":{"groups":{}},"eos_dispatcher":{"groups":{}}}}}});
+  fn health_only_three_core_graph_selects_ei_and_default_owner_endpoints() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path());
+    let graph = json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{
+      "isos":{"layers":{"ui":{"groups":{}}}},
+      "ei":{"layers":{"io":{"groups":{}}}},
+      "eos":{"layers":{"hardware":{"groups":{}}}}
+    }});
     assert!(ei_owner_selected(&graph));
-    let no_ei =
-      json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_dispatcher":{"groups":{}}}}}});
-    assert!(!ei_owner_selected(&no_ei));
+    let resolved = endpoints(&paths, "default", &graph).unwrap();
+    assert_eq!(
+      resolved["eos_gateway"],
+      json!({"transport":"tcp","host":"127.0.0.1","port":16200})
+    );
+    assert_eq!(resolved["ei_northbound"]["port"], EI_NORTHBOUND_PORT);
+    let mut absent = graph.clone();
+    absent["cores"].as_object_mut().unwrap().remove("ei");
+    assert!(!ei_owner_selected(&absent));
   }
 
   fn paths(root: &Path) -> Paths {
@@ -1084,7 +1061,7 @@ mod tests {
 
   #[test]
   fn rejects_escaping_adapter_paths() {
-    for path in ["../eos/x", "/tmp/x", "egia/x", "eos/../x", "eos\\x"] {
+    for path in ["../eos/x", "/tmp/x", "ei/x", "eos/../x", "eos\\x"] {
       assert!(
         safe_file("eos", &json!({"path":path,"content":"x"})).is_err(),
         "{path}"
@@ -1116,6 +1093,15 @@ mod tests {
     assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
     fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
     assert!(invoke(&script, &json!({"schema_version":2,"op":"identity"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":false,\"diagnostics\":[{\"path\":\"/graph/cores/isos/layers/ei_io/groups/link/nodes/gateway/node_type\",\"code\":\"unsupported_node_type_version\",\"message\":\"unsupported type\"}],\"files\":[]}'\nexit 2\n").unwrap();
+    let rejected = invoke(&script, &json!({"schema_version":2,"op":"render"})).unwrap();
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(
+      rejected["diagnostics"][0]["code"],
+      "unsupported_node_type_version"
+    );
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\nexit 2\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
   }
 
   #[test]
@@ -1154,7 +1140,7 @@ mod tests {
       resolved["eos_gateway"],
       json!({"transport":"tcp","host":"127.0.0.1","port":16200})
     );
-    assert_eq!(resolved["egia_northbound"]["port"], EGIA_NORTHBOUND_PORT);
+    assert_eq!(resolved["ei_northbound"]["port"], EI_NORTHBOUND_PORT);
     let eos_args = &mut graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
       ["eos"]["settings"]["args"];
     *eos_args = json!(["--socket", "/tmp/eos.sock", "--grpc-port", "16210"]);
@@ -1200,7 +1186,7 @@ mod tests {
     paths.prepare().unwrap();
     config::atomic_write(
       &paths.node_graph_path("default"),
-      br#"{"version":"1.0.0","robot":{},"cores":{}}"#,
+      br#"{"version":"0.2.0","robot":{},"cores":{"isos":{"layers":{}}}}"#,
     )
     .unwrap();
     assert!(prepare_run(&paths, "default", "stale").is_err());
@@ -1208,7 +1194,10 @@ mod tests {
     let revision =
       crate::domain::graph::starter::revision(&paths.node_graph_path("default")).unwrap();
     let error = prepare_run(&paths, "default", &revision).unwrap_err();
-    assert!(error.to_string().contains("/robot/id"));
+    assert!(
+      error.to_string().contains("saved graph is empty"),
+      "{error}"
+    );
     assert!(!paths.generated("default").exists());
   }
 
@@ -1258,78 +1247,5 @@ mod tests {
         .to_string()
         .contains("generated_render_mismatch")
     );
-  }
-
-  #[test]
-  fn prepare_run_preserves_structured_graph_preflight_diagnostic() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = paths(temp.path());
-    paths.prepare().unwrap();
-    let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
-    let bytes = serde_json::to_vec_pretty(&graph).unwrap();
-    let graph_revision = revision(&bytes);
-    config::atomic_write(&paths.node_graph_path("default"), &bytes).unwrap();
-    let error = prepare_run(&paths, "default", &graph_revision).unwrap_err();
-    let diagnostic = error
-      .downcast_ref::<crate::domain::graph::graph_compat::Diagnostic>()
-      .expect("typed preparation diagnostic survives Run preflight");
-    assert_eq!(diagnostic.code, "owner_reader_unavailable");
-    assert_eq!(diagnostic.path, "/cores/eos");
-  }
-
-  #[test]
-  fn init_reports_stale_new_graph_inputs_without_rewriting_snapshot() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = paths(temp.path());
-    paths.prepare().unwrap();
-    let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
-    let bytes = serde_json::to_vec_pretty(&graph).unwrap();
-    let graph_revision = revision(&bytes);
-    config::atomic_write(&paths.node_graph_path("default"), &bytes).unwrap();
-    let files = vec![
-      (PathBuf::from("eos/graph.json"), b"{}".to_vec()),
-      (PathBuf::from("launch-inputs.json"), b"[]".to_vec()),
-    ];
-    let root = write_revisioned(&paths, "default", &graph, &graph_revision, files).unwrap();
-    let manifest_before = fs::read(root.join("manifest.json")).unwrap();
-    fs::write(root.join("eos/graph.json"), b"tampered").unwrap();
-    let error = refresh_after_init(&paths, "default")
-      .unwrap_err()
-      .to_string();
-    assert!(
-      error.contains("generated inputs are stale or invalid"),
-      "{error}"
-    );
-    assert!(
-      error.contains("Apply the same saved revision again"),
-      "{error}"
-    );
-    assert_eq!(
-      fs::read(root.join("manifest.json")).unwrap(),
-      manifest_before
-    );
-    assert_eq!(fs::read(paths.node_graph_path("default")).unwrap(), bytes);
-  }
-
-  #[test]
-  fn init_refresh_requires_applied_v1_graph_and_preserves_obsolete_graph() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = paths(temp.path());
-    paths.prepare().unwrap();
-    let graph_path = paths.node_graph_path("default");
-    let old_graph = br#"{"version":"2.0.0","robot":{},"cores":{}}"#;
-    config::atomic_write(&graph_path, old_graph).unwrap();
-    assert!(refresh_after_init(&paths, "default").unwrap().is_none());
-    let launch_inputs = paths
-      .generated("default")
-      .join("core-setup/launch-inputs.json");
-    config::atomic_write(&launch_inputs, b"[]").unwrap();
-    let error = refresh_after_init(&paths, "default")
-      .unwrap_err()
-      .to_string();
-    assert!(error.contains("saved graph version"));
-    assert!(error.contains("run `isos init` to create a v1 starter"));
-    assert_eq!(fs::read(&graph_path).unwrap(), old_graph);
-    assert_eq!(fs::read(launch_inputs).unwrap(), b"[]");
   }
 }

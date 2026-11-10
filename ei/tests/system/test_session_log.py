@@ -33,12 +33,12 @@ def test_collector_normalizes_datagrams_and_overrides_reserved_fields(
 ) -> None:
   layout = _layout(tmp_path)
   with SessionLogCollector(layout, LoggingConfig()) as collector:
-    collector.register(os.getpid(), "egia")
+    collector.register(os.getpid(), "ei")
     sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     sender.sendto(
       json.dumps(
         {
-          "event": "egia_ready",
+          "event": "ei_ready",
           "timestamp": "2026-09-24T01:02:03Z",
           "session_id": "forged",
           "component": "forged",
@@ -48,11 +48,11 @@ def test_collector_normalizes_datagrams_and_overrides_reserved_fields(
       str(collector.socket_path),
     )
     sender.close()
-    _wait_for(collector.log_path, "egia_ready")
+    _wait_for(collector.log_path, "ei_ready")
 
   record = json.loads(collector.log_path.read_text(encoding="utf-8").splitlines()[0])
   assert record["session_id"] == collector.session_id
-  assert record["component"] == "egia"
+  assert record["component"] == "ei"
   assert record["pid"] == os.getpid()
   assert record["source_timestamp"] == "2026-09-24T01:02:03Z"
   assert record["password"] == "<redacted>"
@@ -90,7 +90,7 @@ def test_collector_tails_only_new_eos_records_and_survives_replacement(
 
 def test_collector_publishes_metadata_and_prunes_old_sessions(tmp_path: Path) -> None:
   layout = _layout(tmp_path)
-  sessions = layout.log / "island/sessions"
+  sessions = layout.component_log("isos") / "sessions"
   sessions.mkdir(parents=True)
   for index in range(3):
     stale = sessions / f"old-{index}.jsonl"
@@ -101,7 +101,7 @@ def test_collector_publishes_metadata_and_prunes_old_sessions(tmp_path: Path) ->
     layout, LoggingConfig(max_bytes=1024, backup_count=2, retained_sessions=2)
   ) as collector:
     current = json.loads(
-      (layout.run / "island/sessions/current.json").read_text(encoding="utf-8")
+      (layout.component_run("isos") / "sessions/current.json").read_text(encoding="utf-8")
     )
     assert current["session_id"] == collector.session_id
     assert current["log_path"] == str(collector.log_path)

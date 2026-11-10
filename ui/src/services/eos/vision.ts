@@ -1,5 +1,7 @@
-const ORIGIN = typeof ISOSUI_EOS_API_ORIGIN === 'undefined' ? 'http://127.0.0.1:16020' : ISOSUI_EOS_API_ORIGIN;
-const BASE = `${ORIGIN}/api/eos/v2/vision`;
+import { request } from '../isos/api-client';
+
+const ORIGIN = typeof ISOSUI_API_ORIGIN === 'undefined' ? 'http://127.0.0.1:16000' : ISOSUI_API_ORIGIN;
+const BASE = `${ORIGIN}/api/isos/v1/owners/eos/vision`;
 const MAX_JPEG_BYTES = 8 * 1024 * 1024;
 const MAX_METADATA_BYTES = 4096;
 const MAX_FRAME_BYTES = 4 + MAX_METADATA_BYTES + MAX_JPEG_BYTES;
@@ -12,7 +14,6 @@ export interface VisionFrameMetadata { gate_path: string; sequence?: number; tim
 export interface VisionAttestation { type: 'subscribed'; graph_revision: string; projection_revision: string; runtime_stream_id: string; gate_path: string; source_path: string; gate_generation: number }
 export interface VisionFrame { metadata: VisionFrameMetadata; jpeg: Blob; jpegBytes: Uint8Array }
 export interface VisionSubscription { op: 'subscribe'; gate_path: string; revision: string; target_fps?: number; max_width_px?: number; jpeg_quality?: number }
-type LoopbackRequestInit = RequestInit & { targetAddressSpace?: 'loopback' };
 
 /** Retain an operator choice while it exists; otherwise use only the graph-linked gate. */
 export function chooseVisionGate(gates: VisionGate[], current: string, linked: string): string {
@@ -21,10 +22,7 @@ export function chooseVisionGate(gates: VisionGate[], current: string, linked: s
 }
 
 export async function getVisionGates(): Promise<VisionGates> {
-  const options: LoopbackRequestInit = { credentials: 'omit', cache: 'no-store', mode: 'cors', targetAddressSpace: 'loopback', signal: AbortSignal.timeout(4000) };
-  const response = await fetch(`${BASE}/gates`, options);
-  if (!response.ok) throw new Error(`EOS Vision discovery failed (${response.status}).`);
-  const body = await response.json() as VisionGates;
+  const body = await request<VisionGates>('/owners/eos/vision/gates', 'GET', undefined, AbortSignal.timeout(4000));
   if (!body || typeof body.revision !== 'string' || !body.revision || !Array.isArray(body.gates) || body.gates.some((gate) => !gate || typeof gate.path !== 'string' || !gate.path)) throw new Error('EOS returned an invalid Vision gate catalog.');
   return body;
 }

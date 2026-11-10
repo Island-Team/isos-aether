@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use aether_common::events::{
-  Event, EventSink, NonblockingStderr, Reason, Source, Stage, local_run_id, valid_run_id,
+  Event, EventSink, LocalCoreLog, Reason, Source, Stage, local_run_id, valid_run_id,
 };
 use aether_common::io::read_bounded;
 use aether_common::time::SystemClock;
@@ -27,17 +27,25 @@ fn main() {
     println!(
       "{}",
       json!({"product_version":env!("CARGO_PKG_VERSION"),"graph_version":aether_node_profile::GRAPH_VERSION,
-            "node_type_version":"1.0","supported_graph_versions":["1.0.0","0.1.0","0.2.0"],
-            "supported_node_type_versions":["1.0","0.1","0.2"],
+            "node_type_version":"0.2","supported_graph_versions":["0.2.0"],
+            "supported_node_type_versions":["0.2"],
             "supported_node_types":aether_node_profile::builtin_reader_node_types(),
             "binary":"aether-config-server",
-            "features":["short-paths","node-types","data-idl","primitive-binding","catalog","graph-0.1-reader"]})
+            "features":["short-paths","node-types","data-idl","primitive-binding","catalog"]})
     );
     return;
   }
-  if launch().is_err() {
+  if let Err(error) = launch() {
+    aether_common::diagnostics::report(
+      &aether_common::diagnostics::directory(),
+      "config",
+      "error",
+      "config_failed",
+      &error.to_string(),
+      None,
+    );
     if !EVENT_INITIALIZED.load(Ordering::SeqCst) {
-      eprintln!("aether-config-server: invalid launch arguments");
+      eprintln!("aether-config-server: invalid launch arguments: {error}");
     }
     std::process::exit(1);
   }
@@ -69,14 +77,31 @@ fn launch() -> Result<(), Box<dyn std::error::Error>> {
   let sink = EventSink::new(
     Source::Config,
     run_id.unwrap_or_else(local_run_id),
-    NonblockingStderr::new()?,
+    LocalCoreLog::new()?,
     SystemClock,
   )?;
   EVENT_INITIALIZED.store(true, Ordering::SeqCst);
+  let diagnostic_dir = aether_common::diagnostics::directory();
+  aether_common::diagnostics::report(
+    &diagnostic_dir,
+    "config",
+    "info",
+    "config_starting",
+    "EOS config server starting",
+    None,
+  );
   let _ = sink.emit(Event::Starting, None);
   let mut stage = Stage::Profile;
   let result = run(path, address, &node_types, &sink, &mut stage);
-  if result.is_err() {
+  if let Err(error) = &result {
+    aether_common::diagnostics::report(
+      &diagnostic_dir,
+      "config",
+      "error",
+      "config_start_failed",
+      &format!("stage={stage:?} cause={error}"),
+      None,
+    );
     let reason = match stage {
       Stage::Profile => Reason::ProfileInvalid,
       Stage::Registry => Reason::RegistryInvalid,
@@ -92,7 +117,7 @@ fn run(
   path: String,
   address: SocketAddr,
   node_types: &[PathBuf],
-  sink: &EventSink<NonblockingStderr, SystemClock>,
+  sink: &EventSink<LocalCoreLog, SystemClock>,
   stage: &mut Stage,
 ) -> Result<(), Box<dyn std::error::Error>> {
   let bytes = read_bounded(path, MAX_PROFILE_BYTES)?;
@@ -138,10 +163,26 @@ fn run(
     }
   }
   let _ = sink.emit(Event::Ready { node_count: 0 }, None);
+  aether_common::diagnostics::report(
+    &aether_common::diagnostics::directory(),
+    "config",
+    "info",
+    "config_ready",
+    "EOS config server ready",
+    None,
+  );
   while !TERMINATE.load(Ordering::SeqCst) {
     match listener.accept() {
       Ok((mut stream, _)) => {
         if let Err(error) = serve(&mut stream, &catalog) {
+          aether_common::diagnostics::report(
+            &aether_common::diagnostics::directory(),
+            "config",
+            "warn",
+            "config_request_failed",
+            &error.to_string(),
+            None,
+          );
           let body = json!({"ok":false,"error":error}).to_string();
           let _ = reply(&mut stream, 400, "application/json", body.as_bytes());
         }

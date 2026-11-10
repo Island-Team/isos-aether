@@ -1,14 +1,18 @@
 //! Operator inspection and owner-controlled stop without PID signaling.
 
 use crate::{
-  app::cli::PhysicalStopCommand, app::config::Paths, runtime::owners::dependent_stop,
-  runtime::logs::LogStore, runtime::manager::manager_call,
+  app::cli::PhysicalStopCommand,
+  app::config::Paths,
+  runtime::owners::dependent_stop,
+  runtime::logs::LogStore,
+  runtime::manager::{manager_call, owner_deployment},
 };
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
   fs,
+  os::unix::fs::MetadataExt,
   os::unix::net::UnixStream,
   path::Path,
   thread,
@@ -20,8 +24,9 @@ const NAMES: &[&str] = &[
   "aether-runtime",
   "aether-http-bridge",
   "aether-config-server",
-  "egia-runtime",
-  "egia",
+  "ei-runtime",
+  "ei",
+  "aether-profile",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,7 +38,7 @@ struct Candidate {
   ownership: &'static str,
 }
 
-fn candidates_at(root: &Path, self_pid: u32) -> Result<Vec<Candidate>> {
+fn candidates_at(root: &Path, self_pid: u32, strict: bool) -> Result<Vec<Candidate>> {
   let mut found = Vec::new();
   for entry in fs::read_dir(root)? {
     let entry = entry?;
@@ -48,8 +53,18 @@ fn candidates_at(root: &Path, self_pid: u32) -> Result<Vec<Candidate>> {
       continue;
     }
     let path = entry.path();
-    let Ok(executable) = fs::read_link(path.join("exe")) else {
-      continue;
+    if strict {
+      match fs::metadata(&path) {
+        Ok(metadata) if metadata.uid() != unsafe { libc::geteuid() } => continue,
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+        Err(error) => return Err(error.into()),
+      }
+    }
+    let executable = match fs::read_link(path.join("exe")) {
+      Ok(executable) => executable,
+      Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound => continue,
+      Err(error) => return Err(error.into()),
     };
     let display = executable.to_string_lossy();
     let name = display
@@ -58,17 +73,38 @@ fn candidates_at(root: &Path, self_pid: u32) -> Result<Vec<Candidate>> {
       .rsplit('/')
       .next()
       .unwrap_or("");
-    if !NAMES.contains(&name) {
+    let cmdline = if name.starts_with("python") {
+      match fs::read(path.join("cmdline")) {
+        Ok(cmdline) => Some(cmdline),
+        Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+      }
+    } else {
+      None
+    };
+    let python_owner = name.starts_with("python")
+      && cmdline.is_some_and(|cmdline| {
+        cmdline
+          .windows(b"ei.config_cli".len())
+          .any(|part| part == b"ei.config_cli")
+          && cmdline.windows(b"owner".len()).any(|part| part == b"owner")
+      });
+    if !NAMES.contains(&name) && !python_owner {
       continue;
     }
-    let Ok(stat) = fs::read_to_string(path.join("stat")) else {
-      continue;
+    let stat = match fs::read_to_string(path.join("stat")) {
+      Ok(stat) => stat,
+      Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound => continue,
+      Err(error) => return Err(error.into()),
     };
-    let Some(parent_pid) = stat
+    let parent_pid = stat
       .rsplit_once(") ")
       .and_then(|(_, fields)| fields.split_whitespace().nth(1))
-      .and_then(|value| value.parse::<u32>().ok())
-    else {
+      .and_then(|value| value.parse::<u32>().ok());
+    let Some(parent_pid) = parent_pid else {
+      if strict {
+        bail!("candidate process identity is malformed: {pid}");
+      }
       continue;
     };
     found.push(Candidate {
@@ -84,10 +120,28 @@ fn candidates_at(root: &Path, self_pid: u32) -> Result<Vec<Candidate>> {
 }
 
 fn candidates() -> Result<Vec<Candidate>> {
-  candidates_at(Path::new("/proc"), std::process::id())
+  candidates_at(Path::new("/proc"), std::process::id(), false)
+}
+
+fn recovery_candidates() -> Result<Vec<Candidate>> {
+  candidates_at(Path::new("/proc"), std::process::id(), true)
 }
 
 pub(crate) fn offline_status(paths: &Paths, deployment: &str) -> Value {
+  if owner_deployment::emergency_stopped(paths, deployment) {
+    return json!({
+      "schema_version": "1.0.0",
+      "state": "stopped",
+      "last_error": null,
+      "active_revision": null,
+      "processes": [],
+      "run_id": null,
+      "run_id_state": "unknown",
+      "terminal": {"outcome":"emergency_signal_unproven"},
+      "manager": {"state":"stopped"},
+      "services": []
+    });
+  }
   let (run_id, run_id_state) = LogStore::new(paths, deployment)
     .map(|store| store.run_identity())
     .unwrap_or((None, "unavailable"));
@@ -185,6 +239,23 @@ fn validate_recovery_request(
   Ok(())
 }
 
+fn validate_owner_recovery_request(
+  before: &Value,
+  attest_safe: bool,
+  remaining: &[Candidate],
+) -> Result<()> {
+  if !attest_safe {
+    bail!("operator must attest the backend is safe before recovery");
+  }
+  if before["manager"]["state"] != "stopped" {
+    bail!("stop the IsOS manager before operator recovery");
+  }
+  if !remaining.is_empty() {
+    bail!("possible processes remain; identify them before recovery");
+  }
+  Ok(())
+}
+
 pub(crate) fn run(paths: &Paths, deployment: &str, command: PhysicalStopCommand) -> Result<()> {
   let before = status(paths, deployment).context("cannot verify IsOS manager status")?;
   match command {
@@ -258,7 +329,21 @@ pub(crate) fn run(paths: &Paths, deployment: &str, command: PhysicalStopCommand)
       run_id,
       attest_safe,
     } => {
-      let remaining = candidates()?;
+      let remaining = recovery_candidates()?;
+      if owner_deployment::interrupted_run_id(paths, deployment)?.as_deref() == Some(&run_id) {
+        validate_owner_recovery_request(&before, attest_safe, &remaining)?;
+        owner_deployment::publish_operator_recovery(paths, deployment, &run_id)
+          .context("could not persist owner-run recovery")?;
+        println!(
+          "{}",
+          serde_json::to_string_pretty(&json!({
+              "run_id": run_id,
+              "recovery_method": "operator_attestation",
+              "note": "Operator attested backend safety; no process was signaled"
+          }))?
+        );
+        return Ok(());
+      }
       if let Err(error) = validate_recovery_request(&before, &run_id, attest_safe, &remaining) {
         println!(
           "{}",
@@ -295,10 +380,43 @@ mod tests {
       symlink(format!("/opt/bin/{name}"), path.join("exe")).unwrap();
       fs::write(path.join("stat"), format!("{pid} ({name}) S 1 0 0")).unwrap();
     }
-    let found = candidates_at(root.path(), 44).unwrap();
+    let found = candidates_at(root.path(), 44, false).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].pid, 42);
     assert_eq!(found[0].parent_pid, 1);
+  }
+
+  #[test]
+  fn candidate_scan_includes_persistent_owner_services() {
+    let root = tempfile::tempdir().unwrap();
+    for (pid, exe, cmdline) in [
+      (
+        42,
+        "/opt/bin/aether-profile",
+        b"aether-profile\0owner\0".as_slice(),
+      ),
+      (
+        43,
+        "/usr/bin/python3",
+        b"python\0-m\0ei.config_cli\0owner\0".as_slice(),
+      ),
+    ] {
+      let path = root.path().join(pid.to_string());
+      fs::create_dir(&path).unwrap();
+      symlink(exe, path.join("exe")).unwrap();
+      fs::write(path.join("cmdline"), cmdline).unwrap();
+      fs::write(path.join("stat"), format!("{pid} (owner) S 1 0 0")).unwrap();
+    }
+    let found = candidates_at(root.path(), 0, true).unwrap();
+    assert_eq!(
+      found
+        .iter()
+        .map(|candidate| candidate.pid)
+        .collect::<Vec<_>>(),
+      vec![42, 43]
+    );
+    fs::write(root.path().join("42/stat"), "malformed").unwrap();
+    assert!(candidates_at(root.path(), 0, true).is_err());
   }
 
   #[test]
@@ -360,6 +478,24 @@ mod tests {
   }
 
   #[test]
+  fn owner_receipt_recovery_requires_stopped_manager_attestation_and_no_candidates() {
+    let stopped = json!({"manager":{"state":"stopped"}});
+    assert!(validate_owner_recovery_request(&stopped, true, &[]).is_ok());
+    assert!(validate_owner_recovery_request(&stopped, false, &[]).is_err());
+    assert!(
+      validate_owner_recovery_request(&json!({"manager":{"state":"running"}}), true, &[]).is_err()
+    );
+    let candidate = Candidate {
+      pid: 42,
+      parent_pid: 1,
+      name: "aether-runtime".into(),
+      executable: "/opt/bin/aether-runtime".into(),
+      ownership: "unverified",
+    };
+    assert!(validate_owner_recovery_request(&stopped, true, &[candidate]).is_err());
+  }
+
+  #[test]
   fn offline_status_preserves_unknown_and_durable_confirmation() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Paths {
@@ -381,5 +517,21 @@ mod tests {
     assert_eq!(after["state"], "stopped");
     assert_eq!(after["terminal"]["outcome"], "confirmed");
     assert_eq!(after["terminal"]["recovery_method"], "operator_attestation");
+  }
+
+  #[test]
+  fn offline_status_reports_completed_emergency_stop() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data"),
+      runtime: temp.path().join("run"),
+    };
+    paths.prepare().unwrap();
+    owner_deployment::publish_emergency_recovery(&paths, "test").unwrap();
+    let status = offline_status(&paths, "test");
+    assert_eq!(status["state"], "stopped");
+    assert_eq!(status["last_error"], Value::Null);
+    assert_eq!(status["terminal"]["outcome"], "emergency_signal_unproven");
   }
 }

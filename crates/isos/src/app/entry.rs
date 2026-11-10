@@ -2,142 +2,78 @@ use crate::{
   app::auth,
   domain::packages,
   app::cli::{
-    AuthCommand, Cli, CommandLine, DeploymentCommand, VersionCommand, config_command, library,
-    package_command, print_init_next_steps, services_command,
+    AuthCommand, Cli, CommandLine, DeploymentCommand, config_command, library, package_command,
+    print_init_next_steps, services_command,
   },
   app::config,
   runtime::owners::core_setup,
   app::foreground::{
-    catch_interrupts, ensure_setup, open_browser, print_run_startup, serve_foreground,
-    wait_for_interrupt,
+    catch_interrupts, ensure_server, ensure_setup, open_browser, open_tui, print_run_startup,
+    serve_foreground, wait_for_interrupt,
   },
   app::server as http,
   runtime::logs as log_store,
   runtime::manager::{bind_daemon, daemon, manager_call, service_call},
   runtime::logs::manager_log,
   app::physical_stop,
-  runtime::process,
-  runtime::process::readiness,
   domain::graph::starter,
-  domain::version,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use serde_json::json;
-use std::{
-  fs,
-  os::unix::net::UnixStream,
-  process::{Command, Stdio},
-  time::Instant,
-};
+use std::{os::unix::net::UnixStream, time::Instant};
 
 pub(crate) fn run() -> Result<()> {
-  config::load_runtime_config()?;
   let cli = Cli::parse();
   if let Some(shell) = cli.generate_completion {
     generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());
     return Ok(());
   }
+  match cli.command.as_ref() {
+    Some(CommandLine::Install { source }) => return crate::app::cli::install(source),
+    Some(CommandLine::Update) => return crate::app::cli::update(),
+    Some(CommandLine::Upgrade { version }) => return crate::app::cli::upgrade(version.as_deref()),
+    Some(CommandLine::Stop { code_stdin }) => {
+      return crate::app::emergency_stop::run(&cli.deployment, *code_stdin);
+    }
+    _ => {}
+  }
+  config::load_runtime_config()?;
   let paths = config::Paths::discover()?;
   let name = cli.deployment;
   let Some(command) = cli.command else {
     ensure_setup(&paths, &name)?;
-    if UnixStream::connect(paths.socket()).is_ok() {
-      let identity = manager_call(&paths, &name, "manager_identity")?;
-      println!("IsOS workbench already running: {}", identity["ui_url"]);
-      if let Err(error) = open_browser() {
-        eprintln!(
-          "Could not open browser: {error}. Open {} manually.",
-          http::ui_url()?
-        );
-      }
-      return Ok(());
+    ensure_server(&paths, &name)?;
+    if crate::app::isosui::ui_settings()?.default_interface == "tui" {
+      open_tui()?;
+    } else {
+      open_browser()?;
+      println!("{}", http::ui_url()?);
     }
-    return serve_foreground(paths, name, false, true, false);
+    return Ok(());
   };
   match command {
-    CommandLine::Version { command } => match command {
-      VersionCommand::Check { json } => {
-        let active = if UnixStream::connect(paths.socket()).is_ok() {
-          manager_call(&paths, &name, "deployment_status").ok()
-        } else {
-          None
-        };
-        let mut report = readiness::report(&paths, &name, active.as_ref());
-        let support = version::bundled()?;
-        let graph_version = report["graph"]["version"].as_str();
-        report["version_support"] = json!({
-          "status":support.graph_status(graph_version),
-          "map":support,
-        });
-        if json {
-          println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-          println!(
-            "IsOS {} | graph {}",
-            env!("CARGO_PKG_VERSION"),
-            report["graph"]["path"].as_str().unwrap_or("unavailable")
-          );
-          println!(
-            "Local version support: {} | target graph {}",
-            report["version_support"]["status"]
-              .as_str()
-              .unwrap_or("unknown"),
-            report["version_support"]["map"]["target_graph_format"]
-              .as_str()
-              .unwrap_or("unknown")
-          );
-          for core in report["cores"].as_array().into_iter().flatten() {
-            let name = core["core"].as_str().unwrap_or("core");
-            let version = core["version"].as_str().unwrap_or("unknown");
-            let state = if core["enabled"] == false {
-              "not enabled"
-            } else if core["ready"] == true {
-              "ready"
-            } else {
-              "blocked"
-            };
-            println!(
-              "{name}: {state} | version {version} | {}",
-              core["path"].as_str().unwrap_or("not configured")
-            );
-            println!(
-              "  Graph configuration: {} | Running: {}",
-              if core["graph_configured"] == true {
-                "saved"
-              } else {
-                "missing"
-              },
-              if core["running"] == true { "yes" } else { "no" }
-            );
-            if let Some(reason) = core["reason"].as_str() {
-              println!("  Reason: {reason}");
-            }
-            if let Some(action) = core["action"].as_str() {
-              println!("  Next: {action}");
-            }
-          }
-          println!(
-            "IsosUI: {} | {}",
-            if report["isosui"]["ready"] == true {
-              "ready"
-            } else {
-              "blocked"
-            },
-            report["isosui"]["path"]
-              .as_str()
-              .unwrap_or("not configured")
-          );
-        }
-      }
-    },
+    CommandLine::Web => {
+      ensure_setup(&paths, &name)?;
+      ensure_server(&paths, &name)?;
+      open_browser()?;
+      println!("{}", http::ui_url()?);
+    }
+    CommandLine::Tui => {
+      ensure_setup(&paths, &name)?;
+      ensure_server(&paths, &name)?;
+      open_tui()?;
+    }
+    CommandLine::Install { .. } | CommandLine::Update | CommandLine::Upgrade { .. } => {
+      unreachable!()
+    }
     CommandLine::Init { mode } => {
       paths.prepare()?;
       if let Some(mode) = mode {
         paths.set_mode(&mode)?;
-      } else if !paths.config.join("mode").exists() {
-        paths.set_mode("dev")?;
+      } else if !paths.config.join("isos/launch.toml").exists() {
+        paths.set_mode("product")?;
       }
       let graph_path = starter::init(&paths, &name)?;
       let refreshed = core_setup::refresh_after_init(&paths, &name)?;
@@ -149,7 +85,7 @@ pub(crate) fn run() -> Result<()> {
         if let Err(error) = crate::app::cli::clear_saved_setup_error(&paths, &name) {
           eprintln!("core inputs refreshed, but could not clear prior setup error: {error}");
         }
-        println!("Run `isos version check` to confirm readiness.");
+        println!("Run `isos doctor` to confirm readiness.");
       } else {
         if packages::list(&paths)?.is_empty() {
           println!(
@@ -160,19 +96,8 @@ pub(crate) fn run() -> Result<()> {
       }
     }
     CommandLine::Open => {
-      if UnixStream::connect(paths.socket()).is_err() {
-        return serve_foreground(paths, name, false, true, false);
-      }
-      manager_call(&paths, &name, "manager_identity")?;
-      let url = http::ui_url()?;
-      Command::new("xdg-open")
-        .arg(&url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("launch IsosUI with xdg-open")?;
-      println!("{url}");
+      crate::app::foreground::ensure_server(&paths, &name)?;
+      crate::app::foreground::open_browser()?;
     }
     CommandLine::Run => {
       let setup_started = Instant::now();
@@ -187,12 +112,15 @@ pub(crate) fn run() -> Result<()> {
         return serve_foreground(paths, name, false, true, true);
       }
       catch_interrupts()?;
-      print_run_startup(
+      let started = manager_call(&paths, &name, "deployment_start")?;
+      print_run_startup(&paths, &name, &started)?;
+      wait_for_interrupt(
         &paths,
         &name,
-        &manager_call(&paths, &name, "deployment_start")?,
+        started["run_id"]
+          .as_str()
+          .context("start result lacks run ID")?,
       )?;
-      wait_for_interrupt(&paths, &name)?;
     }
     CommandLine::Serve { ui_live } => {
       serve_foreground(paths, name, ui_live, false, false)?;
@@ -204,29 +132,17 @@ pub(crate) fn run() -> Result<()> {
     },
     CommandLine::Start => {
       catch_interrupts()?;
-      print_run_startup(
+      let started = manager_call(&paths, &name, "deployment_start")?;
+      print_run_startup(&paths, &name, &started)?;
+      wait_for_interrupt(
         &paths,
         &name,
-        &manager_call(&paths, &name, "deployment_start")?,
+        started["run_id"]
+          .as_str()
+          .context("start result lacks run ID")?,
       )?;
-      wait_for_interrupt(&paths, &name)?;
     }
-    CommandLine::Stop => match manager_call(&paths, &name, "manager_shutdown") {
-      Ok(result) => {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        if result["terminal"].as_array().is_some_and(|terminals| {
-          terminals
-            .iter()
-            .any(|terminal| terminal["outcome"] == "unknown")
-        }) {
-          anyhow::bail!("dependent stop unconfirmed");
-        }
-      }
-      Err(_) if UnixStream::connect(paths.socket()).is_err() => {
-        println!("{}", json!({"stopped":[],"manager":"stopped"}))
-      }
-      Err(error) => return Err(error),
-    },
+    CommandLine::Stop { .. } => unreachable!(),
     CommandLine::PhysicalStop { command } => {
       physical_stop::run(&paths, &name, command)?;
     }
@@ -245,12 +161,15 @@ pub(crate) fn run() -> Result<()> {
     },
     CommandLine::Restart => {
       catch_interrupts()?;
-      print_run_startup(
+      let started = manager_call(&paths, &name, "deployment_restart")?;
+      print_run_startup(&paths, &name, &started)?;
+      wait_for_interrupt(
         &paths,
         &name,
-        &manager_call(&paths, &name, "deployment_restart")?,
+        started["run_id"]
+          .as_str()
+          .context("start result lacks run ID")?,
       )?;
-      wait_for_interrupt(&paths, &name)?;
     }
     CommandLine::Status { json: _ } => {
       let mut status = if UnixStream::connect(paths.socket()).is_ok() {
@@ -282,22 +201,31 @@ pub(crate) fn run() -> Result<()> {
       lines,
       level,
       current,
+      format,
+      follow,
     } => {
       let store = log_store::LogStore::new(&paths, &name)?;
       if current {
-        let active_revision = manager_call(&paths, &name, "deployment_status")
-          .ok()
+        anyhow::ensure!(!follow, "--follow cannot be combined with --current");
+        let status = manager_call(&paths, &name, "deployment_status").ok();
+        let active_revision = status
+          .as_ref()
           .and_then(|status| status["active_revision"].as_str().map(str::to_owned));
+        let run_id = status.as_ref().and_then(|status| status["run_id"].as_str());
         let page = store
-          .read_current(log_store::CurrentQuery {
-            source: &source,
-            level: &level,
-            node_path: None,
-            correlation_id: None,
-            cursor: None,
-            limit: lines as usize,
-            active_revision: active_revision.as_deref(),
-          })
+          .read_local_current(
+            &paths,
+            run_id,
+            log_store::CurrentQuery {
+              source: &source,
+              level: &level,
+              node_path: None,
+              correlation_id: None,
+              cursor: None,
+              limit: lines as usize,
+              active_revision: active_revision.as_deref(),
+            },
+          )
           .map_err(|error| anyhow::anyhow!("{}: {}", error.code, error.message))?;
         if let Some(anchor) = page["anchor"]["event"].as_object() {
           println!("{}", serde_json::to_string(anchor)?);
@@ -310,37 +238,58 @@ pub(crate) fn run() -> Result<()> {
         }
         return Ok(());
       }
-      for entry in store.tail_filtered(&source, lines as usize, Some(&level))? {
-        println!(
-          "{} {} [{}] {}",
-          entry["timestamp"].as_str().unwrap_or(""),
-          entry["level"].as_str().unwrap_or("").to_ascii_uppercase(),
-          entry["source"].as_str().unwrap_or(""),
-          entry["message"].as_str().unwrap_or("")
-        );
-      }
-    }
-    CommandLine::Doctor => {
-      println!("IsOS {}", env!("CARGO_PKG_VERSION"));
-      println!("graph: {}", paths.node_graph_path(&name).display());
-      println!("data: {}", paths.data.display());
-      println!("runtime: {}", paths.runtime.display());
-      let graph = paths.node_graph_path(&name);
-      match process::validate_full_graph(&graph)
-        .and_then(|_| process::project_with_packages(&paths, &fs::read_to_string(&graph)?))
-      {
-        Ok(specs) => println!("graph and package: ready ({} processes)", specs.len()),
-        Err(error) => println!("graph and package: {error}"),
-      }
-      println!(
-        "manager: {}",
-        if UnixStream::connect(paths.socket()).is_ok() {
-          "running"
-        } else {
-          "stopped"
+      if format == "log" {
+        let mut previous = Vec::new();
+        loop {
+          let current = store.tail_human(&source, lines as usize, &level)?;
+          let overlap = (0..=previous.len().min(current.len()))
+            .rev()
+            .find(|count| previous[previous.len() - *count..] == current[..*count])
+            .unwrap_or(0);
+          for line in current
+            .iter()
+            .skip(if previous.is_empty() { 0 } else { overlap })
+          {
+            println!("{line}");
+          }
+          if !follow {
+            break;
+          }
+          previous = current;
+          std::thread::sleep(std::time::Duration::from_millis(250));
         }
-      );
+      } else {
+        anyhow::ensure!(
+          !(follow && format == "json"),
+          "--follow cannot be combined with --format json"
+        );
+        let mut previous = Vec::new();
+        loop {
+          let events = store.tail_filtered(&source, lines as usize, Some(&level))?;
+          if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&events)?);
+          } else {
+            let current = events
+              .iter()
+              .map(log_store::jsonl_line)
+              .collect::<Result<Vec<_>>>()?;
+            let overlap = (0..=previous.len().min(current.len()))
+              .rev()
+              .find(|count| previous[previous.len() - *count..] == current[..*count])
+              .unwrap_or(0);
+            for line in current.iter().skip(overlap) {
+              println!("{line}");
+            }
+            previous = current;
+          }
+          if !follow {
+            break;
+          }
+          std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+      }
     }
+    CommandLine::Doctor => crate::app::cli::doctor(&paths, &name)?,
     CommandLine::Config { command } => config_command(&paths, &name, command)?,
     CommandLine::Packages { command } => package_command(&paths, command)?,
     CommandLine::Skills { command } => library(&paths, &name, "skills", command)?,

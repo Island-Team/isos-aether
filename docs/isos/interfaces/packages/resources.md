@@ -17,7 +17,14 @@ A verified release may declare resources for selectors and process settings. The
 Unknown IDs, duplicate `(kind,id)`, changed bytes, escaping paths, and symlinks fail with bounded package diagnostics. The canonical graph pointer is retained in errors. A stale revision fails before mutation. The same checks run before Apply, Run, and Restart.
 
 ```json
-{"kind":"configuration","id":"balanced","label":"Balanced","description":"General profile","path":"profiles/balanced.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+{
+  "kind": "configuration",
+  "id": "balanced",
+  "label": "Balanced",
+  "description": "General profile",
+  "path": "profiles/balanced.json",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}
 ```
 
 The hash is format-only. A publisher must use the real file digest.

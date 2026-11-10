@@ -1,9 +1,11 @@
 //! Bound package process handoff sent to a selected owner.
+#![cfg(test)]
 
 use crate::domain::launch::{PackageIdentity, ResourceSelection};
 use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf};
 
+#[cfg(test)]
 #[derive(Serialize)]
 pub(crate) struct ProcessHandoff<'a> {
   pub(crate) contract: &'static str,

@@ -4,4 +4,5 @@
 
 pub mod io;
 pub mod events;
+pub mod diagnostics;
 pub mod time;

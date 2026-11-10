@@ -1,0 +1,320 @@
+{
+  "cores": {
+    "ei": {
+      "layers": {
+        "cognition": {
+          "groups": {
+            "intent": {
+              "nodes": {
+                "forwarder": {
+                  "description": "Pass activation with its event identity",
+                  "id": "forwarder",
+                  "inputs": {
+                    "activation": {
+                      "node": "ei/io/input/trigger",
+                      "output": "activation"
+                    }
+                  },
+                  "label": "EI cognition",
+                  "node_type": "ei.cognition.intent.forwarder@v0.2"
+                }
+              }
+            },
+            "state": {
+              "nodes": {
+                "arm_status": {
+                  "description": "Pass the observed arm state through cognition",
+                  "id": "arm_status",
+                  "inputs": {
+                    "observation": {
+                      "node": "ei/io/input/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EI cognition state",
+                  "node_type": "ei.cognition.state.arm_status@v0.2"
+                }
+              }
+            }
+          }
+        },
+        "governance": {
+          "groups": {
+            "monitor": {
+              "nodes": {
+                "arm_status": {
+                  "description": "Validate the arm observation before presentation",
+                  "id": "arm_status",
+                  "inputs": {
+                    "observation": {
+                      "node": "ei/cognition/state/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EI monitor governance",
+                  "node_type": "ei.governance.monitor.arm_status@v0.2",
+                  "settings": {
+                    "forward_rate_hz": 10
+                  }
+                }
+              }
+            },
+            "safety": {
+              "nodes": {
+                "gate": {
+                  "description": "Gate activation before EOS",
+                  "id": "gate",
+                  "inputs": {
+                    "activation": {
+                      "node": "ei/cognition/intent/forwarder",
+                      "output": "activation"
+                    }
+                  },
+                  "label": "EI safety",
+                  "node_type": "ei.governance.safety.gate@v0.2"
+                }
+              }
+            }
+          }
+        },
+        "io": {
+          "groups": {
+            "input": {
+              "nodes": {
+                "arm_status": {
+                  "description": "Receive run-fenced arm state from EOS",
+                  "id": "arm_status",
+                  "inputs": {
+                    "observation": {
+                      "node": "eos/interface/egress/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EI monitor input",
+                  "node_type": "ei.io.input.arm_status@v0.2"
+                },
+                "trigger": {
+                  "description": "Receive button activation",
+                  "id": "trigger",
+                  "inputs": {
+                    "activation": {
+                      "node": "isos/ui/button/trigger",
+                      "output": "activation"
+                    }
+                  },
+                  "label": "EI input",
+                  "node_type": "ei.io.input.trigger@v0.2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "eos": {
+      "layers": {
+        "dispatcher": {
+          "groups": {
+            "arm": {
+              "nodes": {
+                "delta": {
+                  "description": "Admit the declared arm delta",
+                  "id": "delta",
+                  "inputs": {
+                    "delta": {
+                      "node": "eos/skill/demo/joint_delta",
+                      "output": "delta"
+                    }
+                  },
+                  "label": "Arm dispatcher",
+                  "node_type": "eos.dispatcher.arm.delta@v0.2"
+                },
+                "monitor": {
+                  "description": "Check every local arm sample before command admission",
+                  "id": "monitor",
+                  "inputs": {
+                    "observation": {
+                      "node": "eos/hardware/mock/arm_observer",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EOS arm safety monitor",
+                  "node_type": "eos.dispatcher.arm.monitor@v0.2"
+                }
+              }
+            }
+          }
+        },
+        "hardware": {
+          "groups": {
+            "mock": {
+              "nodes": {
+                "arm": {
+                  "adapter": {
+                    "settings": {},
+                    "type": "mock-arm"
+                  },
+                  "capabilities": [
+                    "joint_positions"
+                  ],
+                  "description": "Hold six joint positions in memory",
+                  "frame_id": "mock_arm",
+                  "health_timing": {
+                    "poll_interval_ms": 10,
+                    "stale_after_ms": 50
+                  },
+                  "id": "arm",
+                  "inputs": {
+                    "delta": {
+                      "node": "eos/dispatcher/arm/delta",
+                      "output": "delta"
+                    }
+                  },
+                  "joint_names": [
+                    "joint_1",
+                    "joint_2",
+                    "joint_3",
+                    "joint_4",
+                    "joint_5",
+                    "joint_6"
+                  ],
+                  "label": "Mock six-joint arm",
+                  "movement": {
+                    "limits": {
+                      "max_joint_position_rad": 3.14,
+                      "max_joint_speed_rad_s": 1
+                    },
+                    "modes": [
+                      "joint_positions"
+                    ]
+                  },
+                  "node_type": "eos.hardware.mock.arm@v0.2",
+                  "observation": {
+                    "max_payload_bytes": 1024,
+                    "max_rate_hz": 100
+                  }
+                },
+                "arm_observer": {
+                  "description": "Source the independently sampled mock arm state without an actuator input",
+                  "id": "arm_observer",
+                  "label": "Arm observation source",
+                  "node_type": "eos.hardware.mock.arm_observer@v0.2"
+                }
+              }
+            }
+          }
+        },
+        "interface": {
+          "groups": {
+            "egress": {
+              "nodes": {
+                "arm_status": {
+                  "description": "Publish the latest checked arm observation to EI",
+                  "id": "arm_status",
+                  "inputs": {
+                    "observation": {
+                      "node": "eos/skill/demo/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EOS monitor egress",
+                  "node_type": "eos.interface.egress.arm_status@v0.2"
+                }
+              }
+            },
+            "ingress": {
+              "nodes": {
+                "trigger": {
+                  "description": "Receive gated activation",
+                  "id": "trigger",
+                  "inputs": {
+                    "activation": {
+                      "node": "ei/governance/safety/gate",
+                      "output": "activation"
+                    }
+                  },
+                  "label": "EOS ingress",
+                  "node_type": "eos.interface.ingress.trigger@v0.2"
+                }
+              }
+            }
+          }
+        },
+        "skill": {
+          "groups": {
+            "demo": {
+              "nodes": {
+                "arm_status": {
+                  "description": "Pass checked arm state toward the interface",
+                  "id": "arm_status",
+                  "inputs": {
+                    "observation": {
+                      "node": "eos/dispatcher/arm/monitor",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EOS skill status",
+                  "node_type": "eos.skill.demo.arm_status@v0.2"
+                },
+                "joint_delta": {
+                  "description": "Map activation to a small joint delta",
+                  "id": "joint_delta",
+                  "inputs": {
+                    "activation": {
+                      "node": "eos/interface/ingress/trigger",
+                      "output": "activation"
+                    }
+                  },
+                  "label": "Demo arm skill",
+                  "node_type": "eos.skill.demo.joint_delta@v0.2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "isos": {
+      "layers": {
+        "ui": {
+          "groups": {
+            "button": {
+              "nodes": {
+                "trigger": {
+                  "description": "Submit an asynchronous movement; follow its result by event ID",
+                  "id": "trigger",
+                  "label": "Forward: move arm",
+                  "node_type": "isos.ui.button.trigger@v0.2"
+                }
+              }
+            },
+            "monitor": {
+              "nodes": {
+                "arm": {
+                  "description": "Read the latest arm state independently of movement completion",
+                  "id": "arm",
+                  "inputs": {
+                    "observation": {
+                      "node": "ei/governance/monitor/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "Return: arm state",
+                  "node_type": "isos.ui.monitor.arm@v0.2",
+                  "settings": {
+                    "refresh_rate_hz": 5
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "robot": {
+    "id": "default",
+    "name": "Async control and monitor demo"
+  },
+  "version": "0.2.0"
+}

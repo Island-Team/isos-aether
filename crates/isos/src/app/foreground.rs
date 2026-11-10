@@ -19,6 +19,188 @@ use std::{
   time::{Duration, Instant},
 };
 
+fn server_healthy() -> Result<bool> {
+  let url = format!("{}/api/isos/v1/system/health", http::local_origin()?);
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(2))
+    .build()?;
+  let reply = match client.get(url).send() {
+    Ok(reply) => reply,
+    Err(error) if error.is_connect() => return Ok(false),
+    Err(error) => return Err(error.into()),
+  };
+  ensure!(
+    reply.status().is_success(),
+    "IsOS API port is occupied by an unhealthy server"
+  );
+  let body: Value = reply.json()?;
+  ensure!(
+    body["ok"] == true
+      && body["data"]["service"] == "isos"
+      && body["data"]["api_schema_version"] == "0.1.0",
+    "IsOS API port is occupied by a different or incompatible server"
+  );
+  Ok(true)
+}
+
+/// Start only the control plane; UI clients and deployment workers are separate.
+pub(crate) fn ensure_server(paths: &config::Paths, name: &str) -> Result<()> {
+  if server_healthy()? {
+    let origin = http::local_origin()?;
+    let identity = manager_call(paths, name, "manager_identity").with_context(|| {
+      format!(
+        "IsOS HTTP is ready at {origin}, but the selected manager IPC at {} is unavailable; stop the server using this API port or select unused ISOS_HTTP_PORT and ISOSUI_PORT values",
+        paths.socket().display()
+      )
+    })?;
+    ensure!(
+      identity["api_origin"] == origin,
+      "IsOS HTTP at {origin} belongs to a different manager than the selected IPC at {} (manager API: {}); stop the conflicting server or select unused ISOS_HTTP_PORT and ISOSUI_PORT values",
+      paths.socket().display(),
+      identity["api_origin"]
+    );
+    if paths.mode()? == "dev" {
+      let running = identity["executable"].as_str().unwrap_or_default();
+      let selected = std::env::current_exe()?;
+      ensure!(
+        running == selected.to_string_lossy(),
+        "IsOS at {origin} runs {running}; stop that manager before using the local build at {}",
+        selected.display()
+      );
+      use sha2::{Digest, Sha256};
+      let selected_sha256 = hex::encode(Sha256::digest(std::fs::read(&selected)?));
+      ensure!(
+        identity["executable_sha256"] == selected_sha256,
+        "IsOS at {origin} runs an older local build; run ./isos stop, then ./isos web"
+      );
+    }
+    return Ok(());
+  }
+  ensure!(
+    UnixStream::connect(paths.socket()).is_err(),
+    "IsOS manager IPC is active but HTTP is unavailable"
+  );
+  paths.prepare()?;
+  let store = log_store::LogStore::new(paths, name)?;
+  store.append_process(
+    "ui-server",
+    "info",
+    "ui_server_spawning",
+    "Starting local Web server",
+  )?;
+  let mut command = Command::new(std::env::current_exe()?);
+  command
+    .arg("--deployment")
+    .arg(name)
+    .arg("serve")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+  unsafe {
+    command.pre_exec(|| {
+      if libc::setsid() < 0 {
+        return Err(std::io::Error::last_os_error());
+      }
+      Ok(())
+    });
+  }
+  let mut child = command.spawn().context("start IsOS server")?;
+  let deadline =
+    Instant::now() + Duration::from_millis(isosui::ui_settings()?.connection.startup_timeout_ms);
+  loop {
+    if server_healthy()? && UnixStream::connect(paths.socket()).is_ok() {
+      store.append_process(
+        "ui-server",
+        "info",
+        "ui_server_ready",
+        "Local Web server ready",
+      )?;
+      return Ok(());
+    }
+    if let Some(status) = child.try_wait()? {
+      let _ = store.append_process(
+        "ui-server",
+        "error",
+        "ui_server_exited",
+        &format!("Local Web server exited during startup: {status}"),
+      );
+      bail!("IsOS server exited during startup ({status}); inspect IsOS JSONL log");
+    }
+    if Instant::now() >= deadline {
+      let _ = store.append_process(
+        "ui-server",
+        "error",
+        "ui_server_timeout",
+        "Local Web server did not become healthy",
+      );
+      bail!("IsOS server did not become healthy; inspect IsOS JSONL log");
+    }
+    std::thread::sleep(Duration::from_millis(100));
+  }
+}
+
+pub(crate) fn open_tui() -> Result<()> {
+  let tui_logs = match config::Paths::discover().and_then(|paths| {
+    log_store::LogStore::new(
+      &paths,
+      &std::env::var("ISOS_DEPLOYMENT").unwrap_or_else(|_| "default".into()),
+    )
+  }) {
+    Ok(logs) => Some(logs),
+    Err(error) => {
+      eprintln!("IsOS TUI log unavailable: {error:#}");
+      None
+    }
+  };
+  if let Some(logs) = &tui_logs {
+    let _ = logs.append_event(
+      "isos",
+      "info",
+      "tui_starting",
+      "IsOS terminal workbench starting",
+    );
+  }
+  let result = (|| -> Result<()> {
+    let entry = std::env::var_os("ISOSUI_TUI_ENTRY")
+      .map(PathBuf::from)
+      .unwrap_or_else(|| {
+        let binary = std::env::current_exe().unwrap_or_default();
+        let installed = binary
+          .parent()
+          .and_then(Path::parent)
+          .map(|prefix| prefix.join("share/isos/ui/tui/index.js"))
+          .unwrap_or_default();
+        if installed.is_file() {
+          installed
+        } else {
+          Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist/tui/index.js")
+        }
+      });
+    ensure!(
+      entry.is_file(),
+      "IsOS TUI is missing at {}; reinstall the product",
+      entry.display()
+    );
+    let status = Command::new("node")
+      .arg(&entry)
+      .arg("--origin")
+      .arg(http::local_origin()?)
+      .status()
+      .with_context(|| format!("start IsOS TUI at {}", entry.display()))?;
+    ensure!(status.success(), "IsOS TUI exited with {status}");
+    Ok(())
+  })();
+  if let Some(logs) = &tui_logs {
+    let (level, code, message) = if result.is_ok() {
+      ("info", "tui_stopped", "IsOS terminal workbench stopped")
+    } else {
+      ("error", "tui_failed", "IsOS terminal workbench failed")
+    };
+    let _ = logs.append_event("isos", level, code, message);
+  }
+  result
+}
+
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn interrupt_handler(_: libc::c_int) {
@@ -149,7 +331,8 @@ impl Drop for Frontend {
 }
 
 pub(crate) fn open_browser() -> Result<()> {
-  let url = http::ui_url()?;
+  let locale = crate::app::isosui::ui_settings()?.locale;
+  let url = http::ui_url_for(&locale)?;
   Command::new("xdg-open")
     .arg(&url)
     .stdin(Stdio::null())
@@ -161,6 +344,34 @@ pub(crate) fn open_browser() -> Result<()> {
 }
 
 pub(crate) fn ensure_setup(paths: &config::Paths, name: &str) -> Result<()> {
+  // Setup may run before the manager tracing subscriber exists.
+  let setup_logs = match log_store::LogStore::new(paths, name) {
+    Ok(logs) => Some(logs),
+    Err(error) => {
+      eprintln!("IsOS setup log unavailable: {error:#}");
+      None
+    }
+  };
+  if let Some(logs) = &setup_logs {
+    let _ = logs.append_event("isos", "info", "setup_starting", "IsOS setup starting");
+  }
+  let result = ensure_setup_inner(paths, name, setup_logs.as_ref());
+  if let Some(logs) = &setup_logs {
+    let (level, code, message) = if result.is_ok() {
+      ("info", "setup_completed", "IsOS setup completed")
+    } else {
+      ("error", "setup_failed", "IsOS setup failed")
+    };
+    let _ = logs.append_event("isos", level, code, message);
+  }
+  result
+}
+
+fn ensure_setup_inner(
+  paths: &config::Paths,
+  name: &str,
+  logs: Option<&log_store::LogStore>,
+) -> Result<()> {
   let old_server = Command::new("systemctl")
     .args(["--user", "is-active", "--quiet", "isos-server.service"])
     .stdout(Stdio::null())
@@ -171,10 +382,16 @@ pub(crate) fn ensure_setup(paths: &config::Paths, name: &str) -> Result<()> {
     "obsolete isos-server.service is active; stop it with `systemctl --user stop isos-server.service`, then use `isos serve`"
   );
   paths.prepare()?;
-  if !paths.config.join("mode").exists() && std::env::var_os("ISOS_MODE").is_none() {
-    paths.set_mode("dev")?;
+  if let Some(logs) = logs {
+    let _ = logs.append_event("isos", "debug", "setup_paths_ready", "IsOS paths prepared");
+  }
+  if !paths.config.join("isos/launch.toml").exists() && std::env::var_os("ISOS_MODE").is_none() {
+    paths.set_mode("product")?;
   }
   starter::init(paths, name)?;
+  if let Some(logs) = logs {
+    let _ = logs.append_event("isos", "debug", "setup_graph_ready", "IsOS graph prepared");
+  }
   Ok(())
 }
 
@@ -203,9 +420,19 @@ pub(crate) fn serve_foreground(
   catch_interrupts()?;
   let logs = log_store::LogStore::new(&paths, &name)?;
   logs.begin_manager_session()?;
+  if paths.mode()? == "dev" {
+    logs.replace_dev_history(&paths, &name)?;
+  }
   manager_log::install(logs.clone())?;
-  logs.append("isos", "info", "Starting IsOS workbench")?;
-  let main_log = logs.root().join("events.log");
+  logs.append_event(
+    "isos",
+    "info",
+    "workbench_starting",
+    "IsOS workbench starting",
+  )?;
+  let mut owner_services =
+    crate::runtime::owners::owner_services::OwnerServices::start(&paths, &name);
+  let main_log = logs.root().join("isos.jsonl");
   let mut frontend = None;
   let mut ui_issue = None;
   let static_ui = if ui_live {
@@ -225,7 +452,10 @@ pub(crate) fn serve_foreground(
           TcpStream::connect(("127.0.0.1", port)).is_err(),
           "IsosUI port belongs to another listener; stop it or configure a different port"
         );
-        Some(std::thread::spawn(move || http::serve_ui(directory)))
+        let ui_logs = logs.clone();
+        Some(std::thread::spawn(move || {
+          http::serve_ui(directory, ui_logs)
+        }))
       }
       Err(error) => {
         ui_issue = Some(format!(
@@ -275,7 +505,39 @@ pub(crate) fn serve_foreground(
       std::thread::sleep(Duration::from_millis(50));
     }
   };
+  if result.is_ok() {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+      if let Some(frontend) = frontend.as_mut()
+        && let Some(status) = frontend.0.try_wait()?
+      {
+        result = Err(anyhow::anyhow!(
+          "IsosUI npm server exited before ready: {status}"
+        ));
+        break;
+      }
+      if static_ui.as_ref().is_some_and(|ui| ui.is_finished()) {
+        result = Err(anyhow::anyhow!("IsosUI static server exited before ready"));
+        break;
+      }
+      if TcpStream::connect(("127.0.0.1", http::local_port()?)).is_ok()
+        && UnixStream::connect(paths.socket()).is_ok()
+      {
+        break;
+      }
+      if http_server.is_finished() || manager.is_finished() {
+        result = Err(anyhow::anyhow!("IsOS API or manager exited before ready"));
+        break;
+      }
+      if Instant::now() >= deadline {
+        result = Err(anyhow::anyhow!("IsOS API or manager did not become ready"));
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
   if result.is_ok() && !INTERRUPTED.load(Ordering::SeqCst) {
+    let _ = logs.append_event("isos", "info", "workbench_ready", "IsOS workbench ready");
     if static_ui.is_some() || frontend.is_some() {
       println!("{}", http::ui_url()?);
     } else if let Some(issue) = &ui_issue {
@@ -301,11 +563,18 @@ pub(crate) fn serve_foreground(
           }
         }
         Err(error) => {
+          let _ = logs.append_event(
+            "isos",
+            "error",
+            "deployment_start_failed",
+            "IsOS deployment did not start",
+          );
           eprintln!("Graph did not start: {error}. Use the workbench to finish setup.")
         }
       }
     }
     while !INTERRUPTED.load(Ordering::SeqCst) {
+      owner_services.poll();
       if let Some(frontend) = frontend.as_mut()
         && let Some(status) = frontend.0.try_wait()?
       {
@@ -342,6 +611,12 @@ pub(crate) fn serve_foreground(
       "IsOS workbench failed: {error:#}"
     );
   }
+  let _ = logs.append_event(
+    "isos",
+    "info",
+    "workbench_stopped",
+    "IsOS workbench stopped",
+  );
   result
 }
 
@@ -359,19 +634,28 @@ pub(crate) fn print_run_startup(paths: &config::Paths, name: &str, result: &Valu
     "Unified log: {}",
     paths
       .data
-      .join("logs")
+      .join("log/deployments")
       .join(name)
-      .join("events.log")
+      .join("isos.jsonl")
       .display()
   );
   Ok(())
 }
 
-pub(crate) fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()> {
+pub(crate) fn wait_for_interrupt(paths: &config::Paths, name: &str, run_id: &str) -> Result<()> {
   println!("Deployment is running; press Ctrl+C to stop it.");
   loop {
     if INTERRUPTED.load(Ordering::SeqCst) {
-      let result = manager_call(paths, name, "deployment_stop")?;
+      let result = match manager_call(paths, name, "deployment_stop") {
+        Ok(result) => result,
+        Err(_error)
+          if crate::runtime::owners::dependent_stop::recover(paths, name, run_id).outcome
+            == "confirmed" =>
+        {
+          return Ok(());
+        }
+        Err(error) => return Err(error),
+      };
       println!("{}", serde_json::to_string_pretty(&result)?);
       if result["terminal"]["outcome"] == "unknown" {
         anyhow::bail!("dependent stop unconfirmed");
@@ -379,7 +663,16 @@ pub(crate) fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()
       return Ok(());
     }
     std::thread::sleep(Duration::from_millis(200));
-    let status = manager_call(paths, name, "deployment_status")?;
+    let status = match manager_call(paths, name, "deployment_status") {
+      Ok(status) => status,
+      Err(_error)
+        if crate::runtime::owners::dependent_stop::recover(paths, name, run_id).outcome
+          == "confirmed" =>
+      {
+        return Ok(());
+      }
+      Err(error) => return Err(error),
+    };
     if status["terminal"]["outcome"] == "unknown" {
       anyhow::bail!("dependent stop unconfirmed");
     }

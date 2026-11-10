@@ -15,17 +15,16 @@ EXPECTED_IDS = {
     "manager_preflight_failure", "package_verified_pin_receipt",
     "package_unverified_receipt", "start_new_run", "start_idempotent",
     "restart_preflight_failure", "restart_recovery", "eos_runtime_ready",
-    "bridge_ready", "config_ready", "egia_ready", "child_source_spoof",
+    "bridge_ready", "config_ready", "ei_ready", "child_source_spoof",
     "child_run_mismatch", "child_pid_spoof", "node_pointer_member",
     "node_pointer_invalid_escape", "raw_line_at_8064", "raw_line_at_8065",
     "normalized_line_at_8192", "normalized_line_at_8193",
     "next_line_after_drain", "unknown_top_level", "duplicate_json_key",
     "secret_env_value", "model_prompt", "raw_frame", "periodic_duplicate",
     "first_failure", "stop_during_log_outage", "source_rotation",
-    "legacy_source_spoof_normalized", "legacy_unrelated_source_normalized",
-    "legacy_reserved_source", "unregistered_child_code",
-    "eos_claims_egia_node", "child_claims_isos_suppression",
-    "eos_runtime_suppression",
+    "external_source_spoof_normalized", "external_unrelated_source_normalized",
+    "external_reserved_source", "unregistered_child_code",
+    "eos_claims_ei_node", "child_claims_isos_suppression",
 }
 assert CASES["schema"] == "isos-jsonl-events-p06-fixtures-v1"
 rows = CASES["cases"]
@@ -41,7 +40,7 @@ raw = {
     "level": "info",
     "source": "eos",
     "core": "eos",
-    "node_path": "/cores/eos/layers/process/groups/mujoco/nodes/sim",
+    "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/sim",
     "event_code": "eos_ready",
     "run_id": "r7-cde",
     "correlation_id": None,
@@ -52,15 +51,14 @@ raw = {
 ROLE_CODES = {
     "eos": {
         "eos_starting", "eos_ready", "eos_start_failed", "eos_stopping",
-        "eos_stopped", "eos_package_admitted", "eos_package_provenance_unavailable",
+        "eos_stopped", "eos_package_admitted",
         "eos_backend_ready", "eos_backend_lost", "eos_stop_unconfirmed",
-        "eos_events_suppressed",
     },
     "bridge": {"bridge_starting", "bridge_ready", "bridge_start_failed",
                "bridge_stopping", "bridge_stopped"},
     "config": {"config_starting", "config_ready", "config_start_failed",
                "config_stopping", "config_stopped"},
-    "egia": set(json.loads((ROOT / "egia-role-policy.json").read_text())["codes"]),
+    "ei": set(json.loads((ROOT / "ei-role-policy.json").read_text())["codes"]),
 }
 
 
@@ -75,13 +73,11 @@ def valid_child(event, role="eos", run="r7-cde"):
         return False
     if event["source"] != role or event["run_id"] != run:
         return False
-    if event["core"] != ("egia" if role == "egia" else "eos"):
+    if event["core"] != ("ei" if role == "ei" else "eos"):
         return False
     if not re.fullmatch(r"[a-z0-9_]{1,64}", event["event_code"]):
         return False
     if event["event_code"] not in ROLE_CODES[role]:
-        return False
-    if event["event_code"] == "eos_events_suppressed" and event.get("fields") != {"suppressed_count": 1}:
         return False
     pointer = event.get("node_path")
     if pointer is not None:
@@ -91,7 +87,7 @@ def valid_child(event, role="eos", run="r7-cde"):
         # The admitted node-profile segment grammar excludes slash and tilde.
         if any(not p or "~" in p for p in parts[2::2]):
             return False
-        if parts[2] != ("egia" if role == "egia" else "eos"):
+        if parts[2] != "isos":
             return False
         if len(pointer.encode()) > 512:
             return False
@@ -105,37 +101,36 @@ assert not valid_child({**raw, "source": "bridge"})
 assert not valid_child({**raw, "run_id": "r-other"})
 assert not valid_child({**raw, "pid": 1})
 assert not valid_child({**raw, "node_path": raw["node_path"] + "/package"})
-assert not valid_child({**raw, "node_path": "/cores/eos/layers/process/groups/mujoco/nodes/~2"})
-assert not valid_child({**raw, "node_path": "/cores/egia/layers/common/groups/source/nodes/sim"})
+assert not valid_child({**raw, "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/~2"})
 assert not valid_child({**raw, "event_code": "eos_unknown_ready"})
 assert not valid_child({**raw, "event_code": "events_suppressed"})
-assert valid_child({**raw, "event_code": "eos_events_suppressed", "fields": {"suppressed_count": 1}})
-assert valid_child({**raw, "source": "egia", "core": "egia", "node_path": None, "event_code": "egia_ready", "message": "EGIA ready", "fields": {"generation": 3}}, role="egia")
+assert not valid_child({**raw, "event_code": "eos_events_suppressed", "fields": {"suppressed_count": 1}})
+assert valid_child({**raw, "source": "ei", "core": "ei", "node_path": None, "event_code": "ei_ready", "message": "EI ready", "fields": {"generation": 3}}, role="ei")
 
 
-def normalize_legacy(request):
+def normalize_external_input(request):
     if request["source"] in {"all", "events", "services", "isos", "browser"}:
         return None
     assert re.fullmatch(r"[A-Za-z0-9_-]{1,48}", request["source"])
     return {
         "accepted": True,
-        "source": "legacy_external",
+        "source": "external_input",
         "core": "isos",
-        "event_code": "legacy_external_event",
-        "message": "Legacy external event received",
+        "event_code": "external_input_received",
+        "message": "External input received",
         "level": request["level"],
         "run_id": "m42-abc",
         "pid": 42,
     }
 
 
-for claimed_source in ("eos", "egia", "bridge", "config", "component-alpha"):
-    legacy = normalize_legacy({"source": claimed_source, "level": "warn",
+for claimed_source in ("eos", "ei", "bridge", "config", "component-alpha"):
+    normalized = normalize_external_input({"source": claimed_source, "level": "warn",
                                "event_code": "eos_ready", "message": "ready"})
-    assert legacy["accepted"] and legacy["source"] == "legacy_external"
-    assert legacy["event_code"] == "legacy_external_event"
-    assert legacy["message"] != "ready" and legacy["run_id"].startswith("m")
-assert normalize_legacy({"source": "isos", "level": "warn"}) is None
+    assert normalized["accepted"] and normalized["source"] == "external_input"
+    assert normalized["event_code"] == "external_input_received"
+    assert normalized["message"] != "ready" and normalized["run_id"].startswith("m")
+assert normalize_external_input({"source": "isos", "level": "warn"}) is None
 
 # A child emitter trims sanitized UTF-8 text to the exact wire limit.
 base = len(line({**raw, "message": ""}))

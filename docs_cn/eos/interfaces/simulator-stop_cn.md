@@ -1,6 +1,9 @@
 # EOS 受管理模拟器停止契约
 
-[English](../../../docs/eos/interfaces/simulator-stop.md) · [MuJoCo 绑定](mujoco_cn.md) · [Dispatcher](../design/runtime/dispatcher_cn.md) · [设计](../design/runtime/simulator-stop_cn.md) · [首次使用](../usage/mujoco_cn.md#r06-受管理停止首次使用) · [R06 任务](../../../docs/island/implementation-todo.md)
+> 历史契约：当前按钮到模拟机械臂图未实现此接口。当前数据及命令路径参见[机械臂控制](arm-control_cn.md)；设置、Run、Status 和 Stop 参见[所有者生命周期](owner-health_cn.md)。
+
+
+[English](../../../docs/eos/interfaces/simulator-stop.md) · [MuJoCo 绑定](mujoco_cn.md) · Dispatcher · [设计](../design/runtime/simulator-stop_cn.md) · [首次使用](../design/process/mujoco-operations_cn.md#受管理-stop-首次使用) · R06 任务
 
 **所有者契约已实现并有限定范围的跨所有者证据；原始 R06 条目与限定范围 M3 已验收，进一步实时证明仍待完成。** EOS 拥有 Dispatcher 准入、设备适配器、直接启动的 MuJoCo 子进程及终端停止凭据。IsOS 拥有依赖进程组，从选中 EOS 子进程的 stdout 管道接收凭据。MuJoCo 通过独立、仅所有者可用的停止套接字证明底盘和机械臂分别保持。此契约不增加图字段，图连线或套接字客户均不能由此取得命令权限。
 
@@ -28,10 +31,38 @@ EOS 必须持久设置标记，才能宣称例行物理停止成功；物理伴�
 
 ## 选中子进程终端凭据
 
-受管理关闭时，EOS 在准入关闭、两部分物理结果分类、独立 MuJoCo 进程组全部成员退出且 leader 回收，以及后端两个套接字与 EOS 控制套接字均删除**之后**，向 stdout 管道写入恰好一行不超过 4096 字节（包含换行符）的 UTF-8 JSON。该凭据与 P06 stderr JSONL 分离，不得从 `eos_stopped`、退出码或日志库记录重建。EOS 将 stdout fd 设为非阻塞，等待可写后执行一次不超过 `PIPE_BUF` 的写入；短写或管道不可用时不得产生 confirmed 凭据，也不得等过期限。EOS 启动 MuJoCo 和其他 helper 时明确重定向或关闭 stdout/stderr，并对无关描述符设置 close-on-exec，避免任何后代在 EOS 退出后仍持有选中 EOS stdout 的写端。IsOS supervisor 拥有该**原始选中子进程管道**：严格凭据解析器先于日志规范化读取该行，再通过专用有界通道转交。它拒绝重复 JSON 键、未知或缺失字段、超长或不完整行、第二份凭据，以及停止期限后的凭据；将内容与实际观察到的选中 EOS PID、已准入 run/修订、后端节点和执行器路径比较，`confirmed` 还要求 EOS 退出码为零。错误管道或无效凭据一律 unknown。IsOS 不接受 MuJoCo、EGIA、bridge、config 或旧 EOS 运行产生的凭据。
 
 ```json
-{"schema_version":1,"type":"eos_terminal_stop","run_id":"r42","eos_pid":4201,"active_revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","backend_node":"eos/process/mujoco/sim","backend_pid":4210,"backend_pgid":4210,"generation_id":"00112233445566778899aabbccddeeff","stop_epoch":"1","admission_closed":true,"parts":[{"node_path":"eos/hardware/base/base-0","kind":"base","outcome":"stopped"},{"node_path":"eos/hardware/manipulator/arm-0","kind":"arm","outcome":"stopped"}],"backend_group_drained":true,"backend_reaped":true,"sockets_removed":true,"outcome":"confirmed","reason_code":null}
+{
+  "schema_version": 1,
+  "type": "eos_terminal_stop",
+  "run_id": "r42",
+  "eos_pid": 4201,
+  "active_revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+  "backend_node": "isos/eos_process/mujoco/sim",
+  "backend_pid": 4210,
+  "backend_pgid": 4210,
+  "generation_id": "00112233445566778899aabbccddeeff",
+  "stop_epoch": "1",
+  "admission_closed": true,
+  "parts": [
+    {
+      "node_path": "isos/eos_hardware/base/base-0",
+      "kind": "base",
+      "outcome": "stopped"
+    },
+    {
+      "node_path": "isos/eos_hardware/manipulator/arm-0",
+      "kind": "arm",
+      "outcome": "stopped"
+    }
+  ],
+  "backend_group_drained": true,
+  "backend_reaped": true,
+  "sockets_removed": true,
+  "outcome": "confirmed",
+  "reason_code": null
+}
 ```
 
 `parts` 按规范路径顺序恰好列出已选图中的可停止 MuJoCo 底盘和机械臂节点，每个一次。若场景未准入某种执行器，才可省略其条目；MuJoCo 的全机器人响应仍须报告底盘与机械臂的状态。显式 unknown 凭据使用 `outcome:"unknown"`、固定的 `reason_code`，并保留已单独证明的部分状态，不能以空 `parts` 隐藏已选执行器。
@@ -42,7 +73,7 @@ EOS 必须持久设置标记，才能宣称例行物理停止成功；物理伴�
 | `run_id` | ASCII token / — | 必须等于受管理 IsOS 运行 ID，长度 1–64，仅字母、数字、`_` 或 `-`；无缺省。 |
 | `eos_pid`, `backend_pid`, `backend_pgid` | 正无符号整数或可空后端 ID / 进程 ID | 必须是观察到的 EOS PID、其直接 MuJoCo 子进程 PID 和独立进程组 ID（`setsid` 后 `backend_pgid == backend_pid`）；IsOS 将 EOS PID 与选中且尚未回收的子进程比较，不能取自日志。仅在启动前回滚且结果 unknown 时，缺失的后端 ID 可为 null。 |
 | `active_revision` | 64 位小写十六进制字符串 / SHA-256 | 必须是 EOS 准入的 IsOS 已应用修订；不可退回到图字节或调用者输入。 |
-| `backend_node` | 规范短图路径 / — | 必须是所选 `eos.process.mujoco@v0.1` 实例路径，例如 `eos/process/mujoco/sim`，最多 512 字节；IsOS 对照准入选择。旧式 `/cores/...` 指针在此字段无效。 |
+| `backend_node` | 规范短图路径 / — | 必须是所选 `isos.eos_process.mujoco@v0.2` 实例路径，例如 `isos/eos_process/mujoco/sim`，最多 512 字节；IsOS 对照准入选择。 |
 | `generation_id` | 32 位小写十六进制字符串或 null / 子进程身份 | 主套接字与停止套接字证明的当前 MuJoCo generation；仅在子进程未就绪且结果 unknown 时可为 null。双套接字证明就绪后，即使停止套接字消失或后续停止响应丢失，EOS 也在终止凭据中保留这个已验证身份；它不是授权秘密。 |
 | `stop_epoch` | 规范 ASCII 十进制字符串或 null / 子进程本地计数器 | 分类后的停止返回 epoch；无有效响应时为 null。confirmed 必须提供且大于停止前捕获的 epoch；它不是图修订。 |
 | `admission_closed`, `backend_group_drained`, `backend_reaped`, `sockets_removed` | 布尔值 / — | EOS 关闭状态及自有资源的准确事实；confirmed 时均必须为 true。`backend_group_drained` 表示回收 leader 前，其原 PGID/session 和已证实的后代中除被持有的 leader 外已没有存活或 zombie 成员，也没有归属不明的新收养 EOS 直属子进程。不能从 leader PID 消失或提前看不到路径推断。 |
@@ -53,13 +84,41 @@ EOS 必须持久设置标记，才能宣称例行物理停止成功；物理伴�
 机械臂保持失败的 unknown 示例：
 
 ```json
-{"schema_version":1,"type":"eos_terminal_stop","run_id":"r42","eos_pid":4201,"active_revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","backend_node":"eos/process/mujoco/sim","backend_pid":4210,"backend_pgid":4210,"generation_id":"00112233445566778899aabbccddeeff","stop_epoch":"2","admission_closed":true,"parts":[{"node_path":"eos/hardware/base/base-0","kind":"base","outcome":"stopped"},{"node_path":"eos/hardware/manipulator/arm-0","kind":"arm","outcome":"unknown"}],"backend_group_drained":true,"backend_reaped":true,"sockets_removed":true,"outcome":"unknown","reason_code":"stop_part_unknown"}
+{
+  "schema_version": 1,
+  "type": "eos_terminal_stop",
+  "run_id": "r42",
+  "eos_pid": 4201,
+  "active_revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+  "backend_node": "isos/eos_process/mujoco/sim",
+  "backend_pid": 4210,
+  "backend_pgid": 4210,
+  "generation_id": "00112233445566778899aabbccddeeff",
+  "stop_epoch": "2",
+  "admission_closed": true,
+  "parts": [
+    {
+      "node_path": "isos/eos_hardware/base/base-0",
+      "kind": "base",
+      "outcome": "stopped"
+    },
+    {
+      "node_path": "isos/eos_hardware/manipulator/arm-0",
+      "kind": "arm",
+      "outcome": "unknown"
+    }
+  ],
+  "backend_group_drained": true,
+  "backend_reaped": true,
+  "sockets_removed": true,
+  "outcome": "unknown",
+  "reason_code": "stop_part_unknown"
+}
 ```
 
 ## 期限与生命周期
 
 EOS 从首次停止转换 `t0` 开始计算单一单调 15,000 ms 关闭期限：`t0+1,000 ms` 前关闭入口并快照目标，`t0+4,000 ms` 前分类停止套接字结果，`t0+10,000 ms` 前终止并回收子进程，`t0+13,000 ms` 前删除套接字并发布凭据，`t0+15,000 ms` 前退出。这些是总期限内的硬性**阶段期限**；错过任一阶段就将终态设为 unknown 并进入下一清理阶段，不延长时间。准入关闭后物理停止最多 3,000 ms；子进程 TERM/回收最多 6,000 ms，其中必要的身份安全 KILL 前最多等待 3,000 ms；清理及非阻塞凭据最多 3,000 ms。安全路径不会等待被阻塞的普通 worker。强杀、无法回收或清理失败，即使已获得正面物理响应也为 unknown。IsOS 默认的 20,000 ms EOS 宽限为管道交付及其自身终态发布留出 5,000 ms；显式配置更短宽限可能得到 unknown，绝不能当作成功。IsOS 的 30,000 ms 部署期限及最后 2,000 ms 强制清理仍是外层限制。无论 GUI、相机、套接字或 journal 是否阻塞，EOS 都须在自身 15,000 ms 内完成或归类 unknown。
 
-EOS 用当前 correlation ID 发出 `eos_stopping`、必要时的 `eos_stop_unconfirmed` 及 `eos_stopped` 诊断事件；只有选中管道凭据加成功 EOS 退出才可确认 IsOS 所有者结果。凭据前的崩溃或强杀导致 unknown；普通重复停止只加入首次停止。结果不确定的运动在 EOS 重启后仍受 journal 禁止；启动、停止或恢复路径都不能自动重发可能已释放的运动。即使 IsOS 曾在运行中返回 `confirmed`，manager 重启后仍降为 `unknown`，因为 IsOS 有意不持久化 confirmed；只有经审查的跨所有者恢复栅栏证明上一运行安全，才可启动新 Run。替代运行还须使用新的子进程 generation；历史凭据或日志不能悄然解除阻止。
 
-**相关：** [IsOS 依赖停止](../../isos/interfaces/cores/dependent-stop_cn.md) · [MuJoCo 停止套接字](https://github.com/Island-Team/isos-mujoco-sim/blob/master/docs_cn/mujoco/interfaces/socket_cn.md)
+**相关：** [IsOS 依赖停止](../../isos/interfaces/core/dependent-stop_cn.md) · [MuJoCo 停止套接字](https://github.com/Island-Team/isos-mujoco-sim/blob/master/docs_cn/mujoco/interfaces/socket_cn.md)

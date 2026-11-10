@@ -1,13 +1,23 @@
-# 键盘到基座的控制路径
+# 模拟机械臂控制与监控路径
 
-本页面向图作者和实现者，解释当前首个控制路径。它组合[通用节点类型](../interfaces/nodes/README_cn.md)、[UI 事件](../interfaces/ui/node-events_cn.md)和[核心交接](../interfaces/cores/README_cn.md)。该路径展示类型化桥接，不是第二套节点模式，也不是 IsOS 中的软件包专属规则。
+当前 16 节点[演示图](../../../config/graph-pool/demo.nodes.json)围绕同一模拟机械臂声明两条路径。每条连接使用注册端口和准确数据类型。IsOS 保存并准入图；EI 和 EOS 各自拥有其运行阶段。
 
-1. IsosUI 键盘节点通过设置选择一个按键或组合键。节点已启用且拥有焦点时，通过 `state` 输出发布 `pressed`、有界 `refresh` 和 `released` 状态。浏览器重复按键不会产生多个激活；失焦和卸载释放按住状态。
-2. IsOS HTTP 网关是独立的注册桥节点。其保存设置选择准确的原语绑定路径、三个机体速度分量（`x_m_s`、`y_m_s`、`yaw_rad_s`）及 50–500 毫秒租约。浏览器事件只提供按键状态、激活顺序、源路径和运行围栏。IsOS 解析保存的图并将事件转换为类型化运动请求。命令截止时间比选定租约多留 500 毫秒供归属方准入处理；驱动租约本身不会延长。
-3. EOS HTTP 网关在声明的 `movement` 输入接收请求。归属方认证并检查围栏，随后调用 EOS Dispatcher `base.velocity` 原语绑定。流式发布在准入后立即确认，不等待整个租约结束；Dispatcher 仍是唯一的驱动准入点。
-4. 原语绑定将类型化命令发往选中的基座硬件节点。EOS 拥有硬件适配器与 MuJoCo 子进程；从 IsOS 角度看，模拟器是通用已验证软件包进程。归属方在就绪前检查自身负载及停止语义。
-5. `released`、失焦、断线、运行替换及租约到期都会停止续租。归属方必须报告终止停止证据；物理停止不确定时不能报告已完成。UI 使用运行围栏状态展示待处理、已接受、终止或不确定结果。
+起始图将按钮命名为 **Forward: move arm**，将读取节点命名为 **Return: arm state**。监控设置明确指定 EI 以 10 Hz 刷新，UI 以 5 Hz 刷新。在新画布中，控制链位于上方，从左向右；观测链位于下方，从右向左。两条路径的排布仅属于 UI 布局；拖动节点后，本地会保留自定义位置。两条链之间没有连接。EOS 在本地为返回链读取同一个模拟机械臂采样器，不创建第二条执行器路径。
 
-每条边都在图中声明：UI 生产者 → IsOS 网关 → EOS 网关 → 原语绑定 → 硬件。端口数据类型和交付模式必须一致。桥接能力允许显式 HTTP 转换，不会将任意边转成传输调用。图不存储令牌、端点 URL 或未经验证的可执行文件路径。[软件包设计](packages_cn.md)说明精确锁定解析，[服务设计](server_cn.md)说明 IsOS 模块边界。
+## 控制
+
+`isos/ui/button/trigger` → `ei/io/input/trigger` → `ei/cognition/intent/forwarder` → `ei/governance/safety/gate` → `eos/interface/ingress/trigger` → `eos/skill/demo/joint_delta` → `eos/dispatcher/arm/delta` → `eos/hardware/mock/arm`。
+
+按钮发送带运行围栏的 `button_activation@v0.2`，不包含运动目标。EI 验证并传递激活事件。EOS 生成有界 `arm_joint_delta@v0.2`，经 Dispatcher 准入后更新模拟适配器。保存的图不能创建第二条执行器路径。
+
+## 观测
+
+独立观测源 `eos/hardware/mock/arm_observer` → `eos/dispatcher/arm/monitor` → `eos/skill/demo/arm_status` → `eos/interface/egress/arm_status` → `ei/io/input/arm_status` → `ei/cognition/state/arm_status` → `ei/governance/monitor/arm_status` → `isos/ui/monitor/arm`。
+
+这条路径传递 `arm_monitor_state@v0.2`。EOS 在本地以 100 Hz 采样并检查机械臂，由 EI 以最高 20 Hz 轮询最新状态；UI 以最高 5 Hz 刷新。EI 和 UI 的轮询独立于 EOS 本地安全检查；UI 读取缓慢不会阻塞控制路径。只有 EOS 根据过期或无效的本地采样阻止运动。Stop 和运行切换会清空显示的位置。
+
+2026-11-10 的双链检查遍历了已保存的图库文件，确认有 16 个节点、14 条连接和两个各含 8 个节点的连通分量。`ISOS_AETHER_BIN_DIR=$PWD/target/debug cargo test -p isos --no-fail-fast` 通过（284 个单元测试和 18 个集成测试）；`cargo fmt --all -- --check` 与 `python3 scripts/check_doc_links.py --all` 通过。IsOS 完整测试输出保存在忽略目录 `data/test/async-two-chain-20261110/`。
+
+[按钮事件](../interfaces/ui/node-events_cn.md)、[监控状态](../interfaces/ui/node-monitor_cn.md)与[数据类型](../interfaces/node/data-types_cn.md)定义外部边界。
 
 [English](../../../docs/isos/design/control-path.md)

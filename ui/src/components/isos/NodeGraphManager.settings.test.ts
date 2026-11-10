@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { parseSetting, settingValue } from './NodeGraphManager';
 
-it('round trips selected EGIA numeric settings as JSON numbers', () => {
+it('round trips selected EI numeric settings as JSON numbers', () => {
   expect(parseSetting(settingValue(8, 'positive_integer'), 'positive_integer')).toBe(8);
   expect(parseSetting(settingValue(0.25, 'positive_number'), 'positive_number')).toBe(0.25);
   expect(() => parseSetting('0', 'positive_number')).toThrow();

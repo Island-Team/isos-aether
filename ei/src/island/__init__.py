@@ -1,6 +1,6 @@
-"""Product-level lifecycle and path utilities for Island-egia.
+"""Product-level lifecycle and path utilities for Island-ei.
 
-Keep this namespace small: component behavior belongs to :mod:`egia` or
+Keep this namespace small: component behavior belongs to :mod:`ei` or
 the independently built EOS runtime, never here.
 """
 

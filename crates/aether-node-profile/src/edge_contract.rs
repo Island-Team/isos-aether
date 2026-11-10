@@ -1,10 +1,10 @@
-//! EOS-owned graph edge admission. IsOS validates the complete cross-core graph.
+//! EOS-owned graph edge admission. IsOS validates the complete graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-  DataClass, NodeProfile, NodeTypeRegistry, PortSource, PortSources, PortTransport, Profile,
-  ProfileError,
+  DataClass, DeliveryMode, NodeProfile, NodeTypeRegistry, PortSource, PortSources, PortTransport,
+  Profile, ProfileError,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,7 +13,7 @@ pub enum EosEdgeClass {
   EosLocal,
   /// Fixed Dispatcher-governed command or state path; never user-scheduled.
   FixedSafety,
-  /// Historical or registered descriptive edge with no EOS delivery promise.
+  /// Registered descriptive edge with no EOS delivery promise.
   DesignOnly,
 }
 
@@ -66,14 +66,9 @@ fn class_for(
   if is_fixed_data(data_type) || class == Some(DataClass::Command) {
     return EosEdgeClass::FixedSafety;
   }
-  if matches!(
-    source.node_type.as_str(),
-    "eos.hardware.camera@v0.1" | "isos.eos_hardware.camera@v0.2"
-  ) && output == "frame"
-    && matches!(
-      target.node_type.as_str(),
-      "eos.interface.camera_gate@v0.1" | "isos.eos_interface.camera_gate@v0.2"
-    )
+  if source.node_type == "isos.eos_hardware.camera@v0.2"
+    && output == "frame"
+    && target.node_type == "isos.eos_interface.camera_gate@v0.2"
     && input == "frame"
     && class == Some(DataClass::Image)
   {
@@ -138,7 +133,7 @@ pub(crate) fn validate(
   let mut successors: BTreeMap<String, Vec<String>> = BTreeMap::new();
   for target in profile
     .all_nodes()
-    .filter(|node| node.path().starts_with("eos/") || node.path().starts_with("isos/eos_"))
+    .filter(|node| node.path().starts_with("isos/eos_") || node.path().starts_with("eos/"))
   {
     let target_type = registry
       .get(&target.node_type)
@@ -164,7 +159,9 @@ pub(crate) fn validate(
           },
         );
         if profile.node(&source.node).is_none()
-          && crate::external_bridge_input(target, target_type, input, input_name, &source.node)
+          && (crate::external_bridge_input(target, target_type, input, input_name, &source.node)
+            || (input.transport == Some(PortTransport::None)
+              && input.delivery_mode == DeliveryMode::Declaration))
         {
           validate_qos(source, EosEdgeClass::FixedSafety, &path)?;
           continue;
@@ -205,40 +202,34 @@ pub(crate) fn validate(
             "{path}: source and input data class differ"
           )));
         }
-        let class =
-          if !producer.path().starts_with("eos/") && !producer.path().starts_with("isos/eos_") {
-            if profile.version == crate::GRAPH_VERSION
-              && producer.node_type == "egia.common.guard@v1.0"
-              && target.node_type == "eos.dispatcher.control@v1.0"
-              && input_name == "request"
-              && source.output == "request"
-            {
-              EosEdgeClass::DesignOnly
-            } else {
-              return Err(ProfileError(format!(
-                "{path}: cross-core edge lacks a declared bridge"
-              )));
-            }
-          } else {
-            if input_transport != PortTransport::InProcess {
-              return Err(ProfileError(format!(
-                "{path}: EOS-local transport is unavailable"
-              )));
-            }
-            let class = class_for(
-              producer,
-              &source.output,
-              target,
-              input_name,
-              input.data_type.id(),
-              input.data_class.or(output.data_class),
-            );
-            successors
-              .entry(source.node.clone())
-              .or_default()
-              .push(target.path().to_owned());
-            class
-          };
+        if input_transport == PortTransport::None
+          && input.delivery_mode == DeliveryMode::Declaration
+        {
+          validate_qos(source, EosEdgeClass::DesignOnly, &path)?;
+          continue;
+        }
+        if !(producer.path().starts_with("isos/eos_") || producer.path().starts_with("eos/")) {
+          return Err(ProfileError(format!(
+            "{path}: source outside EOS lacks a declared bridge"
+          )));
+        }
+        if input_transport != PortTransport::InProcess {
+          return Err(ProfileError(format!(
+            "{path}: EOS-local transport is unavailable"
+          )));
+        }
+        let class = class_for(
+          producer,
+          &source.output,
+          target,
+          input_name,
+          input.data_type.id(),
+          input.data_class.or(output.data_class),
+        );
+        successors
+          .entry(source.node.clone())
+          .or_default()
+          .push(target.path().to_owned());
         validate_qos(source, class, &path)?;
         edges.push(EosEdgeContract {
           source_node: source.node.clone(),

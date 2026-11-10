@@ -1,7 +1,6 @@
 # CMake build output
 /build/
 /target/
-/logs/test/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -10,15 +9,12 @@ Testing/
 compile_commands.json
 
 # Runtime logs and state
-/var/
-*.log
-*.jsonl
 
 # Deployment-specific integrations and bindings
 /etc/eos/eos.toml
 /etc/eos/eos.example.toml
 /etc/ext/live/binding.toml
-/etc/eos/backends/*.toml
+/etc/eos/backends/charlie.toml
 /scripts/ros2_adapter/
 /share/eos/skills/native/
 /share/eos/workflows/*.json
@@ -55,3 +51,37 @@ __pycache__/
 
 # MuJoCo writes this diagnostic file in the process working directory.
 MUJOCO_LOG.TXT
+
+# Component outputs and local settings (one repository-wide ignore file)
+/crates/isos/target/
+*.swp
+/ui/node_modules/
+/ui/dist/
+node_modules/
+dist/
+/ei/.venv/
+/ei/build/
+/ei/dist/
+/data/
+/config/deployments/
+/config/.graph-migration.lock
+/ei/captures/
+/ei/report.md
+/ei/**/*.egg-info/
+/ei/**/*.pdf
+.env
+.env.*
+!/.env.example
+*.pem
+*.key
+secrets.toml
+/ei/etc/ei/profiles/live.toml
+/ei/etc/ei/profiles/fleet.toml
+/ei/etc/ei/custom/
+
+# Machine-local launch selection
+/config/isos/launch.toml
+
+# Local graph-pool drafts; keep the shared demo tracked.
+/config/graph-pool/*
+!/config/graph-pool/demo.nodes.json

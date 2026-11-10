@@ -12,6 +12,6 @@
 | `endpoint_id` | 字符串／不透明键 | 标识生产者路由；不是 URL 或私有授权。 | 必填。 |
 | `run_id`、`graph_revision` | 字符串／运行 ID 与 SHA-256 | 将描述符限定在一个活动运行和图修订。 | 必填。 |
 
-纯[选择器](selection_cn.md)检查字段形状、编码／媒体／方法匹配、负载上限及所请求的运行／修订。注册端口与类型的绑定由上游归属方准入负责；当前 HTTP 路由无法执行实时描述符选择。[HTTP 契约](../../develop/http/presentations_cn.md)定义当前请求和错误。
+纯[选择器](selection_cn.md)检查字段形状、编码／媒体／方法匹配、负载上限及所请求的运行／修订。注册端口与类型的绑定由上游归属方准入负责；当前 HTTP 路由无法执行实时描述符选择。[HTTP 契约](../http/presentations_cn.md)定义当前请求和错误。
 
 [English](../../../../docs/isos/interfaces/ui/presentation.md)

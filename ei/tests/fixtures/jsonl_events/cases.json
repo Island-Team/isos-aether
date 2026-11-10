@@ -1,5 +1,5 @@
 {
-  "schema": "egia-jsonl-events-a03-fixtures-v2",
+  "schema": "ei-jsonl-events-a03-fixtures-v2",
   "cases": [
     {
       "id": "managed_run_valid",

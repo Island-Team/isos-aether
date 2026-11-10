@@ -1,7 +1,5 @@
 //! Resolve package-contributed processes from verified declarations and stable resource IDs.
 
-pub mod plan;
-
 use crate::{
   app::config::Paths,
   domain::packages,
@@ -80,6 +78,7 @@ pub struct ResourceSelection {
 }
 
 /// Bind a verified process declaration to the exact deployment generation at spawn time.
+#[cfg(test)]
 pub fn bind_launch(
   launch: &PackageLaunch,
   run_id: &str,
@@ -149,17 +148,13 @@ fn declared_process<'a>(
   node_type: &str,
 ) -> Option<(&'a ProcessDeclaration, &'a str)> {
   let contributions = release.node_contributions.as_ref()?;
-  if node_type == "isos.eos_process.mujoco@v0.2" && packages::is_published_mujoco_legacy(release) {
-    let process = contributions
-      .processes
-      .iter()
-      .find(|process| process.node_type == "eos.process.mujoco@v0.1")?;
-    return Some((process, "eos"));
-  }
   let process = contributions
     .processes
     .iter()
     .find(|process| process.node_type == node_type)?;
+  if node_type == "isos.eos_process.mujoco@v0.2" && packages::is_published_mujoco_release(release) {
+    return Some((process, "eos"));
+  }
   let owner = contributions
     .node_types
     .iter()
@@ -274,7 +269,7 @@ fn process_catalog(
     return catalog(root, path);
   }
   ensure!(
-    packages::is_published_mujoco_legacy(release),
+    packages::is_published_mujoco_release(release),
     "unsupported package resource catalog"
   );
   let mut resources = Vec::new();
@@ -555,7 +550,8 @@ mod tests {
       ("eos", "vendor/process/demo/one", "package_owner_mismatch"),
       ("eos", "eos/hardware/demo/one", "package_owner_mismatch"),
     ] {
-      let error = supported_owner(owner, path, "eos.process.mujoco@v0.1", &package).unwrap_err();
+      let error =
+        supported_owner(owner, path, "isos.eos_process.mujoco@v0.2", &package).unwrap_err();
       let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
       assert_eq!(failure.code, code);
       assert_eq!(failure.path, path);

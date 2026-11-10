@@ -1,6 +1,6 @@
 # Generic output data selection
 
-[中文](../../../../docs_cn/isos/interfaces/ui/selection_cn.md) · [Presentation HTTP](../../develop/http/presentations.md) · [Release types](../packages/release.md)
+[中文](../../../../docs_cn/isos/interfaces/ui/selection_cn.md) · [Presentation HTTP](../http/presentations.md) · [Release types](../packages/release.md)
 
 ## Overview
 
@@ -8,7 +8,7 @@ The release `DataType` and registered output port are the type authority. Releas
 
 ## Type authority
 
-[Node data types](../nodes/data-types.md) are the single field authority for `id`, `version`, `purpose`, `media_type`, `codec`, `schema`, and `max_payload_bytes`. A registered output port binds that type. The owner descriptor then binds node path, port, representation, delivery, opaque endpoint ID, run ID, and graph revision; see [presentation descriptor](presentation.md) for its fields. IsOS selects metadata only and never takes payload bytes or endpoint authorization.
+[Node data types](../node/data-types.md) are the single field authority for `id`, `version`, `purpose`, `media_type`, `codec`, `schema`, and `max_payload_bytes`. A registered output port binds that type. The owner descriptor then binds node path, port, representation, delivery, opaque endpoint ID, run ID, and graph revision; see [presentation descriptor](presentation.md) for its fields. IsOS selects metadata only and never takes payload bytes or endpoint authorization.
 
 ## Representation families
 
@@ -16,4 +16,5 @@ JSON records and text use `json` and `text`; JSON time series marked `time_serie
 
 ## Availability
 
-The current IsOS route performs input and run/revision checks, then returns 503 because no selected owner publishes verified public descriptors. See [presentations](../../develop/http/presentations.md) for its exact request and current error. Stop, Restart, and Apply invalidate an earlier selection.
+The current IsOS route checks input and run/revision fences, then returns 503 because the selected owner has not published a verified public descriptor. See [presentations](../http/presentations.md) for the exact request and current error. Stop, Restart, and Apply invalidate an earlier selection.
+

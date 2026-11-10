@@ -19,7 +19,20 @@
 A release may contain owner-defined opaque metadata only inside a bounded owner extension. IsOS never interprets that metadata as scene, device, library, or adapter authority. The owning core validates its semantics before declaring readiness. The [process contract](process.md) defines the generic contribution fields.
 
 ```json
-{"contract":"isos.package@v1","schema_version":"0.1.0","id":"vendor/sample-a","kind":"component","version":"1.2.3","source_commit":"0000000000000000000000000000000000000000","node_contributions":{"node_types":[],"processes":[],"node_sets":[]},"assets":[]}
+{
+  "contract": "isos.package@v1",
+  "schema_version": "0.1.0",
+  "id": "vendor/sample-a",
+  "kind": "component",
+  "version": "1.2.3",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "node_contributions": {
+    "node_types": [],
+    "processes": [],
+    "node_sets": []
+  },
+  "assets": []
+}
 ```
 
-The empty example is structurally illustrative; admission requires the selected registered type and declared owner capabilities. The [CLI publication procedure](../../maintenance/todo.md) is separate from package admission.
+The empty example is structurally illustrative; admission requires the selected registered type and declared owner capabilities. The [CLI publication procedure](../../design/remaining-work.md) is separate from package admission.

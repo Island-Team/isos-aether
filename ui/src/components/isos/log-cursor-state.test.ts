@@ -25,6 +25,14 @@ describe('P07 current-run log state', () => {
     expect(next.cursor).toBe('lc1.pending');
   });
 
+  it('shows local core records while the optional first-event anchor is pending', () => {
+    const pending = acceptCurrentLogPage(emptyCurrentLogState, page({
+      anchor: { kind: 'first_ready_or_failure', state: 'pending', event: null },
+      lines: [event('eos_ready')],
+    }));
+    expect(pending.lines.map((line) => line.event_code)).toEqual(['eos_ready']);
+  });
+
   it('preserves rows across retained rotation and exposes an expired gap', () => {
     const first = acceptCurrentLogPage(emptyCurrentLogState, page());
     const rotated = acceptCurrentLogPage(first, page({ lines: [event('deployment_stopped')], rotated: true, next_cursor: 'lc1.rotated' }));
@@ -56,8 +64,8 @@ describe('P07 current-run log state', () => {
   });
 
   it('rejects malformed node and correlation filters before request', () => {
-    expect(validNodeFilter('/cores/egia/layers/agent/groups/runtime/nodes/a')).toBe(true);
-    expect(validNodeFilter('/cores/egia/layers/agent/groups/runtime/nodes/a/settings')).toBe(false);
+    expect(validNodeFilter('/cores/isos/layers/ei_agent/groups/runtime/nodes/a')).toBe(true);
+    expect(validNodeFilter('/cores/isos/layers/ei_agent/groups/runtime/nodes/a/settings')).toBe(false);
     expect(validNodeFilter('/tmp/private')).toBe(false);
     expect(validCorrelationFilter('op_7-ok')).toBe(true);
     expect(validCorrelationFilter('with space')).toBe(false);

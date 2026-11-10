@@ -1,9 +1,10 @@
-import { catalogTypeKey, type NodeGraph, type NodeInstance, type NodeSource, type NodeTypeDefinition } from '../../services/isos/node-graph';
+import { catalogTypeKey, type ConnectionPreviewResult, type NodeGraph, type NodeInstance, type NodeSource, type NodeTypeDefinition } from '../../services/isos/node-graph';
 
 export interface GraphNode { path: string; node: NodeInstance; definition?: NodeTypeDefinition }
+export function addableTypes(types: NodeTypeDefinition[]): NodeTypeDefinition[] { return types.filter((type) => !type.deprecated); }
 export const nodeIdPattern = /^[a-z][a-z0-9_-]{0,47}$/;
 
-/** The four-segment path is canonical; legacy expanded paths remain readable during migration. */
+/** Normalize node paths to the four-segment graph form. */
 export function canonicalNodePath(path: string): string {
   const parts = path.split('/');
   if (parts.length === 8 && parts[0] === 'cores' && parts[2] === 'layers' && parts[4] === 'groups' && parts[6] === 'nodes') return `${parts[1]}/${parts[3]}/${parts[5]}/${parts[7]}`;
@@ -56,7 +57,7 @@ function nodeSlot(graph: NodeGraph, path: string): { nodes: Record<string, NodeI
 export function makeNode(id: string, definition: NodeTypeDefinition): NodeInstance {
   const node: NodeInstance = { id, node_type: definition.id, label: id, description: '' };
   // Target types receive required values from the operator or a verified node set.
-  if (definition.id.endsWith('@v0.1') || definition.id.endsWith('@v0.2')) return node;
+  if (definition.id.endsWith('@v0.2')) return node;
   node.capabilities = [];
   node.settings = {};
   node.inputs = {};
@@ -76,7 +77,6 @@ export function makeNode(id: string, definition: NodeTypeDefinition): NodeInstan
 export function addNode(graph: NodeGraph, definition: NodeTypeDefinition, id: string): NodeGraph {
   if (!nodeIdPattern.test(id)) throw new Error('Invalid node ID.');
   if (graphNodes(graph, []).some((entry) => entry.path === nodePath(definition, id))) throw new Error('A node with this ID already exists in this group.');
-  if (definition.lifecycle === 'adapter' && graphNodes(graph, []).some((entry) => /^(eos\/hardware|isos\/eos_hardware)\//.test(entry.path) && entry.node.id === id)) throw new Error('A hardware node with this ID already exists.');
   const next = graphCopy(graph);
   const core = next.cores[definition.core] ||= { layers: {} };
   const layer = core.layers[definition.layer] ||= { groups: {} };
@@ -104,6 +104,7 @@ export function removeNode(graph: NodeGraph, path: string): NodeGraph {
       return remaining.length ? [[input, Array.isArray(source) ? remaining : remaining[0]]] : [];
     }));
     entry.node.references = entry.node.references?.filter((reference) => !sameNodePath(reference, path));
+    if (entry.node.service_bindings) entry.node.service_bindings = Object.fromEntries(Object.entries(entry.node.service_bindings).filter(([, binding]) => !binding.node || !sameNodePath(binding.node, path)));
   }
   const parts = canonicalNodePath(path).split('/');
   const core = next.cores[parts[0]];
@@ -111,7 +112,7 @@ export function removeNode(graph: NodeGraph, path: string): NodeGraph {
   const group = layer.groups[parts[2]];
   if (!Object.keys(group.nodes).length) delete layer.groups[parts[2]];
   if (!Object.keys(layer.groups).length) delete core.layers[parts[1]];
-  if (!Object.keys(core.layers).length) delete next.cores[parts[0]];
+  // Core identity is part of the 0.2.0 graph even when its last node is removed.
   return next;
 }
 
@@ -128,11 +129,9 @@ export function renameNode(graph: NodeGraph, path: string, id: string): NodeGrap
   for (const entry of graphNodes(next, [])) {
     for (const value of Object.values(entry.node.inputs || {})) for (const source of inputSources(value)) if (sameNodePath(source.node, path)) source.node = newPath;
     entry.node.references = entry.node.references?.map((reference) => sameNodePath(reference, path) ? newPath : reference);
-    if (entry.node.node_type === 'eos.control.manual@v1.0' || entry.node.node_type === 'eos.control.primitive@v1.0') {
+    for (const binding of Object.values(entry.node.service_bindings || {})) if (binding.node && sameNodePath(binding.node, path)) binding.node = newPath;
+    if (entry.node.node_type === 'isos.eos_control.manual@v0.2' || entry.node.node_type === 'isos.eos_control.primitive@v0.2') {
       if (typeof entry.node.settings?.target === 'string' && sameNodePath(entry.node.settings.target, path)) entry.node.settings = { ...entry.node.settings, target: newPath };
-    }
-    if (entry.node.node_type === 'eos.control.skill@v1.0' && Array.isArray(entry.node.settings?.steps)) {
-      entry.node.settings = { ...entry.node.settings, steps: entry.node.settings.steps.map((step) => typeof step === 'string' && sameNodePath(step, path) ? newPath : step) };
     }
   }
   return next;
@@ -150,6 +149,9 @@ export function connectNodes(graph: NodeGraph, types: NodeTypeDefinition[], prov
   if (!outputType || !inputType || outputType !== inputType) throw new Error('Ports must have the same data type.');
   if ((outputPort?.transport || 'in_process') !== (inputPort.transport || 'in_process')) throw new Error('Ports must use the same transport or an explicit bridge node.');
   if (outputPort?.delivery_mode && inputPort.delivery_mode && outputPort.delivery_mode !== inputPort.delivery_mode) throw new Error('Ports must have the same delivery mode.');
+  const declaration = outputPort?.delivery_mode === 'declaration' && inputPort.delivery_mode === 'declaration';
+  if (declaration && (outputPort.transport !== 'none' || inputPort.transport !== 'none')) throw new Error('Static ports require the none channel.');
+  if (!declaration && (!outputPort?.contract || !inputPort.contract || outputPort.contract.owner !== inputPort.contract.owner || outputPort.contract.id !== inputPort.contract.id || outputPort.contract.version !== inputPort.contract.version)) throw new Error('Ports must have the same protocol contract.');
   if (provider.definition?.core !== consumer.definition?.core && (outputPort?.transport || 'in_process') === 'in_process') throw new Error('Cross-core edges need a declared transport and bridge.');
   const existing = consumer.node.inputs?.[input];
   if (existing && inputPort?.cardinality !== 'many') throw new Error('This input already has a provider.');
@@ -160,6 +162,12 @@ export function connectNodes(graph: NodeGraph, types: NodeTypeDefinition[], prov
   const source: NodeSource = { node: canonicalNodePath(providerPath), output };
   target.inputs = { ...target.inputs, [input]: inputPort?.cardinality === 'many' ? [...(existing ? inputSources(existing) : []), source] : source };
   return next;
+}
+
+/** Only a matching edge in the authoritative IsOS result can authorize a live draft wire. */
+export function admittedConnection(result: ConnectionPreviewResult, providerPath: string, output: string, consumerPath: string, input: string): boolean {
+  const edge = result.edge;
+  return !!result.allowed && !!edge && sameNodePath(edge.source, providerPath) && edge.output === output && sameNodePath(edge.target, consumerPath) && edge.input === input && edge.route_class !== 'design_only';
 }
 
 export function disconnectInput(graph: NodeGraph, consumerPath: string, input: string, providerPath?: string, output?: string): NodeGraph {
@@ -179,7 +187,7 @@ export function disconnectInput(graph: NodeGraph, consumerPath: string, input: s
 /** A primitive binding commands one device; changing its target rewires only that binding. */
 export function bindPrimitiveTarget(graph: NodeGraph, types: NodeTypeDefinition[], bindingPath: string, targetPath: string): NodeGraph {
   const binding = graphNodes(graph, types).find((entry) => sameNodePath(entry.path, bindingPath));
-  if (!binding || !binding.node.node_type.startsWith('eos.dispatcher.primitive_')) throw new Error('Choose a primitive binding.');
+  if (!binding || !binding.node.node_type.startsWith('isos.eos_dispatcher.primitive_')) throw new Error('Choose a primitive binding.');
   let next = graphCopy(graph);
   for (const entry of graphNodes(next, types)) {
     const value = entry.node.inputs?.command;

@@ -1,15 +1,15 @@
-# EGIA Q03 fixed owner benchmarks
+# EI Q03 fixed owner benchmarks
 
 These are local evidence measurements, not capacity or release thresholds. Run
 from a pinned checkout with `uv sync --extra dev --extra vec`. Save JSON under an
-ignored `logs/test/<run-id>/egia-bench/` directory and retain command output.
+ignored `data/test/<run-id>/ei-bench/` directory and retain command output.
 The default invocation runs one warm-up and five measured repetitions:
 
 ```sh
-uv run python tests/benchmarks/egia_q03.py --case stage-baseline --output logs/test/<run-id>/egia-bench/stage-baseline.json
-uv run python tests/benchmarks/egia_q03.py --case stage-contended --output logs/test/<run-id>/egia-bench/stage-contended.json
-uv run python tests/benchmarks/egia_q03.py --case vision --output logs/test/<run-id>/egia-bench/vision.json
-uv run pytest -q tests/benchmarks/test_egia_q03.py
+uv run python tests/benchmarks/ei_q03.py --case stage-baseline --output data/test/<run-id>/ei-bench/stage-baseline.json
+uv run python tests/benchmarks/ei_q03.py --case stage-contended --output data/test/<run-id>/ei-bench/stage-contended.json
+uv run python tests/benchmarks/ei_q03.py --case vision --output data/test/<run-id>/ei-bench/vision.json
+uv run pytest -q tests/benchmarks/test_ei_q03.py
 ```
 
 `--items` and `--runs` are diagnostic overrides; release evidence uses 10,000

@@ -1,7 +1,12 @@
+import "@fontsource/noto-sans-sc/400.css";
+import "@fontsource/noto-sans-sc/700.css";
+import "@fontsource/noto-serif-sc/400.css";
+import "@fontsource/noto-serif-sc/700.css";
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { IsosHome } from '@/components/isos/IsosHome';
 import { IsosLogsPanel } from '@/components/isos/IsosLogsPanel';
+import { GraphErrorBoundary } from '@/components/isos/GraphErrorBoundary';
 import { UiMessages } from '@/components/isos/UiMessages';
 import { WorkspacePanel } from '@/components/isos/WorkspacePanel';
 import { clampPanel, defaultWorkspaceLayout, layoutKey, readWorkspaceLayout, SURFACES, type PanelLayout, type Surface, type WorkspaceLayout } from '@/components/isos/workspace-layout';
@@ -18,7 +23,7 @@ import '@/styles/global.scss';
 
 const NodeGraphManager = lazy(async () => ({ default: (await import('@/components/isos/NodeGraphManager')).NodeGraphManager }));
 const EosWorkbench = lazy(async () => ({ default: (await import('@/components/isos/EosWorkbench')).EosWorkbench }));
-const EgiaWorkbench = lazy(async () => ({ default: (await import('@/components/isos/EgiaWorkbench')).EgiaWorkbench }));
+const EiWorkbench = lazy(async () => ({ default: (await import('@/components/isos/EiWorkbench')).EiWorkbench }));
 
 installBrowserErrorLogging();
 
@@ -98,10 +103,10 @@ function App(): React.ReactElement {
     return () => { disposed = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [stopFenceEpoch, onStatus]);
   const stopDeployment = async (): Promise<void> => { const before = status; onStopIntent(before?.run_id || null); try { const reply = await stopDeploymentConverged(); const after = await getProcessStatus().catch(() => null); const feedback = stopReplyFeedback(reply, before, lang, after); publishUiMessage(feedback.text, feedback.alert ? 'error' : 'info'); onStopOutcome(feedback, reply.terminal?.run_id || null); onStatus(after); } catch (error) { const feedback = stopFailureFeedback(error, lang); publishUiMessage(feedback.text, 'error'); onStopOutcome(feedback); } };
-  type Page = 'home' | 'graph' | 'eos' | 'egia';
+  type Page = 'home' | 'graph' | 'eos' | 'ei';
   const [page, setPage] = useState<Page>(() => {
     const segment = new URLSearchParams(window.location.search).get('page');
-    return segment === 'home' || segment === 'eos' || segment === 'egia' ? segment : 'graph';
+    return segment === 'home' || segment === 'eos' || segment === 'ei' ? segment : 'graph';
   });
   const openPage = (next: Page): void => {
     window.history.pushState({ page: next }, '', `/${lang}/isos${next === 'graph' ? '' : `?page=${next}`}`);
@@ -113,18 +118,18 @@ function App(): React.ReactElement {
     setLang(value);
   };
   React.useEffect(() => {
-    const onPop = (): void => { const segment = new URLSearchParams(window.location.search).get('page'); setPage(segment === 'home' || segment === 'eos' || segment === 'egia' ? segment : 'graph'); };
+    const onPop = (): void => { const segment = new URLSearchParams(window.location.search).get('page'); setPage(segment === 'home' || segment === 'eos' || segment === 'ei' ? segment : 'graph'); };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  const labels = lang === 'cn' ? { home: '首页', graph: '节点图', eos: 'EOS', egia: 'EI', language: '语言', stop: '停止部署', logs: '日志', monitor: '监控', vision: '视觉', control: '控制', connection: '连接', revision: '运行中修订', stale: '保存修订与运行中修订不同', unknownRun: '运行身份未知', draft: '有未应用的节点图修改' } : { home: 'Home', graph: 'Graph', eos: 'EOS', egia: 'EI', language: 'Language', stop: 'Stop deployment', logs: 'Logs', monitor: 'Monitor', vision: 'Vision', control: 'Control', connection: 'Connection', revision: 'Active revision', stale: 'Saved and active revisions differ', unknownRun: 'Run identity unknown', draft: 'Unapplied graph edits' };
-  return <div className="isos-workbench"><UiMessages lang={lang} /><nav className="isos-workbench__nav" aria-label="IsOS"><a className="isos-workbench__brand" href="https://www.os-island.com" aria-label="Island website">ISOS<span> / Aether</span></a><div role="group" aria-label="Pages">{(['graph', 'eos', 'egia'] as Page[]).map((name) => <button type="button" key={name} className={page === name ? 'active' : ''} aria-current={page === name ? 'page' : undefined} onClick={() => openPage(name)}>{labels[name]}</button>)}</div><button type="button" className="isos-workbench__stop" onClick={() => void stopDeployment()}>{labels.stop}</button><button type="button" onClick={() => changeLanguage(lang === 'en' ? 'cn' : 'en')} aria-label={labels.language}>{lang === 'en' ? '中文' : 'EN'}</button></nav>
+  const labels = lang === 'cn' ? { home: '首页', graph: '节点图', eos: 'EOS', ei: 'EI', language: '语言', stop: '停止部署', logs: '日志', monitor: '监控', vision: '视觉', control: '控制', connection: '连接', revision: '运行中修订', stale: '保存修订与运行中修订不同', unknownRun: '运行身份未知', draft: '有未应用的节点图修改' } : { home: 'Home', graph: 'Graph', eos: 'EOS', ei: 'EI', language: 'Language', stop: 'Stop deployment', logs: 'Logs', monitor: 'Monitor', vision: 'Vision', control: 'Control', connection: 'Connection', revision: 'Active revision', stale: 'Saved and active revisions differ', unknownRun: 'Run identity unknown', draft: 'Unapplied graph edits' };
+  return <div className="isos-workbench"><UiMessages lang={lang} /><nav className="isos-workbench__nav" aria-label="IsOS"><a className="isos-workbench__brand" href="https://www.os-island.com" aria-label="Island website">ISOS<span> / Aether</span></a><div role="group" aria-label="Pages">{(['graph', 'eos', 'ei'] as Page[]).map((name) => <button type="button" key={name} className={page === name ? 'active' : ''} aria-current={page === name ? 'page' : undefined} onClick={() => openPage(name)}>{labels[name]}</button>)}</div><button type="button" className="isos-workbench__stop" onClick={() => void stopDeployment()}>{labels.stop}</button><button type="button" onClick={() => changeLanguage(lang === 'en' ? 'cn' : 'en')} aria-label={labels.language}>{lang === 'en' ? '中文' : 'EN'}</button></nav>
     {(connectionError || status?.saved_revision && status.active_revision && status.saved_revision !== status.active_revision || status?.run_id_state === 'unavailable' || graphDirty || stopFeedback) && <div className="isos-workbench__safety" role="region" aria-label={labels.connection}>{connectionError && <span role="alert">{connectionError}</span>}{status?.saved_revision && status.active_revision && status.saved_revision !== status.active_revision && <span role="alert">{labels.stale}</span>}{status?.run_id_state === 'unavailable' && <span role="alert">{labels.unknownRun}</span>}{graphDirty && <span role="status">{labels.draft}</span>}{stopFeedback && <span role={stopAlert ? 'alert' : 'status'}>{stopFeedback}</span>}</div>}
     <div className="isos-workbench__panel-menu" role="toolbar" aria-label={lang === 'cn' ? '工作面板' : 'Workspace panels'}>{SURFACES.map((name) => <button type="button" key={name} aria-pressed={layout[name].open} onClick={() => updatePanel(name, { open: !layout[name].open })}>{labels[name]}</button>)}</div>
     {page === 'home' && <IsosHome lang={lang} onOpenGraph={() => openPage('graph')} onOpenLogs={() => openPanel('logs')} onStopIntent={onStopIntent} onStopOutcome={onStopOutcome} graphDirty={graphDirty} />}
-    <div className="isos-workbench__graph-view" hidden={page !== 'graph'}><Suspense fallback={<p role="status">{lang === 'cn' ? '正在加载节点图…' : 'Loading node graph…'}</p>}><NodeGraphManager lang={lang} visible={page === 'graph'} onDirtyChange={setGraphDirty} onOpenPanel={openPanel} onStopIntent={onStopIntent} onStopOutcome={onStopOutcome} /></Suspense></div>
+    <div className="isos-workbench__graph-view" hidden={page !== 'graph'}><GraphErrorBoundary lang={lang} onOpenLogs={() => openPanel('logs')}><Suspense fallback={<p role="status">{lang === 'cn' ? '正在加载节点图…' : 'Loading node graph…'}</p>}><NodeGraphManager lang={lang} visible={page === 'graph'} onDirtyChange={setGraphDirty} onOpenPanel={openPanel} onStopIntent={onStopIntent} onStopOutcome={onStopOutcome} /></Suspense></GraphErrorBoundary></div>
     <div className="isos-workbench__panels"><Suspense fallback={<p role="status">{lang === 'cn' ? '正在加载 EOS…' : 'Loading EOS…'}</p>}><EosWorkbench lang={lang} onOpenGraph={() => openPage('graph')} onOpenLogs={() => openPanel('logs')} graphDirty={graphDirty} layout={layout} viewport={viewport} onPanelChange={updatePanel} onRobot={onRobot} onStatus={onStatus} onConnectionError={onConnectionError} isRunStopFenced={isRunStopFenced} onRunStopIntent={onStopIntent} onStopOutcome={onStopOutcome} /></Suspense>{layout.logs.open && <WorkspacePanel title={labels.logs} lang={lang} layout={layout.logs} viewport={viewport} onChange={(patch) => updatePanel('logs', patch)}><IsosLogsPanel lang={lang} visible={!layout.logs.collapsed} onClose={() => updatePanel('logs', { open: false })} /></WorkspacePanel>}</div>
-    {page === 'egia' && <Suspense fallback={<p role="status">{lang === 'cn' ? '正在加载 EI…' : 'Loading EI…'}</p>}><EgiaWorkbench lang={lang} onOpenGraph={() => openPage('graph')} /></Suspense>}
+    {page === 'ei' && <Suspense fallback={<p role="status">{lang === 'cn' ? '正在加载 EI…' : 'Loading EI…'}</p>}><EiWorkbench lang={lang} onOpenGraph={() => openPage('graph')} /></Suspense>}
   </div>;
 }
 

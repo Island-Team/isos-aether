@@ -1,7 +1,75 @@
 #!/usr/bin/env bash
-# EI public launcher; the EGIA wrapper remains a 0.2.1 compatibility alias.
+# EI managed runtime launcher. It resolves the repository from this file,
+# prepares the project environment, and delegates all behavior to Python.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-export EI_CLI_NAME=ei
-exec "$ROOT/bin/egia" "$@"
+LAUNCHER="$(readlink -f "${BASH_SOURCE[0]}")"
+DEFAULT_ROOT="$(cd "$(dirname "$LAUNCHER")/.." && pwd)"
+ROOT="${ISLAND_PREFIX:-$DEFAULT_ROOT}"
+CLI_NAME=ei
+MODULE_ROOT=ei
+
+# A reader probe must never bootstrap the checkout or import the decision
+# pipeline. IsOS inventories the interpreter and effective module tree used
+# by this exact launcher before it admits a managed child.
+CAPABILITY_PROBE=0
+for arg in "$@"; do
+  if [[ "$arg" == "--capabilities" ]]; then
+    if [[ "$#" -ne 1 ]]; then
+      echo "$CLI_NAME: --capabilities does not accept launch arguments" >&2
+      exit 2
+    fi
+    CAPABILITY_PROBE=1
+  fi
+done
+
+if [[ -f "$ROOT/pyproject.toml" && -d "$ROOT/src/ei" ]]; then
+  VENV="$ROOT/.venv"
+  PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-$VENV/bin/python}}"
+  if [[ "$CAPABILITY_PROBE" -eq 0 && -z "${EI_PYTHON:-}${ISLAND_PYTHON:-}" && ! -x "$PYTHON" ]]; then
+    if command -v uv >/dev/null 2>&1; then
+      uv sync --project "$ROOT" --python "${EI_PYTHON_VERSION:-3.12}"
+    else
+      BOOTSTRAP_PYTHON="python${EI_PYTHON_VERSION:-3.12}"
+      if ! command -v "$BOOTSTRAP_PYTHON" >/dev/null 2>&1; then
+        echo "$CLI_NAME: $BOOTSTRAP_PYTHON and uv are unavailable; set EI_PYTHON to an installed Python 3.12+ interpreter" >&2
+        exit 127
+      fi
+      "$BOOTSTRAP_PYTHON" -m venv "$VENV"
+      "$PYTHON" -m pip install --quiet -e "$ROOT"
+    fi
+  fi
+  export PYTHONPATH="$ROOT/src:$ROOT/libexec:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  export EI_ETC="${EI_ETC:-${ISLAND_ETC:-$ROOT/../config}/ei}"
+else
+  PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-python3.12}}"
+  export ISLAND_PREFIX="${ISLAND_PREFIX:-$ROOT}"
+  if [[ -d "$ROOT/share/contracts" && -d "$ROOT/libexec" ]]; then
+    export ISLAND_MODE="${ISLAND_MODE:-portable}"
+    export EI_ETC="${EI_ETC:-${ISLAND_ETC:-$ROOT/etc}/ei}"
+    LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
+    LIBEXEC_ROOT="${ISLAND_LIBEXEC:-$ROOT/libexec}"
+  else
+    export ISLAND_MODE="${ISLAND_MODE:-system}"
+    export EI_ETC="${EI_ETC:-${ISLAND_ETC:-/etc/island}/ei}"
+    LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
+    LIBEXEC_ROOT="${ISLAND_LIBEXEC:-$ROOT/libexec/island}"
+  fi
+  export PYTHONPATH="$LIB_ROOT:$LIBEXEC_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+  echo "$CLI_NAME: Python interpreter '$PYTHON' was not found; set EI_PYTHON to a Python 3.12+ interpreter" >&2
+  exit 127
+fi
+
+if [[ "$CAPABILITY_PROBE" -eq 1 ]]; then
+  exec "$PYTHON" -B -m "$MODULE_ROOT.reader_features"
+fi
+
+if [[ "${1:-}" == "safety" ]]; then
+  shift
+  exec "$PYTHON" -B -m "$MODULE_ROOT.safety_cli" "$@"
+fi
+
+exec "$PYTHON" -m "$MODULE_ROOT.main" "$@"

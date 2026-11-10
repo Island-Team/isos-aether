@@ -3,15 +3,35 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 struct Bridge {
   child: Child,
   address: String,
   socket: PathBuf,
-  stderr: Mutex<BufReader<ChildStderr>>,
+  log_dir: PathBuf,
+  next_event: Mutex<usize>,
+}
+static NEXT_LOG_DIR: AtomicU64 = AtomicU64::new(0);
+
+fn wait_event(log_dir: &Path, index: usize) -> serde_json::Value {
+  for _ in 0..250 {
+    if let Ok(text) = std::fs::read_to_string(log_dir.join("eos.jsonl")) {
+      let events: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|event: &serde_json::Value| event.get("event_code").is_some())
+        .collect();
+      if let Some(event) = events.get(index) {
+        return event.clone();
+      }
+    }
+    std::thread::sleep(Duration::from_millis(20));
+  }
+  panic!("EOS event {index} did not appear in {}", log_dir.display());
 }
 
 #[test]
@@ -43,33 +63,36 @@ impl Bridge {
     let address = reservation.local_addr().unwrap().to_string();
     drop(reservation);
     let mut command = Command::new(env!("CARGO_BIN_EXE_aether-http-bridge"));
+    let log_dir = std::env::temp_dir().join(format!(
+      "aether-bridge-log-{}-{}",
+      std::process::id(),
+      NEXT_LOG_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&log_dir).unwrap();
     command
       .arg("--socket")
       .arg(&socket)
       .arg("--listen")
       .arg(&address)
-      .stderr(Stdio::piped());
+      .env("EOS_LOG_DIR", &log_dir)
+      .stderr(Stdio::null());
     if let Some(port) = ui_port {
       command.env("ISOSUI_PORT", port.to_string());
     }
     if let Some(grant) = grant {
       command.env("AETHER_BRIDGE_CONTROL_GRANT_FILE", grant);
     }
-    let mut child = command.spawn().unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap());
-    let mut line = String::new();
-    stderr.read_line(&mut line).unwrap();
-    let started: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let child = command.spawn().unwrap();
+    let started = wait_event(&log_dir, 0);
     assert_eq!(started["event_code"], "bridge_starting");
-    line.clear();
-    stderr.read_line(&mut line).unwrap();
-    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let ready = wait_event(&log_dir, 1);
     assert_eq!(ready["event_code"], "bridge_ready");
     Self {
       child,
       address,
       socket,
-      stderr: Mutex::new(stderr),
+      log_dir,
+      next_event: Mutex::new(2),
     }
   }
 
@@ -85,9 +108,10 @@ impl Bridge {
   }
 
   fn event(&self) -> serde_json::Value {
-    let mut line = String::new();
-    self.stderr.lock().unwrap().read_line(&mut line).unwrap();
-    serde_json::from_str(&line).unwrap()
+    let mut next = self.next_event.lock().unwrap();
+    let event = wait_event(&self.log_dir, *next);
+    *next += 1;
+    event
   }
 }
 
@@ -303,13 +327,14 @@ fn browser_status_is_read_only_and_forwarded() {
     BufReader::new(&mut stream).read_line(&mut line).unwrap();
     assert_eq!(
       line,
-      "{\"node_path\":\"cores/eos/layers/hardware/groups/base/nodes/drive\",\"op\":\"status\"}\n"
+      "{\"node_path\":\"cores/isos/layers/eos_hardware/groups/base/nodes/drive\",\"op\":\"status\"}\n"
     );
     stream
       .write_all(b"{\"ok\":true,\"status\":{\"state\":\"stopped\",\"active_command_id\":null}}\n")
       .unwrap();
   });
-  let body = r#"{"op":"status","node_path":"cores/eos/layers/hardware/groups/base/nodes/drive"}"#;
+  let body =
+    r#"{"op":"status","node_path":"cores/isos/layers/eos_hardware/groups/base/nodes/drive"}"#;
   let response = bridge.request(&format!(
         "POST /api/eos/v2/control HTTP/1.1\r\nHost: {}\r\nOrigin: https://www.os-island.com\r\nContent-Length: {}\r\n\r\n{body}",
         bridge.address,
@@ -470,7 +495,7 @@ fn typed_browser_float_length_is_normalized_for_private_ipc() {
   let socket = root.join("eos.sock");
   let listener = UnixListener::bind(&socket).unwrap();
   let bridge = Bridge::start_with_grant(socket, None, Some(&grant));
-  let body = r#"{"op":"primitive_typed","header":{"data_type_id":"base_movement","data_type_version":"1.0","primitive_name":"base.velocity","primitive_version":"1.0.0","source_path":"eos/dispatcher/base/velocity","target_path":"eos/hardware/base/drive","active_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","command_id":"small-float-1","sequence":1,"deadline_monotonic_ns":5000000000,"payload_length_bytes":84,"codec":"json_v1"},"payload":{"type":"body_velocity","x_m_s":0.000001,"y_m_s":0,"yaw_rad_s":0,"valid_for_ms":100}}"#;
+  let body = r#"{"op":"primitive_typed","header":{"data_type_id":"base_movement","data_type_version":"1.0","primitive_name":"base.velocity","primitive_version":"1.0.0","source_path":"isos/eos_dispatcher/base/velocity","target_path":"isos/eos_hardware/base/drive","active_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","command_id":"small-float-1","sequence":1,"deadline_monotonic_ns":5000000000,"payload_length_bytes":84,"codec":"json_v1"},"payload":{"type":"body_velocity","x_m_s":0.000001,"y_m_s":0,"yaw_rad_s":0,"valid_for_ms":100}}"#;
   let expected: serde_json::Value = serde_json::from_str(body).unwrap();
   assert_eq!(serde_json::to_vec(&expected["payload"]).unwrap().len(), 80);
   let server = std::thread::spawn(move || {
@@ -481,7 +506,10 @@ fn typed_browser_float_length_is_normalized_for_private_ipc() {
     assert_eq!(private["op"], "primitive_typed");
     assert_eq!(private["header"]["payload_length_bytes"], 80);
     assert_eq!(private["header"]["command_id"], "small-float-1");
-    assert_eq!(private["header"]["target_path"], "eos/hardware/base/drive");
+    assert_eq!(
+      private["header"]["target_path"],
+      "isos/eos_hardware/base/drive"
+    );
     assert_eq!(private["payload"], expected["payload"]);
     assert_eq!(private["authority_grant"], secret);
     stream.write_all(b"{\"ok\":true,\"result\":{\"command_id\":\"small-float-1\",\"status\":\"Completed\",\"reason\":null}}\n").unwrap();
@@ -609,7 +637,7 @@ fn browser_events_correlate_long_utf8_id_and_reject_contradictory_result() {
     (&first, "InProgress", "submit"),
     (&second, "Completed", "followup"),
   ] {
-    assert_eq!(event["source"], "bridge");
+    assert_eq!(event["source"], "eos.bridge@aether-v0.2.1");
     assert_eq!(event["event_code"], "bridge_primitive_result");
     assert_eq!(event["node_path"], serde_json::Value::Null);
     assert_eq!(

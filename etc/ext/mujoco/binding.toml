@@ -1,5 +1,5 @@
 # EOS-facing binding for the external eos-mujoco-sim package. The simulator
-# process is selected separately in sim.toml. No MuJoCo library enters eosd.
+# process is selected separately in sim.toml. No MuJoCo library enters aether-runtime.
 [profile.mujoco.robot]
 robot_id = "mujoco-0"
 robot_name = "mujoco-0"

@@ -7,7 +7,7 @@ from pathlib import Path
 def main() -> None:
   path = Path(__file__).with_name("cases.json")
   payload = json.loads(path.read_text(encoding="utf-8"))
-  assert payload["schema"] == "q01-egia-vision-evidence-v1"
+  assert payload["schema"] == "q01-ei-vision-evidence-v1"
   assert payload["status"] == "target_not_implemented"
   cases = payload["cases"]
   ids = [case["id"] for case in cases]
@@ -23,7 +23,7 @@ def main() -> None:
     assert case["id"] and case["expect"]["outcome"]
     if case["expect"]["outcome"] == "reject":
       assert case["expect"].get("reason_code")
-  print(f"{len(cases)} q01-egia-vision-evidence-v1 design cases valid")
+  print(f"{len(cases)} q01-ei-vision-evidence-v1 design cases valid")
 
 
 if __name__ == "__main__":

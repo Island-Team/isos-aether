@@ -26,11 +26,20 @@ if [[ "$isos_executable" == *' '* ]]; then
   echo "IsOS executable path cannot contain spaces for this systemd unit" >&2
   exit 1
 fi
-mode_file="${ISOS_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/isos}/config/mode"
+mode_file="${ISOS_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/isos}/config/isos/launch.toml"
 if [[ -z "${ISOS_HOME:-}" ]]; then
-  mode_file="${XDG_CONFIG_HOME:-$HOME/.config}/isos/mode"
+  mode_file="${XDG_CONFIG_HOME:-$HOME/.config}/isos/isos/launch.toml"
 fi
-[[ "$(cat "$mode_file" 2>/dev/null)" == product ]] || { echo "run isos init --mode product first" >&2; exit 1; }
+selected_mode="${ISOS_MODE:-$(python3 - "$mode_file" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+
+path = Path(sys.argv[1])
+print(tomllib.loads(path.read_text()).get('launch', {}).get('mode', 'dev') if path.exists() else 'dev')
+PY
+)}"
+[[ "$selected_mode" == product ]] || { echo "run isos init --mode product first" >&2; exit 1; }
 mkdir -p "$unit_dir"
 environment_line=""
 if [[ -n "${ISOS_HOME:-}" ]]; then

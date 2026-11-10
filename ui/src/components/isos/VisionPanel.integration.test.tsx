@@ -9,12 +9,12 @@ import { VisionPanel } from './VisionPanel';
 const graphRevision = '0'.repeat(64);
 const projection = 'a'.repeat(64);
 const stream = '8b4e9b70-5481-4d88-9bd6-4f07cb466ae4';
-const gate = 'eos/interface/gate/front';
-const source = 'eos/hardware/camera/front';
+const gate = 'isos/eos_interface/gate/front';
+const source = 'isos/eos_hardware/camera/front';
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const selection = { gate_path: gate, source_path: source, projection_revision: projection, render: { max_width_px: 1280, jpeg_quality: 80 }, target_fps: 30 };
 const status: ProcessStatus = { schema_version: '1.0.0', state: 'running', run_id_state: 'known', run_id: 'run-7', saved_revision: graphRevision, active_revision: graphRevision, processes: [], vision_evidence: selection };
-const graph = { version: '0.1.0', robot: { id: 'robot', name: 'Robot' }, cores: {} } as NodeGraph;
+const graph = { version: '0.2.0', robot: { id: 'robot', name: 'Robot' }, cores: {} } as NodeGraph;
 class StubSocket {
   static instances: StubSocket[] = [];
   binaryType = '';
@@ -40,7 +40,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('WebSocket', StubSocket);
   vi.stubGlobal('crypto', { subtle: { digest: async (_algorithm: string, bytes: ArrayBuffer) => Uint8Array.from(createHash('sha256').update(new Uint8Array(bytes)).digest()).buffer } });
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ revision: projection, gates: [{ path: gate, source_path: source }] }) })));
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ schema_version: '0.1.0', ok: true, data: { revision: projection, gates: [{ path: gate, source_path: source }] }, error: null }) })));
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:frame'), revokeObjectURL: vi.fn() }));
   StubSocket.instances = [];
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
@@ -65,7 +65,7 @@ describe('mounted Vision evidence display', () => {
     expect(container.textContent).toContain('generation_stale');
     expect(container.querySelector('img')).not.toBeNull();
   });
-  it('does not display an unproved legacy subscription', async () => {
+  it('does not display an unproved subscription', async () => {
     await act(async () => root.render(<VisionPanel lang="en" graph={graph} active revision={graphRevision} status={status} />));
     const ws = StubSocket.instances[0];
     await act(async () => ws.onmessage?.({ data: '{"type":"subscribed"}' }));
@@ -77,7 +77,7 @@ describe('mounted Vision evidence display', () => {
   it('binds the public subscription and revokes a frame on Stop before a late digest completes', async () => {
     const digest = createHash('sha256').update(jpeg).digest('hex');
     await act(async () => root.render(<VisionPanel lang="en" graph={graph} active revision={graphRevision} status={status} />));
-    const ws = StubSocket.instances[0]; expect(ws.url).toContain('/api/eos/v2/vision/ws');
+    const ws = StubSocket.instances[0]; expect(ws.url).toContain('/api/isos/v1/owners/eos/vision/ws');
     await act(async () => ws.onopen?.());
     expect(JSON.parse(ws.sent[0])).toEqual({ op: 'subscribe', gate_path: gate, revision: projection, target_fps: 30, max_width_px: 1280, jpeg_quality: 80 });
     await act(async () => ws.onmessage?.({ data: JSON.stringify({ type: 'subscribed', graph_revision: graphRevision, projection_revision: projection, runtime_stream_id: stream, gate_path: gate, source_path: source, gate_generation: 0 }) }));

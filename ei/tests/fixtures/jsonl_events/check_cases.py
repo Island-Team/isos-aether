@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the frozen EGIA A03 role policy and representative boundary cases.
+"""Validate the frozen EI A03 role policy and representative boundary cases.
 
 Contract evidence only: this does not exercise the future producer or IsOS collector.
 """
@@ -9,33 +9,33 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-POLICY = json.loads((ROOT / "egia-role-policy.json").read_text())
+POLICY = json.loads((ROOT / "ei-role-policy.json").read_text())
 CASES = json.loads((ROOT / "cases.json").read_text())
 EXPECTED_CODES = {
-  "egia_starting",
-  "egia_ready",
-  "egia_start_failed",
-  "egia_stopping",
-  "egia_stopped",
-  "egia_discovery_lost",
-  "egia_discovery_restored",
-  "egia_mission_started",
-  "egia_mission_terminal",
-  "egia_safety_rejected",
-  "egia_safety_latched",
-  "egia_operation_submitted",
-  "egia_operation_terminal",
-  "egia_operation_unknown",
-  "egia_recovery_required",
-  "egia_events_suppressed",
-  "egia_stage_transition",
-  "egia_proposal_created",
-  "egia_admission_decided",
-  "egia_mission_restored",
-  "egia_monitor_episode",
-  "egia_safety_reset_requested",
-  "egia_safety_reset_completed",
-  "egia_safety_reset_refused",
+  "ei_starting",
+  "ei_ready",
+  "ei_start_failed",
+  "ei_stopping",
+  "ei_stopped",
+  "ei_discovery_lost",
+  "ei_discovery_restored",
+  "ei_mission_started",
+  "ei_mission_terminal",
+  "ei_safety_rejected",
+  "ei_safety_latched",
+  "ei_operation_submitted",
+  "ei_operation_terminal",
+  "ei_operation_unknown",
+  "ei_recovery_required",
+  "ei_events_suppressed",
+  "ei_stage_transition",
+  "ei_proposal_created",
+  "ei_admission_decided",
+  "ei_mission_restored",
+  "ei_monitor_episode",
+  "ei_safety_reset_requested",
+  "ei_safety_reset_completed",
+  "ei_safety_reset_refused",
 }
 EXPECTED_CASES = {
   "managed_run_valid",
@@ -92,10 +92,10 @@ EXPECTED_CASES = {
   "reset_refused_closed_reason",
   "distinct_safety_correlation_first",
 }
-assert POLICY["schema"] == "egia-jsonl-role-policy-a03-v2"
-assert POLICY["source"] == POLICY["core"] == "egia"
+assert POLICY["schema"] == "ei-jsonl-role-policy-a03-v2"
+assert POLICY["source"] == POLICY["core"] == "ei"
 assert set(POLICY["codes"]) == EXPECTED_CODES
-assert CASES["schema"] == "egia-jsonl-events-a03-fixtures-v2"
+assert CASES["schema"] == "ei-jsonl-events-a03-fixtures-v2"
 assert {row["id"] for row in CASES["cases"]} == EXPECTED_CASES
 assert len(CASES["cases"]) == len(EXPECTED_CASES)
 assert all(set(row) == {"id", "expected"} for row in CASES["cases"])
@@ -130,7 +130,7 @@ def wire(event):
   return (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
 
 
-ADMITTED = {"/cores/egia/layers/common/groups/agent/nodes/main"}
+ADMITTED = {"/cores/isos/layers/ei_common/groups/agent/nodes/main"}
 
 
 def valid_event(event, *, expected_run="r7-cde"):
@@ -142,7 +142,7 @@ def valid_event(event, *, expected_run="r7-cde"):
     or not event.keys() <= allowed
   ):
     return False
-  if event["source"] != "egia" or event["core"] != "egia":
+  if event["source"] != "ei" or event["core"] != "ei":
     return False
   if not valid_run(event["run_id"], managed=True) or event["run_id"] != expected_run:
     return False
@@ -190,20 +190,20 @@ def valid_event(event, *, expected_run="r7-cde"):
 ready = {
   "timestamp": "2026-11-01T10:00:02.000Z",
   "level": "info",
-  "source": "egia",
-  "core": "egia",
+  "source": "ei",
+  "core": "ei",
   "node_path": None,
-  "event_code": "egia_ready",
+  "event_code": "ei_ready",
   "run_id": "r7-cde",
   "correlation_id": None,
-  "message": "EGIA ready",
+  "message": "EI ready",
   "fields": {"generation": 3},
 }
 assert valid_event(ready)
 stopped = {
   **ready,
-  "event_code": "egia_stopped",
-  "message": "EGIA stopped",
+  "event_code": "ei_stopped",
+  "message": "EI stopped",
   "fields": {"state": "stopped"},
 }
 assert valid_event(stopped)
@@ -215,34 +215,34 @@ assert not valid_event({**stopped, "fields": {"state": "stop_unconfirmed"}})
 assert not valid_event({**ready, "source": "eos"})
 assert not valid_event({**ready, "run_id": "r-other"})
 assert not valid_event({**ready, "pid": 42})
-assert not valid_event({**ready, "event_code": "egia_unlisted"})
+assert not valid_event({**ready, "event_code": "ei_unlisted"})
 assert not valid_event({**ready, "level": "warn"})
 assert not valid_event({**ready, "message": "raw model prompt"})
 assert not valid_event(
-  {**ready, "node_path": "/cores/eos/layers/process/groups/mujoco/nodes/sim"}
+  {**ready, "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/sim"}
 )
 assert not valid_event(
-  {**ready, "node_path": "/cores/egia/layers/common/groups/agent/nodes/main/settings"}
+  {**ready, "node_path": "/cores/isos/layers/ei_common/groups/agent/nodes/main/settings"}
 )
 assert not valid_event(
-  {**ready, "node_path": "/cores/egia/layers/common/groups/agent/nodes/~2"}
+  {**ready, "node_path": "/cores/ei/layers/common/groups/agent/nodes/~2"}
 )
 assert not valid_event({**ready, "fields": {"generation": 3, "prompt": "secret"}})
 assert not valid_event({**ready, "fields": {"generation": "3"}})
 assert not valid_event({**ready, "fields": {"generation": 0}})
 mission = {
   **ready,
-  "event_code": "egia_mission_started",
+  "event_code": "ei_mission_started",
   "message": "Mission started",
   "fields": {"mission_id": "550e8400-e29b-41d4-a716-446655440000"},
-  "node_path": "/cores/egia/layers/common/groups/agent/nodes/main",
+  "node_path": "/cores/isos/layers/ei_common/groups/agent/nodes/main",
 }
 assert valid_event(mission)
 assert not valid_event({**mission, "fields": {"mission_id": "user typed a prompt"}})
 assert not valid_event({**mission, "fields": {"mission_id": "x", "arguments": "move"}})
 unknown = {
   **ready,
-  "event_code": "egia_operation_unknown",
+  "event_code": "ei_operation_unknown",
   "level": "error",
   "message": "EOS operation outcome unknown",
   "fields": {"operation_id": "op-1", "reason_code": "timeout"},
@@ -257,9 +257,9 @@ assert not valid_event(
 assert valid_event(
   {
     **ready,
-    "event_code": "egia_events_suppressed",
+    "event_code": "ei_events_suppressed",
     "level": "warn",
-    "message": "Repeated EGIA diagnostics suppressed",
+    "message": "Repeated EI diagnostics suppressed",
     "fields": {"suppressed_count": 1},
   }
 )
@@ -274,19 +274,19 @@ stored_base = len(wire(stored))
 assert len(wire({**stored, "message": "x" * (8192 - stored_base)})) == 8192
 assert len(wire({**stored, "message": "x" * (8193 - stored_base)})) == 8193
 print(
-  f"EGIA A03 contract: {len(EXPECTED_CODES)} codes, {len(EXPECTED_CASES)} cases; byte bounds checked"
+  f"EI A03 contract: {len(EXPECTED_CODES)} codes, {len(EXPECTED_CASES)} cases; byte bounds checked"
 )
 
 # A03 policy additions retain exact closed shapes.
 for code, fields, level in [
-  ("egia_stage_transition", {"kind": "resource"}, "info"),
-  ("egia_proposal_created", {"operation_id": "op-a"}, "info"),
-  ("egia_admission_decided", {"operation_id": "op-a", "outcome": "admitted"}, "info"),
-  ("egia_mission_restored", {"mission_id": "mission-a", "outcome": "pending"}, "warn"),
-  ("egia_monitor_episode", {"outcome": "fault"}, "warn"),
-  ("egia_safety_reset_requested", {}, "warn"),
-  ("egia_safety_reset_completed", {}, "info"),
-  ("egia_safety_reset_refused", {"reason_code": "alias_coverage"}, "error"),
+  ("ei_stage_transition", {"kind": "resource"}, "info"),
+  ("ei_proposal_created", {"operation_id": "op-a"}, "info"),
+  ("ei_admission_decided", {"operation_id": "op-a", "outcome": "admitted"}, "info"),
+  ("ei_mission_restored", {"mission_id": "mission-a", "outcome": "pending"}, "warn"),
+  ("ei_monitor_episode", {"outcome": "fault"}, "warn"),
+  ("ei_safety_reset_requested", {}, "warn"),
+  ("ei_safety_reset_completed", {}, "info"),
+  ("ei_safety_reset_refused", {"reason_code": "alias_coverage"}, "error"),
 ]:
   rule = POLICY["codes"][code]
   event = {

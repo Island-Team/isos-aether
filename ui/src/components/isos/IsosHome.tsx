@@ -46,7 +46,7 @@ export function IsosHome({ lang, onOpenGraph, graphDirty, onOpenLogs, onStopInte
       setRevision(graph.revision); setReadOnlyReason(graphCatalogReadOnlyReason(snapshot));
       setRequired(shaped ? graphPackagePins(graph.graph) : []);
       setStatus(process); setInstalled(receipts.installed); setSetup(checks); setReadiness(cores);
-    } catch (error) { if (requestId === refreshRequest.current) { setReadOnlyReason('Graph compatibility could not be checked.'); publishUiMessage(error instanceof Error ? error.message : copy.unavailable, 'error'); } }
+    } catch (error) { if (requestId === refreshRequest.current) { setReadOnlyReason('Graph catalog could not be checked.'); publishUiMessage(error instanceof Error ? error.message : copy.unavailable, 'error'); } }
   }, [copy.unavailable]);
   useEffect(() => {
     setLinkPreview(null);

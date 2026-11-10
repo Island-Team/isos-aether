@@ -1,0 +1,143 @@
+{
+  "version": "0.2.0",
+  "robot": {},
+  "cores": {
+    "isos": {
+      "layers": {
+        "ei_cognition": {
+          "groups": {
+            "context": {
+              "nodes": {
+                "builder": {
+                  "description": "Renders a deterministic bounded context snapshot from evidence.",
+                  "id": "builder",
+                  "inputs": {
+                    "observations": {
+                      "node": "isos/ei_evidence/perception/admission",
+                      "output": "observations"
+                    }
+                  },
+                  "node_type": "isos.ei_cognition.builder@v0.2",
+                  "settings": {}
+                }
+              }
+            },
+            "decision": {
+              "nodes": {
+                "planner": {
+                  "description": "Produces typed primitive proposals and plan state from a mission and context.",
+                  "id": "planner",
+                  "inputs": {
+                    "selected": {
+                      "node": "isos/ei_cognition/missions/queue",
+                      "output": "selected"
+                    },
+                    "snapshot": {
+                      "node": "isos/ei_cognition/context/builder",
+                      "output": "snapshot"
+                    }
+                  },
+                  "node_type": "isos.ei_cognition.planner@v0.2",
+                  "settings": {}
+                }
+              }
+            },
+            "missions": {
+              "nodes": {
+                "queue": {
+                  "description": "Owns mission admission, selection, revisions, and durable lifecycle.",
+                  "id": "queue",
+                  "inputs": {},
+                  "node_type": "isos.ei_cognition.queue@v0.2",
+                  "settings": {}
+                }
+              }
+            }
+          }
+        },
+        "ei_evidence": {
+          "groups": {
+            "perception": {
+              "nodes": {
+                "admission": {
+                  "description": "Validates and bounds attributed EOS and operator evidence.",
+                  "id": "admission",
+                  "inputs": {
+                    "resource": {
+                      "node": "isos/ei_io/link/gateway",
+                      "output": "resource"
+                    },
+                    "result": {
+                      "node": "isos/ei_io/link/gateway",
+                      "output": "result"
+                    }
+                  },
+                  "node_type": "isos.ei_evidence.admission@v0.2",
+                  "settings": {}
+                }
+              }
+            }
+          }
+        },
+        "ei_governance": {
+          "groups": {
+            "monitor": {
+              "nodes": {
+                "health": {
+                  "description": "Tracks backend health and progress and owns the emergency latch.",
+                  "id": "health",
+                  "inputs": {
+                    "health": {
+                      "node": "isos/ei_io/link/gateway",
+                      "output": "health"
+                    }
+                  },
+                  "node_type": "isos.ei_governance.health@v0.2",
+                  "settings": {}
+                }
+              }
+            },
+            "safety": {
+              "nodes": {
+                "gate": {
+                  "description": "Admits only exact current typed primitives through the fixed link route.",
+                  "id": "gate",
+                  "inputs": {
+                    "proposal": {
+                      "node": "isos/ei_cognition/decision/planner",
+                      "output": "proposal"
+                    }
+                  },
+                  "node_type": "isos.ei_governance.gate@v0.2",
+                  "settings": {}
+                }
+              }
+            }
+          }
+        },
+        "ei_io": {
+          "groups": {
+            "link": {
+              "nodes": {
+                "gateway": {
+                  "description": "Connects a stable backend alias to verified EOS discovery and operation results.",
+                  "id": "gateway",
+                  "inputs": {},
+                  "node_type": "isos.ei_io.gateway@v0.2",
+                  "settings": {
+                    "backend_alias": "robot-a",
+                    "gateway": {
+                      "host": "127.0.0.1",
+                      "port": 16200,
+                      "transport": "tcp"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

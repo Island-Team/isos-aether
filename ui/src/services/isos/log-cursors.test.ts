@@ -23,13 +23,13 @@ describe('P07 stub IsOS API', () => {
     const fetchMock = vi.fn().mockResolvedValue(envelope(page('r7', 'eos_ready')));
     vi.stubGlobal('fetch', fetchMock);
     const { getCurrentLogPage, isCurrentLogPage } = await import('./node-graph');
-    const result = await getCurrentLogPage({ source: 'egia', level: 'warn', node_path: '/cores/egia/layers/agent/groups/runtime/nodes/a', correlation_id: 'op_7', cursor: 'lc1.old', limit: 500 });
+    const result = await getCurrentLogPage({ source: 'ei', level: 'warn', node_path: '/cores/isos/layers/ei_agent/groups/runtime/nodes/a', correlation_id: 'op_7', cursor: 'lc1.old', limit: 500 });
     expect(isCurrentLogPage(result)).toBe(true);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     const query = new URL(url).searchParams;
     expect(query.get('view')).toBe('current');
-    expect(query.get('source')).toBe('egia');
-    expect(query.get('node_path')).toBe('/cores/egia/layers/agent/groups/runtime/nodes/a');
+    expect(query.get('source')).toBe('ei');
+    expect(query.get('node_path')).toBe('/cores/isos/layers/ei_agent/groups/runtime/nodes/a');
     expect(query.get('correlation_id')).toBe('op_7');
     expect(query.get('cursor')).toBe('lc1.old');
     expect(query.get('limit')).toBe('200');
@@ -53,7 +53,6 @@ describe('P07 stub IsOS API', () => {
     let state = emptyCurrentLogState;
     for (const cursor of [undefined, 'lc1.r7', 'lc1.rotated']) {
       const response = await getCurrentLogPage({ source: 'all', level: 'info', cursor });
-      if (!isCurrentLogPage(response)) throw new Error('stub returned legacy page');
       state = acceptCurrentLogPage(state, response);
     }
     expect(state.scope?.run_id).toBe('r8');
@@ -73,13 +72,13 @@ describe('P07 stub IsOS API', () => {
     await expect(controlProcesses('run')).rejects.toMatchObject({ status: 500, code: 'log_scope_publish_failed' });
   });
 
-  it('identifies a legacy page without claiming it has an anchor', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(envelope({ lines: [event('legacy')], next_cursor: 'old', rotated: false })));
+  it('rejects a page without scope and anchor', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(envelope({ lines: [event('unscoped')], next_cursor: 'old', rotated: false })));
     const { getCurrentLogPage, isCurrentLogPage } = await import('./node-graph');
-    expect(isCurrentLogPage(await getCurrentLogPage({ source: 'all', level: 'info' }))).toBe(false);
+    await expect(getCurrentLogPage({ source: 'all', level: 'info' })).rejects.toThrow('invalid current log page');
   });
 
-  it('rejects a malformed current page instead of silently using legacy mode', async () => {
+  it('rejects a malformed current page without accepting it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(envelope({
       ...page('r7', 'eos_ready', [event('wrong_run', 'r8')]),
       next_cursor: 'invalid cursor with spaces',

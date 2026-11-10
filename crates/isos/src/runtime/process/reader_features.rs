@@ -1,7 +1,7 @@
 //! Exact selected-reader admission for the authored graph and projected children.
 use crate::{
   app::config::Paths, runtime::process::core_bins, runtime::owners::core_setup,
-  domain::graph::graph_compat::Diagnostic, runtime::process::ProcessSpec,
+  domain::graph::graph_contract::Diagnostic, runtime::process::ProcessSpec,
 };
 use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -91,7 +91,6 @@ struct Claims {
   type_versions: BTreeSet<String>,
   node_types: BTreeSet<String>,
   features: BTreeSet<String>,
-  scalar_fallback: bool,
 }
 
 impl Claims {
@@ -106,7 +105,6 @@ impl Claims {
       type_versions: BTreeSet::new(),
       node_types: BTreeSet::new(),
       features: BTreeSet::new(),
-      scalar_fallback: false,
     }
   }
 
@@ -225,7 +223,7 @@ fn parse_claims(
     })?
   };
   if !graph_reader {
-    if claims.core == "egia"
+    if claims.core == "ei"
       && [
         "supported_graph_versions",
         "supported_node_type_versions",
@@ -252,23 +250,6 @@ fn parse_claims(
     "supported_node_types",
   ];
   let present = keys.iter().filter(|key| reply.get(**key).is_some()).count();
-  if present == 0 {
-    if reply["graph_version"] != "1.0.0" || reply["node_type_version"] != "1.0" {
-      return Err(claims.diagnostic(
-        "reader_identity_invalid",
-        identity_path,
-        "reader",
-        None,
-        None,
-        None,
-        None,
-      ));
-    }
-    claims.graph_versions.insert("1.0.0".into());
-    claims.type_versions.insert("1.0".into());
-    claims.scalar_fallback = true;
-    return Ok(claims);
-  }
   if present != keys.len() {
     return Err(claims.diagnostic(
       "reader_identity_invalid",
@@ -450,7 +431,7 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
   let binary = if core == "eos" {
     "aether-profile"
   } else {
-    "egia-config"
+    "ei-config"
   };
   let path = if core == "eos" {
     core_bins::resolve(binary)
@@ -459,9 +440,9 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
   };
   let path = path.unwrap_or_else(|_| PathBuf::new());
   let mut claims = Claims::empty(core, binary, &path);
-  if core == "egia" && crate::domain::graph::generated_v2::egia_launch_env(graph).is_err() {
+  if core == "ei" && crate::domain::graph::generated_v2::ei_launch_env(graph).is_err() {
     claims.hash = None;
-    let pointer = "/cores/isos/layers/process/groups/component/nodes/egia";
+    let pointer = "/cores/isos/layers/process/groups/component/nodes/ei";
     let role_path = if graph.pointer(&format!("{pointer}/settings/role")).is_some() {
       format!("{pointer}/settings/role")
     } else {
@@ -477,8 +458,8 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
       None,
     ));
   }
-  if core == "egia" {
-    claims.hash = crate::domain::graph::generated_v2::egia_chain_digest(graph).ok();
+  if core == "ei" {
+    claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
   }
   let advertised = if core == "eos" {
     Some(probe(&path, "aether-profile", "eos", true, None)?)
@@ -514,15 +495,6 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
     ));
   }
   Ok(identity)
-}
-
-/// Whether the selected EGIA setup identity attests the exact A04 route table.
-pub fn egia_evidence_route_feature(paths: &Paths, graph: &Value) -> Result<bool, Diagnostic> {
-  Ok(
-    setup(paths, "egia", graph)?
-      .features
-      .contains("egia-evidence-routing-v1"),
-  )
 }
 
 fn nodes(graph: &Value, core: &str) -> Vec<(String, String, Option<Value>)> {
@@ -607,10 +579,7 @@ fn check_reader(
         pin.as_ref(),
       ));
     }
-    if !claims.type_versions.contains(suffix)
-      || (!builtins.contains(&id) && !claims.scalar_fallback && contributed.is_none())
-      || (claims.scalar_fallback
-        && !(version == "1.0.0" && id.ends_with("@v1.0") && registered.contains_key(id.as_str())))
+    if !claims.type_versions.contains(suffix) || (!builtins.contains(&id) && contributed.is_none())
     {
       return Err(claims.diagnostic(
         "reader_type_unsupported",
@@ -655,101 +624,59 @@ fn check_inner(
   only_core: Option<&str>,
 ) -> Result<(), Diagnostic> {
   let version = graph["version"].as_str().unwrap_or_default();
-  let vision_selected = crate::runtime::process::vision_binding::selected_gate_for_graph(graph)
-    .map_err(|error| Diagnostic {
-      code: error.code,
-      path: error.path,
-      message: error.message.into(),
-      context: BTreeMap::new(),
-    })?
-    .is_some();
-  if vision_selected && !crate::domain::graph::graph_compat::uses_revisioned_generation(graph) {
-    return Err(Diagnostic {
-      code: "vision_graph_stale",
-      path: "/version".into(),
-      message: "Vision evidence requires an admitted revisioned graph".into(),
-      context: BTreeMap::new(),
-    });
-  }
-  let egia_route_path = if crate::domain::graph::graph_compat::uses_revisioned_generation(graph) {
+  let ei_route_path = if crate::domain::graph::graph_contract::uses_revisioned_generation(graph) {
     crate::domain::graph::edge_admission::admit(graph, catalog)
       .ok()
       .and_then(|edges| {
         edges
           .into_iter()
-          .find(|edge| {
-            edge.route_class
-              == (if version == "0.2.0" {
-                "ei_local"
-              } else {
-                "egia_local"
-              })
-              && edge.routed
-          })
+          .find(|edge| edge.route_class == "ei_local" && edge.routed)
           .map(|edge| edge.path)
       })
   } else {
     None
   };
-  if only_core != Some("egia") {
+  if only_core != Some("ei") {
     let profile = setup(paths, "eos", graph)?;
     check_reader(&profile, graph, "eos", catalog)?;
-    if version == "0.1.0" {
-      for token in [
-        "graph-0.1-reader",
-        "node-types",
-        "data-idl",
-        "setup-v2",
-        "catalog",
-      ] {
-        feature(&profile, graph, "/version", None, token)?;
-      }
-    }
   }
-  let egia_enabled = specs.iter().any(|spec| spec.id == "egia");
-  if let Some(path) = &egia_route_path
-    && !egia_enabled
+  let ei_enabled = specs.iter().any(|spec| spec.id == "ei");
+  if let Some(path) = &ei_route_path
+    && !ei_enabled
   {
-    return Err(
-      Claims::empty("egia", "egia", Path::new("/missing")).diagnostic(
-        "reader_feature_unsupported",
-        path,
-        "feature",
-        Some(version),
-        None,
-        Some("egia-evidence-scheduler-v1"),
-        None,
-      ),
-    );
+    return Err(Claims::empty("ei", "ei", Path::new("/missing")).diagnostic(
+      "reader_feature_unsupported",
+      path,
+      "feature",
+      Some(version),
+      None,
+      Some("ei-evidence-scheduler-v1"),
+      None,
+    ));
   }
-  if only_core != Some("eos") && egia_enabled {
-    let egia = setup(paths, "egia", graph)?;
-    check_reader(&egia, graph, "egia", catalog)?;
-    if version == "0.1.0" {
-      for token in ["graph-0.1-reader", "setup-v2", "catalog"] {
-        feature(&egia, graph, "/version", None, token)?;
-      }
-      if let Some(path) = &egia_route_path {
-        feature(&egia, graph, path, None, "egia-evidence-routing-v1")?;
-      }
+  if only_core != Some("eos") && ei_enabled {
+    let ei = setup(paths, "ei", graph)?;
+    check_reader(&ei, graph, "ei", catalog)?;
+    if let Some(path) = &ei_route_path {
+      feature(&ei, graph, path, None, "ei-evidence-routing-v1")?;
     }
   }
   for (id, binary, graph_reader) in [
     ("eos", "aether-runtime", true),
     ("config", "aether-config-server", true),
     ("bridge", "aether-http-bridge", false),
-    ("egia", "egia", false),
+    ("ei", "ei", false),
   ] {
-    if only_core.is_some_and(|owner| owner != if id == "egia" { "egia" } else { "eos" }) {
+    if only_core.is_some_and(|owner| owner != if id == "ei" { "ei" } else { "eos" }) {
       continue;
     }
     let Some(spec) = specs.iter().find(|spec| spec.id == id) else {
       continue;
     };
     let path = Path::new(&spec.settings.command[0]);
-    let mut claims = Claims::empty(if id == "egia" { "egia" } else { "eos" }, binary, path);
-    if id == "egia" {
-      claims.hash = crate::domain::graph::generated_v2::egia_chain_digest(graph).ok();
+    let mut claims = Claims::empty(if id == "ei" { "ei" } else { "eos" }, binary, path);
+    if id == "ei" {
+      claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
     }
     let pointer = format!("/cores/isos/layers/process/groups/component/nodes/{id}");
     let role_path = if graph.pointer(&format!("{pointer}/settings/role")).is_some() {
@@ -773,42 +700,37 @@ fn check_inner(
       binary,
       claims.core,
       graph_reader,
-      (id == "egia").then_some(&spec.settings.env),
+      (id == "ei").then_some(&spec.settings.env),
     )
     .map_err(|mut error| {
       error.path = role_path.clone();
-      if id == "egia" {
+      if id == "ei" {
         error.context.get_mut("reader").unwrap()["binary_sha256"] = json!(claims.hash);
       }
       error
     })?;
-    if id == "egia" {
-      claims.hash = crate::domain::graph::generated_v2::egia_chain_digest(graph).ok();
+    if id == "ei" {
+      claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
     }
     if graph_reader {
       check_reader(&claims, graph, "eos", catalog)?;
     }
-    if graph_reader && version == "0.1.0" {
-      for token in ["graph-0.1-reader", "node-types", "data-idl"] {
-        feature(&claims, graph, "/version", None, token)?;
-      }
-      if id == "eos" {
+    if graph_reader && id == "eos" {
+      feature(
+        &claims,
+        graph,
+        &format!("{pointer}/node_type"),
+        None,
+        "managed-control-grants",
+      )?;
+      if !spec.settings.skill_executables.is_empty() {
         feature(
           &claims,
           graph,
           &format!("{pointer}/node_type"),
           None,
-          "managed-control-grants",
+          "rust-skill-v1",
         )?;
-        if !spec.settings.skill_libraries.is_empty() {
-          feature(
-            &claims,
-            graph,
-            &format!("{pointer}/node_type"),
-            None,
-            "host-skill-abi-v2",
-          )?;
-        }
       }
     }
     if id == "bridge" {
@@ -820,29 +742,16 @@ fn check_inner(
         "vision-ws",
       )?;
     }
-    if vision_selected {
-      let tokens: &[&str] = match id {
-        "eos" => &["vision-provenance-v1"],
-        "bridge" => &["vision-owner-uds-v1"],
-        "egia" => &["vision-evidence-ingress-v1", "vision-inspection-uds-v1"],
-        _ => &[],
-      };
-      for token in tokens {
-        feature(&claims, graph, &format!("{pointer}/node_type"), None, token)?;
-      }
-    }
-    if id == "egia" {
+    if id == "ei" {
       for token in ["managed-config-v1", "eos-gateway-client-v2"] {
         feature(&claims, graph, &format!("{pointer}/node_type"), None, token)?;
       }
-      if let Some(path) = &egia_route_path {
-        feature(&claims, graph, path, None, "egia-evidence-scheduler-v1")?;
+      if let Some(path) = &ei_route_path {
+        feature(&claims, graph, path, None, "ei-evidence-scheduler-v1")?;
       }
     }
     if id == "eos" {
-      if spec.package.is_some() || spec.settings.command.iter().any(|arg| arg == "--log-dir") {
-        feature(&claims, graph, "/version", None, "log-dir")?;
-      }
+      feature(&claims, graph, "/version", None, "log-dir")?;
       if spec.package.is_some() {
         feature(&claims, graph, "/version", None, "package-process-v1")?;
       }
@@ -869,6 +778,8 @@ fn check_inner(
   Ok(())
 }
 
+#[cfg(test)]
+#[expect(dead_code, reason = "test-only all-core reader feature check")]
 pub fn check(
   paths: &Paths,
   graph: &Value,
@@ -892,19 +803,15 @@ pub fn check_core(
 /// This preserves a typed selected-binary failure instead of a catalog stderr error.
 pub fn check_setup_basics(paths: &Paths, graph: &Value) -> Result<(), Diagnostic> {
   let version = graph["version"].as_str().unwrap_or_default();
-  for core in ["eos", "egia"] {
-    let selected = if version == "0.2.0" {
-      graph
-        .pointer("/cores/isos/layers")
-        .and_then(Value::as_object)
-        .is_some_and(|layers| {
-          layers
-            .keys()
-            .any(|layer| layer.starts_with(if core == "eos" { "eos_" } else { "ei_" }))
-        })
-    } else {
-      graph.pointer(&format!("/cores/{core}")).is_some()
-    };
+  for core in ["eos", "ei"] {
+    let selected = graph
+      .pointer("/cores/isos/layers")
+      .and_then(Value::as_object)
+      .is_some_and(|layers| {
+        layers
+          .keys()
+          .any(|layer| layer.starts_with(if core == "eos" { "eos_" } else { "ei_" }))
+      });
     if !selected {
       continue;
     }
@@ -920,13 +827,10 @@ pub fn check_setup_basics(paths: &Paths, graph: &Value) -> Result<(), Diagnostic
         None,
       ));
     }
-    if core == "egia" {
-      for (path, id, _) in nodes(graph, "egia") {
+    if core == "ei" {
+      for (path, id, _) in nodes(graph, "ei") {
         let suffix = id.rsplit_once("@v").map(|(_, suffix)| suffix).unwrap_or("");
-        if !claims.type_versions.contains(suffix)
-          || (!claims.node_types.contains(&id)
-            && !(claims.scalar_fallback && version == "1.0.0" && id.ends_with("@v1.0")))
-        {
+        if !claims.type_versions.contains(suffix) || !claims.node_types.contains(&id) {
           return Err(claims.diagnostic(
             "reader_type_unsupported",
             format!("{path}/node_type"),
@@ -937,21 +841,6 @@ pub fn check_setup_basics(paths: &Paths, graph: &Value) -> Result<(), Diagnostic
             None,
           ));
         }
-      }
-    }
-    if version == "0.1.0" {
-      for token in if core == "eos" {
-        &[
-          "graph-0.1-reader",
-          "node-types",
-          "data-idl",
-          "setup-v2",
-          "catalog",
-        ][..]
-      } else {
-        &["graph-0.1-reader", "setup-v2", "catalog"][..]
-      } {
-        feature(&claims, graph, "/version", None, token)?;
       }
     }
   }
@@ -971,7 +860,7 @@ mod tests {
       "process":{"groups":{"component":{"nodes":{"eos":{"node_type":"isos.process.component@v0.2"}}}}}
     }}}});
     let eos = nodes(&graph, "eos");
-    let ei = nodes(&graph, "egia");
+    let ei = nodes(&graph, "ei");
     assert_eq!(eos.len(), 1);
     assert_eq!(ei.len(), 1);
     assert!(eos[0].0.contains("/eos_hardware/"));
@@ -984,20 +873,20 @@ mod tests {
 
   fn reply() -> Value {
     json!({"binary":"aether-runtime","product_version":"fixture",
-            "graph_version":"1.0.0","node_type_version":"1.0",
-            "supported_graph_versions":["0.1.0","1.0.0"],
-            "supported_node_type_versions":["0.1","1.0"],
-            "supported_node_types":["eos.hardware.camera@v0.1"],
-            "features":["graph-0.1-reader","vision-gate"]})
+            "graph_version":"0.2.0","node_type_version":"0.2",
+            "supported_graph_versions":["0.2.0"],
+            "supported_node_type_versions":["0.2"],
+            "supported_node_types":["isos.eos_hardware.camera@v0.2"],
+            "features":["vision-gate"]})
   }
 
   #[test]
   fn exact_arrays_and_features_admit_only_claimed_types() {
     let selected = parse_claims(claims(), &reply(), true, false).unwrap();
-    let graph = json!({"version":"0.1.0","cores":{"eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"eos.hardware.camera@v0.1"}}}}}}}}});
-    let catalog = json!({"types":[{"id":"eos.hardware.camera@v0.1"}]});
+    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"isos.eos_hardware.camera@v0.2"}}}}}}}}});
+    let catalog = json!({"types":[{"id":"isos.eos_hardware.camera@v0.2"}]});
     check_reader(&selected, &graph, "eos", &catalog).unwrap();
-    feature(&selected, &graph, "/version", None, "graph-0.1-reader").unwrap();
+    feature(&selected, &graph, "/version", None, "vision-gate").unwrap();
     let error = feature(&selected, &graph, "/version", None, "data-idl").unwrap_err();
     assert_eq!(error.code, "reader_feature_unsupported");
     assert_eq!(error.context["reader"]["requested"]["feature"], "data-idl");
@@ -1008,14 +897,14 @@ mod tests {
     assert_eq!(error.code, "reader_type_unsupported");
     assert_eq!(
       error.path,
-      "/cores/eos/layers/hardware/groups/camera/nodes/front/node_type"
+      "/cores/isos/layers/eos_hardware/groups/camera/nodes/front/node_type"
     );
   }
 
   #[test]
-  fn old_eos_runtime_without_managed_grant_feature_is_rejected_at_its_process_node() {
+  fn eos_runtime_without_managed_grant_feature_is_rejected_at_its_process_node() {
     let selected = parse_claims(claims(), &reply(), true, false).unwrap();
-    let graph = json!({"version":"0.1.0"});
+    let graph = json!({"version":"0.2.0"});
     let path = "/cores/isos/layers/process/groups/component/nodes/eos/node_type";
     let error = feature(&selected, &graph, path, None, "managed-control-grants").unwrap_err();
     assert_eq!(error.code, "reader_feature_unsupported");
@@ -1027,7 +916,7 @@ mod tests {
   }
 
   #[test]
-  fn partial_duplicate_and_malformed_arrays_never_use_scalar_fallback() {
+  fn partial_duplicate_and_malformed_arrays_are_rejected() {
     let mut partial = reply();
     partial
       .as_object_mut()
@@ -1040,7 +929,7 @@ mod tests {
       "reader_identity_invalid"
     );
     let mut duplicate = reply();
-    duplicate["supported_graph_versions"] = json!(["0.1.0", "0.1.0"]);
+    duplicate["supported_graph_versions"] = json!(["0.2.0", "0.2.0"]);
     assert_eq!(
       parse_claims(claims(), &duplicate, true, false)
         .unwrap_err()
@@ -1058,45 +947,26 @@ mod tests {
   }
 
   #[test]
-  fn scalar_fallback_is_legacy_only_and_runtime_features_still_apply() {
-    let old = json!({"binary":"aether-runtime","product_version":"fixture",
-            "graph_version":"1.0.0","node_type_version":"1.0","features":[]});
-    let selected = parse_claims(claims(), &old, true, false).unwrap();
-    assert!(selected.scalar_fallback);
-    assert!(selected.graph_versions.contains("1.0.0"));
-    let graph = json!({"version":"1.0.0","cores":{}});
-    let error = feature(&selected, &graph, "/version", None, "package-process-v1").unwrap_err();
-    assert_eq!(error.code, "reader_feature_unsupported");
-    let target = json!({"version":"0.1.0","cores":{}});
-    assert_eq!(
-      check_reader(&selected, &target, "eos", &json!({"types":[]}))
-        .unwrap_err()
-        .code,
-      "reader_graph_unsupported"
-    );
-  }
-
-  #[test]
   fn contributed_type_needs_exact_catalog_pin() {
     let mut reply = reply();
-    reply["supported_node_types"] = json!(["eos.process.worker@v0.1"]);
+    reply["supported_node_types"] = json!(["isos.eos_process.worker@v0.2"]);
     let selected = parse_claims(claims(), &reply, true, false).unwrap();
-    let graph = json!({"version":"0.1.0","cores":{"eos":{"layers":{"process":{"groups":{"worker":{"nodes":{"sim":{"node_type":"eos.process.worker@v0.1","package":{"id":"sample/worker","version":"0.1.1"}}}}}}}}}});
-    let catalog = json!({"types":[{"id":"eos.process.worker@v0.1","package":{"id":"sample/worker","version":"0.1.1"}}]});
+    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_process":{"groups":{"worker":{"nodes":{"sim":{"node_type":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}}}}}}}}});
+    let catalog = json!({"types":[{"id":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}]});
     check_reader(&selected, &graph, "eos", &catalog).unwrap();
-    let wrong = json!({"types":[{"id":"eos.process.worker@v0.1","package":{"id":"sample/worker","version":"0.1.0"}}]});
+    let wrong = json!({"types":[{"id":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.0"}}]});
     let error = check_reader(&selected, &graph, "eos", &wrong).unwrap_err();
     assert_eq!(error.code, "reader_package_pin_mismatch");
     assert!(error.path.ends_with("/package"));
   }
 
   #[test]
-  fn egia_runtime_must_not_claim_graph_arrays() {
-    let claims = Claims::empty("egia", "egia", Path::new("/missing"));
-    let normal = json!({"binary":"egia","product_version":"fixture","features":["managed-config-v1","eos-gateway-client-v2"]});
+  fn ei_runtime_must_not_claim_graph_arrays() {
+    let claims = Claims::empty("ei", "ei", Path::new("/missing"));
+    let normal = json!({"binary":"ei","product_version":"fixture","features":["managed-config-v1","eos-gateway-client-v2"]});
     parse_claims(claims.clone(), &normal, false, false).unwrap();
     let mut invalid = normal;
-    invalid["supported_graph_versions"] = json!(["0.1.0"]);
+    invalid["supported_graph_versions"] = json!(["0.2.0"]);
     assert_eq!(
       parse_claims(claims, &invalid, false, false)
         .unwrap_err()
@@ -1107,7 +977,7 @@ mod tests {
 
   #[test]
   fn duplicate_json_fields_fail_even_when_nested() {
-    assert!(parse_unique_json(br#"{"binary":"egia","binary":"eos"}"#).is_err());
+    assert!(parse_unique_json(br#"{"binary":"ei","binary":"eos"}"#).is_err());
     assert!(parse_unique_json(br#"{"reader":{"features":[],"features":[]}}"#).is_err());
     assert!(parse_unique_json(br#"{"reader":{"features":[]}}"#).is_ok());
   }

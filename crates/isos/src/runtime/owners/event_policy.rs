@@ -4,11 +4,16 @@
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, SecondsFormat};
 use crate::interfaces::events::{RawEvent, StrictStoredEvent};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 #[cfg(test)]
 use serde_json::Map;
-use std::{collections::BTreeSet, sync::OnceLock};
+use std::sync::OnceLock;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
+#[cfg(test)]
 pub const MAX_RAW_LINE: usize = 8_064;
 pub const MAX_STORED_LINE: usize = 8_192;
 
@@ -68,15 +73,15 @@ fn allowed(role: &str, event_code: &str) -> bool {
       event_code,
       "eos_starting"
         | "eos_ready"
+        | "eos_listener_lost"
+        | "eos_node_mismatch"
         | "eos_start_failed"
         | "eos_stopping"
         | "eos_stopped"
         | "eos_package_admitted"
-        | "eos_package_provenance_unavailable"
         | "eos_backend_ready"
         | "eos_backend_lost"
         | "eos_stop_unconfirmed"
-        | "eos_events_suppressed"
         | "eos_skill_execution"
         | "eos_skill_stop_unconfirmed"
     ),
@@ -97,18 +102,18 @@ fn allowed(role: &str, event_code: &str) -> bool {
         | "config_stopping"
         | "config_stopped"
     ),
-    "egia" => egia_policy()["codes"].get(event_code).is_some(),
+    "ei" => ei_policy()["codes"].get(event_code).is_some(),
     _ => false,
   }
 }
 
-fn egia_policy() -> &'static Value {
+fn ei_policy() -> &'static Value {
   static POLICY: OnceLock<Value> = OnceLock::new();
   POLICY.get_or_init(|| {
     serde_json::from_str(include_str!(
-      "../../../tests/fixtures/jsonl_events/egia-role-policy.json"
+      "../../../tests/fixtures/jsonl_events/ei-role-policy.json"
     ))
-    .expect("reviewed EGIA role policy fixture")
+    .expect("reviewed EI role policy fixture")
   })
 }
 
@@ -120,55 +125,52 @@ fn enum_value(value: &Value, choices: &Value) -> bool {
   })
 }
 
-fn validate_egia(event: &RawEvent) -> Result<()> {
-  let policy = egia_policy();
+fn validate_ei(event: &RawEvent) -> Result<()> {
+  let policy = ei_policy();
   let rule = &policy["codes"][&event.event_code];
-  ensure!(rule.is_object(), "unregistered EGIA event code");
+  ensure!(rule.is_object(), "unregistered EI event code");
   ensure!(
     rule["message"].as_str() == Some(event.message.as_str()),
-    "EGIA message differs from owner template"
+    "EI message differs from owner template"
   );
-  let node_rule = rule["node_path"].as_str().context("EGIA node rule")?;
+  let node_rule = rule["node_path"].as_str().context("EI node rule")?;
   ensure!(
     node_rule != "null" || event.node_path.is_none(),
-    "EGIA node path forbidden for code"
+    "EI node path forbidden for code"
   );
   if let Some(level) = rule["level"].as_str() {
-    ensure!(event.level == level, "EGIA severity mismatch");
+    ensure!(event.level == level, "EI severity mismatch");
   } else if rule.get("level_by_state").is_some() {
     let state = event
       .fields
       .get("state")
       .and_then(Value::as_str)
-      .context("EGIA state missing")?;
+      .context("EI state missing")?;
     ensure!(
       rule["level_by_state"][state].as_str() == Some(event.level.as_str()),
-      "EGIA state severity mismatch"
+      "EI state severity mismatch"
     );
   } else if rule.get("level_by_outcome").is_some() {
     let outcome = event
       .fields
       .get("outcome")
       .and_then(Value::as_str)
-      .context("EGIA outcome missing")?;
+      .context("EI outcome missing")?;
     ensure!(
       rule["level_by_outcome"][outcome].as_str() == Some(event.level.as_str()),
-      "EGIA outcome severity mismatch"
+      "EI outcome severity mismatch"
     );
   }
-  let allowed_fields = rule["fields"].as_object().context("EGIA field policy")?;
+  let allowed_fields = rule["fields"].as_object().context("EI field policy")?;
   for (key, kind) in allowed_fields {
     if !key.ends_with('?') {
-      ensure!(
-        event.fields.contains_key(key),
-        "EGIA required field missing"
-      );
+      ensure!(event.fields.contains_key(key), "EI required field missing");
     }
     let actual_key = key.trim_end_matches('?');
     let Some(value) = event.fields.get(actual_key) else {
       continue;
     };
-    let kind = kind.as_str().context("EGIA field kind")?;
+    let kind = kind.as_str().context("EI field kind")?;
     let valid = if kind == "positive_integer" {
       value
         .as_u64()
@@ -178,12 +180,12 @@ fn validate_egia(event: &RawEvent) -> Result<()> {
     } else {
       enum_value(value, &policy["types"][kind])
     };
-    ensure!(valid, "EGIA typed field invalid");
+    ensure!(valid, "EI typed field invalid");
   }
   for key in event.fields.keys() {
     ensure!(
       allowed_fields.contains_key(key) || allowed_fields.contains_key(&format!("{key}?")),
-      "EGIA field not allowed"
+      "EI field not allowed"
     );
   }
   Ok(())
@@ -212,6 +214,20 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
       vec![("state", "ready")],
       vec!["node_count"],
       false,
+    ),
+    "eos_listener_lost" => (
+      "error",
+      "EOS gRPC listener exited unexpectedly".into(),
+      vec![("state", "failed"), ("reason_code", "listener_lost")],
+      vec![],
+      false,
+    ),
+    "eos_node_mismatch" => (
+      "error",
+      "EOS graph node does not match its registered type".into(),
+      vec![("state", "failed")],
+      vec!["mismatch_code"],
+      true,
     ),
     "bridge_ready" | "config_ready" => (
       "info",
@@ -253,13 +269,6 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
       ],
       true,
     ),
-    "eos_package_provenance_unavailable" => (
-      "warn",
-      "EOS backend package provenance unavailable".into(),
-      vec![],
-      vec!["package_id", "package_version"],
-      true,
-    ),
     "eos_backend_ready" => (
       "info",
       "EOS backend child ready".into(),
@@ -281,13 +290,6 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
       vec![],
       true,
     ),
-    "eos_events_suppressed" => (
-      "warn",
-      "EOS repeated events suppressed".into(),
-      vec![],
-      vec!["suppressed_count"],
-      false,
-    ),
     _ => anyhow::bail!("unregistered EOS event code"),
   };
   ensure!(
@@ -298,7 +300,7 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
     node_allowed || event.node_path.is_none(),
     "EOS node path forbidden for code"
   );
-  if node_allowed {
+  if node_allowed && code != "eos_node_mismatch" {
     ensure!(event.node_path.is_some(), "EOS backend node path missing");
   }
   for (key, expected) in &required {
@@ -344,6 +346,7 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
             | "backend_start_failed"
             | "child_exited"
             | "listener_bind_failed"
+            | "listener_lost"
             | "stop_unconfirmed"
             | "event_sink_failed"
             | "other_failure"
@@ -358,6 +361,10 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
       }),
       "node_count" | "suppressed_count" => value.as_u64().is_some_and(|n| n <= u32::MAX as u64),
+      "mismatch_code" => matches!(
+        value.as_str(),
+        Some("unknown_type" | "version" | "package" | "adapter" | "placement")
+      ),
       _ => false,
     };
     ensure!(valid, "EOS typed field invalid");
@@ -387,22 +394,10 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
       "EOS admitted node count missing"
     );
   }
-  if code == "eos_package_provenance_unavailable" {
+  if code == "eos_node_mismatch" {
     ensure!(
-      ["package_id", "package_version"]
-        .iter()
-        .all(|k| event.fields.contains_key(*k)),
-      "EOS package pin incomplete"
-    );
-  }
-  if code == "eos_events_suppressed" {
-    ensure!(
-      event
-        .fields
-        .get("suppressed_count")
-        .and_then(Value::as_u64)
-        .is_some_and(|n| n > 0),
-      "EOS suppression count missing"
+      event.fields.contains_key("mismatch_code"),
+      "EOS node mismatch code missing"
     );
   }
   Ok(())
@@ -583,6 +578,7 @@ fn validate_skill(event: &RawEvent) -> Result<()> {
   Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn skill_pin_admitted(value: &Value, pins: &BTreeSet<(String, String)>) -> bool {
   value["event_code"] != "eos_skill_execution"
     || value["fields"]["package_id"]
@@ -591,6 +587,7 @@ pub(crate) fn skill_pin_admitted(value: &Value, pins: &BTreeSet<(String, String)
       .is_some_and(|(id, version)| pins.contains(&(id.to_owned(), version.to_owned())))
 }
 
+#[cfg(test)]
 pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Value> {
   ensure!(
     raw.len() <= MAX_RAW_LINE && raw.last() == Some(&b'\n'),
@@ -622,7 +619,7 @@ pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Val
   }
   let (source, core) = match role {
     "eos" | "bridge" | "config" => (role, "eos"),
-    "egia" => ("egia", "egia"),
+    "ei" => ("ei", "ei"),
     _ => anyhow::bail!("unselected process role"),
   };
   ensure!(
@@ -655,7 +652,7 @@ pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Val
     event
       .node_path
       .as_deref()
-      .is_none_or(|path| node_pointer(path, core)),
+      .is_none_or(|path| node_pointer(path, "isos")),
     "invalid node pointer"
   );
   let stamp = DateTime::parse_from_rfc3339(&event.timestamp).context("invalid event time")?;
@@ -688,8 +685,8 @@ pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Val
       && !event.message.chars().any(char::is_control),
     "unsafe event message"
   );
-  if role == "egia" {
-    validate_egia(&event)?;
+  if role == "ei" {
+    validate_ei(&event)?;
   } else {
     validate_eos(&event)?;
   }
@@ -750,11 +747,11 @@ pub(crate) fn validate_stored(value: &Value) -> Result<()> {
     "stored event source"
   );
   let core = value["core"].as_str().context("stored event core")?;
-  let selected = matches!(source, "eos" | "bridge" | "config" | "egia");
+  let selected = matches!(source, "eos" | "bridge" | "config" | "ei");
   ensure!(
     core
-      == if source == "egia" {
-        "egia"
+      == if source == "ei" {
+        "ei"
       } else if selected {
         "eos"
       } else {
@@ -776,13 +773,9 @@ pub(crate) fn validate_stored(value: &Value) -> Result<()> {
   );
   ensure!(
     value["node_path"].is_null()
-      || value["node_path"].as_str().is_some_and(|path| node_pointer(
-        path,
-        if selected { core } else { "isos" }
-      ) || (!selected
-        && ["eos", "egia"]
-          .into_iter()
-          .any(|owner| node_pointer(path, owner)))),
+      || value["node_path"]
+        .as_str()
+        .is_some_and(|path| node_pointer(path, "isos")),
     "stored event node pointer"
   );
   let code_value = value["event_code"].as_str().context("stored event code")?;
@@ -828,8 +821,8 @@ pub(crate) fn validate_stored(value: &Value) -> Result<()> {
     let mut raw = value.clone();
     raw.as_object_mut().expect("checked object").remove("pid");
     let event: RawEvent = serde_json::from_value(raw)?;
-    if source == "egia" {
-      validate_egia(&event)?;
+    if source == "ei" {
+      validate_ei(&event)?;
     } else {
       validate_eos(&event)?;
     }
@@ -875,7 +868,7 @@ mod tests {
       validate_stored(&stored).unwrap();
       assert!(parse_child(&line(&value), "eos", "r_demo", 4242).is_err());
       assert!(parse_child(&line(&value), "config", "r_demo", 4242).is_err());
-      assert!(parse_child(&line(&value), "egia", "r_demo", 4242).is_err());
+      assert!(parse_child(&line(&value), "ei", "r_demo", 4242).is_err());
     }
     for case in fixture["rejected"].as_array().unwrap() {
       let mut value = base.clone();
@@ -993,43 +986,40 @@ mod tests {
   }
 
   #[test]
-  fn reviewed_egia_catalog_is_exact_and_typed() {
-    let codes = egia_policy()["codes"].as_object().unwrap();
-    assert_eq!(egia_policy()["schema"], "egia-jsonl-role-policy-a03-v2");
+  fn reviewed_ei_catalog_is_exact_and_typed() {
+    let codes = ei_policy()["codes"].as_object().unwrap();
+    assert_eq!(ei_policy()["schema"], "ei-jsonl-role-policy-a03-v2");
     assert_eq!(codes.len(), 24);
     for code in codes.keys() {
-      assert!(allowed("egia", code));
+      assert!(allowed("ei", code));
     }
-    assert!(!allowed("egia", "egia_unreviewed"));
-    let mut ready = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"egia","core":"egia",
-            "event_code":"egia_ready","run_id":"r1","message":"EGIA ready","fields":{"generation":3}});
-    assert_eq!(
-      parse_child(&line(&ready), "egia", "r1", 4).unwrap()["pid"],
-      4
-    );
+    assert!(!allowed("ei", "ei_unreviewed"));
+    let mut ready = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"ei","core":"ei",
+            "event_code":"ei_ready","run_id":"r1","message":"EI ready","fields":{"generation":3}});
+    assert_eq!(parse_child(&line(&ready), "ei", "r1", 4).unwrap()["pid"], 4);
     ready["fields"]["generation"] = json!(0);
-    assert!(parse_child(&line(&ready), "egia", "r1", 4).is_err());
-    let mut stopped = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"error","source":"egia","core":"egia",
-            "event_code":"egia_stopped","run_id":"r1","message":"EGIA stopped","fields":{"state":"stop_unconfirmed"}});
-    assert!(parse_child(&line(&stopped), "egia", "r1", 4).is_ok());
+    assert!(parse_child(&line(&ready), "ei", "r1", 4).is_err());
+    let mut stopped = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"error","source":"ei","core":"ei",
+            "event_code":"ei_stopped","run_id":"r1","message":"EI stopped","fields":{"state":"stop_unconfirmed"}});
+    assert!(parse_child(&line(&stopped), "ei", "r1", 4).is_ok());
     stopped["level"] = json!("info");
-    assert!(parse_child(&line(&stopped), "egia", "r1", 4).is_err());
+    assert!(parse_child(&line(&stopped), "ei", "r1", 4).is_err());
 
-    let mut recovery = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"egia","core":"egia",
-            "event_code":"egia_mission_restored","run_id":"r1","message":"Mission checkpoint restored",
+    let mut recovery = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"ei","core":"ei",
+            "event_code":"ei_mission_restored","run_id":"r1","message":"Mission checkpoint restored",
             "fields":{"mission_id":"mission_1","outcome":"pending"}});
-    assert!(parse_child(&line(&recovery), "egia", "r1", 4).is_ok());
+    assert!(parse_child(&line(&recovery), "ei", "r1", 4).is_ok());
     recovery["fields"]["outcome"] = json!("failed_closed");
-    assert!(parse_child(&line(&recovery), "egia", "r1", 4).is_err());
+    assert!(parse_child(&line(&recovery), "ei", "r1", 4).is_err());
     recovery["level"] = json!("error");
-    assert!(parse_child(&line(&recovery), "egia", "r1", 4).is_ok());
+    assert!(parse_child(&line(&recovery), "ei", "r1", 4).is_ok());
     recovery["fields"]["secret"] = json!("unsafe");
-    assert!(parse_child(&line(&recovery), "egia", "r1", 4).is_err());
+    assert!(parse_child(&line(&recovery), "ei", "r1", 4).is_err());
   }
 
   #[test]
-  fn all_a03_egia_codes_keep_closed_templates_and_typed_fields() {
-    let policy = egia_policy();
+  fn all_a03_ei_codes_keep_closed_templates_and_typed_fields() {
+    let policy = ei_policy();
     for (code, rule) in policy["codes"].as_object().unwrap() {
       let mut fields = Map::new();
       for (name, kind) in rule["fields"].as_object().unwrap() {
@@ -1052,22 +1042,19 @@ mod tests {
         let outcome = fields.get("outcome").and_then(Value::as_str).unwrap();
         rule["level_by_outcome"][outcome].as_str().unwrap()
       };
-      let mut event = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":level,"source":"egia","core":"egia",
+      let mut event = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":level,"source":"ei","core":"ei",
                 "node_path":null,"event_code":code,"run_id":"r1","correlation_id":"request_1",
                 "message":rule["message"],"fields":fields});
-      assert!(
-        parse_child(&line(&event), "egia", "r1", 42).is_ok(),
-        "{code}"
-      );
+      assert!(parse_child(&line(&event), "ei", "r1", 42).is_ok(), "{code}");
       event["message"] = json!("unreviewed child detail");
       assert!(
-        parse_child(&line(&event), "egia", "r1", 42).is_err(),
+        parse_child(&line(&event), "ei", "r1", 42).is_err(),
         "{code}"
       );
       event["message"] = rule["message"].clone();
       event["fields"]["unexpected"] = json!("value");
       assert!(
-        parse_child(&line(&event), "egia", "r1", 42).is_err(),
+        parse_child(&line(&event), "ei", "r1", 42).is_err(),
         "{code}"
       );
     }
@@ -1078,15 +1065,15 @@ mod tests {
     let base = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos",
             "event_code":"eos_ready","run_id":"r1","message":"EOS runtime ready","fields":{"state":"ready","node_count":3}});
     for (key, bad) in [
-      ("source", json!("egia")),
-      ("core", json!("egia")),
+      ("source", json!("ei")),
+      ("core", json!("ei")),
       ("run_id", json!("r2")),
       ("event_code", json!("eos_custom")),
       ("message", json!("password=secret")),
       ("timestamp", json!("2026-11-01T10:00:01+00:00")),
       (
         "node_path",
-        json!("/cores/eos/layers/process/groups/worker/nodes/sim/package"),
+        json!("/cores/isos/layers/process/groups/worker/nodes/sim/package"),
       ),
       ("pid", json!(42)),
       ("payload", json!("frame")),
@@ -1102,6 +1089,36 @@ mod tests {
     value["fields"]["secret"] = json!("value");
     assert!(parse_child(&line(&value), "eos", "r1", 42).is_err());
     assert!(parse_child(&vec![b'x'; MAX_RAW_LINE + 1], "eos", "r1", 42).is_err());
+  }
+
+  #[test]
+  fn eos_listener_loss_requires_fixed_safe_fields() {
+    let mut event = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"error",
+      "source":"eos","core":"eos","node_path":null,"event_code":"eos_listener_lost",
+      "run_id":"r1","correlation_id":null,"message":"EOS gRPC listener exited unexpectedly",
+      "fields":{"state":"failed","reason_code":"listener_lost"}});
+    assert!(
+      parse_child(&line(&event), "eos", "r1", 42).is_ok(),
+      "{:?}",
+      parse_child(&line(&event), "eos", "r1", 42)
+    );
+    event["fields"]["detail"] = json!("internal failure");
+    assert!(parse_child(&line(&event), "eos", "r1", 42).is_err());
+  }
+
+  #[test]
+  fn eos_node_mismatch_keeps_bounded_reason_and_optional_path() {
+    let mut event = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"error",
+      "source":"eos","core":"eos","node_path":null,"event_code":"eos_node_mismatch",
+      "run_id":"r1","correlation_id":null,
+      "message":"EOS graph node does not match its registered type",
+      "fields":{"state":"failed","mismatch_code":"unknown_type"}});
+    assert!(parse_child(&line(&event), "eos", "r1", 42).is_ok());
+    event["fields"]["mismatch_code"] = json!("secret");
+    assert!(parse_child(&line(&event), "eos", "r1", 42).is_err());
+    event["fields"]["mismatch_code"] = json!("placement");
+    event["node_path"] = json!("/cores/isos/layers/eos_hardware/groups/base/nodes/drive");
+    assert!(parse_child(&line(&event), "eos", "r1", 42).is_ok());
   }
 
   #[test]
@@ -1164,16 +1181,16 @@ mod tests {
   }
 
   #[test]
-  fn selected_egia_launcher_stream_matches_collector_policy() {
-    let Some(launcher) = std::env::var_os("EGIA_P06_LAUNCHER") else {
+  fn selected_ei_launcher_stream_matches_collector_policy() {
+    let Some(launcher) = std::env::var_os("EI_P06_LAUNCHER") else {
       return;
     };
-    let python = std::env::var_os("EGIA_P06_PYTHON").expect("selected EGIA Python required");
+    let python = std::env::var_os("EI_P06_PYTHON").expect("selected EI Python required");
     let temp = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new(launcher)
       .args(["--managed", "--no-tui", "--var"])
       .arg(temp.path().join("var"))
-      .env("EGIA_PYTHON", python)
+      .env("EI_PYTHON", python)
       .env("ISOS_RUN_ID", "r-isos-test")
       .env_remove("PYTHONPATH")
       .stdout(std::process::Stdio::piped())
@@ -1195,14 +1212,14 @@ mod tests {
       .stderr
       .split_inclusive(|byte| *byte == b'\n')
       .filter(|line| !line.is_empty())
-      .map(|line| parse_child(line, "egia", "r-isos-test", pid).unwrap())
+      .map(|line| parse_child(line, "ei", "r-isos-test", pid).unwrap())
       .collect();
-    assert!(!records.is_empty(), "selected EGIA emitted no event");
-    assert_eq!(records[0]["event_code"], "egia_starting");
+    assert!(!records.is_empty(), "selected EI emitted no event");
+    assert_eq!(records[0]["event_code"], "ei_starting");
     for record in &records {
       logs.append_selected(record).unwrap();
     }
-    let source = logs.read("egia", None, 10).unwrap();
+    let source = logs.read("ei", None, 10).unwrap();
     let all = logs.read("all", None, 10).unwrap();
     assert_eq!(source["lines"], all["lines"]);
     let current = logs

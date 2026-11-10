@@ -1,17 +1,24 @@
 # Package process handoff to EOS
 
+> Historical contract. This interface is not implemented by the current button-to-mock-arm graph. See [arm control](arm-control.md) for the active data and command path and [owner lifecycle](owner-health.md) for setup, Run, Status, and Stop.
+
+
 [中文](../../../docs_cn/eos/interfaces/package-process_cn.md) · [Interface catalog](README.md) · [MuJoCo adapter](mujoco.md) · [JSONL events](events.md)
 
-IsOS owns package verification, graph admission, and run coordination. It passes a verified package process to `aether-runtime` with `--package-process <absolute-json-file>`. EOS owns the child, readiness, stop proof, reap, and adapter dispatch. This v1 handoff admits one process. Legacy `--backend-*` flags remain available for older managed graphs and cannot be combined with this option.
 
 ```json
 {
   "schema_version": 1,
-  "node_path": "eos/process/backend/simulator",
-  "node_type": "eos.process.backend@v1.0",
-  "package": {"id": "island/mujoco-sim", "version": "0.1.1"},
-  "entrypoint": "/var/lib/isos/packages/island/mujoco-sim/0.1.1/bin/simulator",
-  "resources": {"scene": "/var/lib/isos/packages/island/mujoco-sim/0.1.1/assets/scene.xml"},
+  "node_path": "isos/eos_process/mujoco/simulator",
+  "node_type": "isos.eos_process.mujoco@v0.2",
+  "package": {
+    "id": "island/mujoco-sim",
+    "version": "0.1.1"
+  },
+  "entrypoint": "/var/lib/island/isos/state/packages/island/mujoco-sim/0.1.1/bin/simulator",
+  "resources": {
+    "scene": "/var/lib/island/isos/state/packages/island/mujoco-sim/0.1.1/assets/scene.xml"
+  },
   "lifecycle_adapter": "mujoco-v2",
   "release_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "payload_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://island.team/isos/contracts/node/node-type.schema.json",
+  "title": "IsOS registered node type",
+  "type": "object",
+  "required": [
+    "id",
+    "core",
+    "layer",
+    "group",
+    "kind",
+    "lifecycle",
+    "capabilities",
+    "settings",
+    "inputs",
+    "outputs"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core": {
+      "type": "string",
+      "minLength": 1
+    },
+    "layer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "group": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "deprecated": {
+      "type": "boolean"
+    },
+    "lifecycle": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "settings": {
+      "type": "array"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port"
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port"
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "built_in",
+            "native_plugin",
+            "managed_process"
+          ]
+        },
+        "abi": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "native_plugin"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "abi"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "service_inputs": {
+      "$ref": "#/$defs/services"
+    },
+    "service_outputs": {
+      "$ref": "#/$defs/services"
+    }
+  },
+  "$defs": {
+    "services": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/service"
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": [
+        "owner",
+        "service",
+        "version",
+        "protocol",
+        "carrier"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "service": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocol": {
+          "enum": [
+            "grpc",
+            "http",
+            "websocket",
+            "socket"
+          ]
+        },
+        "carrier": {
+          "enum": [
+            "in_process",
+            "tcp",
+            "unix_socket"
+          ]
+        },
+        "socket_protocol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "protocol": {
+                "const": "socket"
+              }
+            },
+            "required": [
+              "protocol"
+            ]
+          },
+          "then": {
+            "required": [
+              "socket_protocol"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "port": {
+      "type": "object",
+      "required": [
+        "name",
+        "data_type",
+        "required"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "none",
+            "in_process",
+            "unix_socket",
+            "websocket",
+            "ros2",
+            "http"
+          ]
+        },
+        "delivery_mode": {
+          "enum": [
+            "message",
+            "declaration",
+            "event",
+            "stream"
+          ]
+        },
+        "cardinality": {
+          "enum": [
+            "one",
+            "many"
+          ]
+        },
+        "contract": {
+          "type": "object",
+          "required": [
+            "owner",
+            "id",
+            "version"
+          ],
+          "properties": {
+            "owner": {
+              "type": "string",
+              "minLength": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "delivery_mode": { "const": "declaration" } }, "required": ["delivery_mode"] },
+          "then": { "required": ["transport"], "properties": { "transport": { "const": "none" } }, "not": { "required": ["contract"] } },
+          "else": { "required": ["transport", "contract"], "properties": { "transport": { "not": { "const": "none" } } } }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

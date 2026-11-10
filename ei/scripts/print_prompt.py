@@ -16,16 +16,16 @@ for candidate in (REPOSITORY / "src", REPOSITORY / "libexec", REPOSITORY):
   if str(candidate) not in sys.path:
     sys.path.insert(0, str(candidate))
 
-from egia.core.context import (
+from ei.core.context import (
   ContextBuilder,
   ModeState,
   render_dynamic_message,
   render_hardware,
 )
-from egia.core.link import DeviceBinding
-from egia.core.perception.admission import Admission
-from egia.core.registry import PrimitiveRegistry
-from egia.lib.config import AgentPromptConfig, load_launch_config
+from ei.core.link import DeviceBinding
+from ei.core.perception.admission import Admission
+from ei.core.registry import PrimitiveRegistry
+from ei.lib.config import AgentPromptConfig, load_launch_config
 
 
 def _static(lane: AgentPromptConfig) -> dict[str, object]:
@@ -158,7 +158,7 @@ async def _preview(etc: Path, mode: str | None) -> dict[str, object]:
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--etc", type=Path, default=REPOSITORY / "etc/egia")
+  parser.add_argument("--etc", type=Path, default=REPOSITORY.parent / "config/ei")
   parser.add_argument("--mode")
   parser.add_argument("--json", action="store_true")
   args = parser.parse_args()

@@ -10,8 +10,8 @@ pub(crate) async fn node_types(State(app): State<Arc<App>>, headers: HeaderMap) 
   ok(catalog)
 }
 
-pub(crate) fn selected_catalog_diagnostic() -> graph_compat::Diagnostic {
-  graph_compat::Diagnostic {
+pub(crate) fn selected_catalog_diagnostic() -> graph_contract::Diagnostic {
+  graph_contract::Diagnostic {
     path: "/cores".into(),
     code: "selected_catalog_unavailable",
     message: "Selected owner catalog is unavailable; repair the selected owner and reload".into(),
@@ -26,7 +26,7 @@ pub(crate) async fn selected_node_types(
   authorized(&app, &headers)?;
   let (graph, graph_revision) = match fs::read(app.paths.node_graph_path(&app.deployment)) {
     Ok(bytes) => {
-      let saved = graph_compat::parse(&bytes)
+      let saved = graph_contract::parse(&bytes)
         .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?;
       (saved.value, saved.revision)
     }
@@ -37,12 +37,12 @@ pub(crate) async fn selected_node_types(
     ),
     Err(error) => return Err(internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error)),
   };
-  if graph["version"] != "0.1.0" {
-    let diagnostic = graph_compat::admission_diagnostic(&graph, None).unwrap_or_else(|| {
-      graph_compat::Diagnostic {
+  if graph["version"] != "0.2.0" {
+    let diagnostic = graph_contract::admission_diagnostic(&graph, None).unwrap_or_else(|| {
+      graph_contract::Diagnostic {
         path: "/version".into(),
         code: "selected_catalog_version_unsupported",
-        message: "Selected node catalog requires a 0.1.0 graph".into(),
+        message: "Selected node catalog requires a 0.2.0 graph".into(),
         context: std::collections::BTreeMap::new(),
       }
     });
@@ -66,7 +66,7 @@ pub(crate) async fn selected_node_types(
                     "diagnostics":[selected_catalog_diagnostic()]}),
       )
     })?;
-  if let Some(diagnostic) = graph_compat::admission_diagnostic(&graph, Some(&catalog)) {
+  if let Some(diagnostic) = graph_contract::admission_diagnostic(&graph, Some(&catalog)) {
     let code = diagnostic.code;
     return Err(fail(
       StatusCode::UNPROCESSABLE_ENTITY,
@@ -100,8 +100,11 @@ pub(crate) async fn node_options_for_graph(
       Value::Null,
     ));
   }
-  let mut options =
-    node_options::for_graph(&app.paths, &request.graph).map_err(|error| node_option_err(&error))?;
+  let paths = app.paths.clone();
+  let graph = request.graph;
+  let mut options = bounded_catalog_read(move || node_options::for_graph(&paths, &graph))
+    .await
+    .map_err(|error| node_option_err(&error))?;
   options["graph_revision"] = Value::Null;
   options["read_only"] = json!(false);
   ok(options)
@@ -124,33 +127,18 @@ pub(crate) async fn node_options_current(
     serde_json::from_slice(&bytes)
       .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?
   };
-  let mut options =
-    node_options::for_graph(&app.paths, &graph).map_err(|error| node_option_err(&error))?;
+  let paths = app.paths.clone();
+  let option_graph = graph.clone();
+  let mut options = bounded_catalog_read(move || node_options::for_graph(&paths, &option_graph))
+    .await
+    .map_err(|error| node_option_err(&error))?;
   options["graph_revision"] = json!(if bytes.is_empty() {
     String::new()
   } else {
-    graph_compat::revision(&bytes)
+    graph_contract::revision(&bytes)
   });
-  let applied = app
-    .paths
-    .generated(&app.deployment)
-    .join("core-setup/launch-inputs.json")
-    .is_file();
-  let read_only = if bytes.is_empty() || graph["version"] == "0.1.0" {
-    false
-  } else {
-    let saved = graph_compat::parse(&bytes)
-      .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?;
-    let catalog = bounded_catalog_read(process::catalog)
-      .await
-      .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
-    let editable_starter = !applied
-      && saved.value["version"] == "1.0.0"
-      && graph_compat::legacy_projection(&saved.value, &saved.revision, Some(&catalog))
-        .is_ok_and(|projection| projection.is_some());
-    saved.read_only && !editable_starter
-  };
-  options["read_only"] = json!(read_only);
+  // for_graph already admitted the selected owner catalog and this graph.
+  options["read_only"] = json!(false);
   ok(options)
 }
 

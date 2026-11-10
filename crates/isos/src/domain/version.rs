@@ -82,15 +82,6 @@ impl VersionSupport {
       .iter()
       .find(|package| package.id == id && package.version == version)
   }
-
-  pub(crate) fn graph_status(&self, version: Option<&str>) -> &'static str {
-    match version {
-      None => "not_configured",
-      Some(value) if value == self.target_graph_format => "compatible",
-      Some("0.1.0") => "migration_required",
-      Some(_) => "unsupported",
-    }
-  }
 }
 
 #[cfg(test)]
@@ -109,15 +100,6 @@ mod tests {
   fn map_rejects_unknown_fields() {
     let invalid = format!("{BUNDLED}\nunexpected = true\n");
     assert!(toml::from_str::<VersionSupport>(&invalid).is_err());
-  }
-
-  #[test]
-  fn graph_status_is_exact_and_offline() {
-    let map = bundled().unwrap();
-    assert_eq!(map.graph_status(Some("0.2.0")), "compatible");
-    assert_eq!(map.graph_status(Some("0.1.0")), "migration_required");
-    assert_eq!(map.graph_status(Some("0.2.1")), "unsupported");
-    assert_eq!(map.graph_status(None), "not_configured");
   }
 
   #[test]

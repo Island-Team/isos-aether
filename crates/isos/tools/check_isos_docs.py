@@ -7,7 +7,7 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 EN = ROOT / "docs/isos"
 CN = ROOT / "docs_cn/isos"
 
@@ -38,7 +38,7 @@ def main() -> int:
 
     pages = [ROOT / "README.md", ROOT / "README_cn.md", ROOT / "AGENTS.md"]
     pages += list(EN.rglob("*.md")) + list(CN.rglob("*.md"))
-    pages += list((ROOT / "tests/fixtures").rglob("*.md"))
+    pages += list((ROOT / "crates/isos/tests/fixtures").rglob("*.md"))
     for page in pages:
         content = page.read_text()
         for url in re.findall(r"\[[^\]]+\]\(([^)]+)\)", content):
