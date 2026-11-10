@@ -1,4 +1,5 @@
 //! Direct-child lifecycle, readiness, and dependent stop supervision.
+#![expect(dead_code, reason = "test-only legacy supervisor regression harness")]
 
 use super::*;
 

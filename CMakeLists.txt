@@ -9,6 +9,13 @@ option(ISLAND_BUILD_TESTS "Register repository build tests" OFF)
 
 if(ISLAND_BUILD_TESTS)
   enable_testing()
+  find_program(ISLAND_CARGO_TEST_EXECUTABLE NAMES cargo
+    HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)
+  add_test(NAME eos_runtime
+    COMMAND "${ISLAND_CARGO_TEST_EXECUTABLE}" test --locked
+      -p aether-runtime --all-targets -- --test-threads=1)
+  set_tests_properties(eos_runtime PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
 if(ISLAND_BUILD_EOS)

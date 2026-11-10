@@ -779,6 +779,7 @@ fn check_inner(
 }
 
 #[cfg(test)]
+#[expect(dead_code, reason = "test-only all-core reader feature check")]
 pub fn check(
   paths: &Paths,
   graph: &Value,

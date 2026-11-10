@@ -26,6 +26,8 @@ python3 crates/isos/tools/check_isos_docs.py
 
 Set `BUILD_DIR`, `TMPDIR`, and `CARGO_TARGET_DIR` to suitable absolute locations when the checkout filesystem is small. Owner-specific test commands and any applicable hardware or simulator replay belong in the candidate receipt; a successful private preparation run alone is not a published-tag result.
 
+With `ISLAND_BUILD_TESTS=ON`, root CTest runs the `aether-runtime` Rust tests as an EOS runtime check. It does not replace the full workspace or managed deployment replay above.
+
 ## v0.2.1 source-only beta
 
 The [v0.2.1 release notes](release-0.2.1.md) define a source-only beta exception to the bundle publication path below. Publish the reviewed public snapshot from `isos-aether` as a GitHub pre-release with source archives only; do not attach an installer, binary bundle, or checksum for a bundle that was not built and verified. The existing Release IsOS workflow is for qualified bundles and must not be used for this source-only release. Keep the source version `0.2.1` and tag `v0.2.1` aligned, and record the exact public commit and completed checks in the release receipt. A private `isos-p` test run alone does not qualify the public snapshot.

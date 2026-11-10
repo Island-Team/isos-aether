@@ -816,8 +816,16 @@ fn remove_dev_owner_logs(dir: &Path) -> Result<()> {
 
 pub struct ChildAdmission {
   #[cfg(test)]
+  #[expect(
+    dead_code,
+    reason = "test-only admission metadata retained for owner regression coverage"
+  )]
   pub nodes: Option<Arc<BTreeSet<String>>>,
   #[cfg(test)]
+  #[expect(
+    dead_code,
+    reason = "test-only admission metadata retained for owner regression coverage"
+  )]
   pub skill_pins: BTreeSet<(String, String)>,
 }
 

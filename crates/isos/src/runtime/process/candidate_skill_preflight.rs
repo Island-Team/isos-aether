@@ -1,4 +1,8 @@
 //! Closed private EOS catalog probe before a managed replacement stops its old run.
+#![expect(
+  dead_code,
+  reason = "test-only candidate skill preflight regression harness"
+)]
 use crate::{
   app::config::Paths, domain::graph::graph_contract, runtime::process,
   runtime::process::skill_selection,

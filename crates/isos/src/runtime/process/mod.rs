@@ -326,6 +326,7 @@ pub fn project_with_packages(paths: &Paths, source: &str) -> Result<Vec<ProcessS
 }
 
 #[cfg(test)]
+#[expect(dead_code, reason = "test-only generated profile projection")]
 pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Result<()> {
   ensure!(
     path.is_absolute() && path.is_file(),
@@ -356,6 +357,7 @@ pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Resu
 }
 
 #[cfg(test)]
+#[expect(dead_code, reason = "test-only generated EI configuration projection")]
 pub fn use_generated_ei_config(specs: &mut [ProcessSpec], root: &Path) -> Result<()> {
   let Some(spec) = specs.iter_mut().find(|spec| spec.id == "ei") else {
     return Ok(());

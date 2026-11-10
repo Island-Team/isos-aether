@@ -1,4 +1,5 @@
 //! IsOS-owned, selected camera evidence service binding outside graph edges.
+#![expect(dead_code, reason = "test-only vision binding regression harness")]
 use crate::{
   app::config, domain::graph::edge_admission, domain::graph::graph_contract,
   runtime::process::ProcessSpec,

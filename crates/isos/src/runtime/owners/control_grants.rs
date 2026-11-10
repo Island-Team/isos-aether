@@ -678,6 +678,10 @@ impl Bundle {
 
   /// Revoke an uncertain candidate while retaining its run directory as a
   /// durable breadcrumb for the next manager's replacement check.
+  #[expect(
+    dead_code,
+    reason = "candidate replacement path is exercised by the test-only supervisor"
+  )]
   pub fn revoke_keep_directory(&self) -> Result<()> {
     self.verify()?;
     if self.vision.is_some() {

@@ -46,6 +46,10 @@ thread_local! {
 }
 
 #[cfg(test)]
+#[expect(
+  dead_code,
+  reason = "reserved test hook for the selected vision configuration"
+)]
 pub(crate) fn test_vision_config_path(path: Option<PathBuf>) {
   TEST_VISION_CONFIG_PATH.with(|selected| *selected.borrow_mut() = path);
 }
