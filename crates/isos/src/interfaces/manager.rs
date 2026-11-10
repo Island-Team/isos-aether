@@ -29,7 +29,6 @@ pub(crate) enum WireCommand {
   ServicesStop(ServiceTarget),
   ServicesRestart(ServiceTarget),
   ServicesLogs(ServiceLogs),
-  LogAppend(LogAppend),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -60,13 +59,6 @@ pub(crate) struct ServiceLogs {
   pub(crate) cursor: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub(crate) limit: Option<usize>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LogAppend {
-  pub(crate) deployment: String,
-  pub(crate) log: LogEventInput,
 }
 
 impl WireRequest {
@@ -103,7 +95,6 @@ impl WireCommand {
       Self::ServicesStop(_) => "services_stop",
       Self::ServicesRestart(_) => "services_restart",
       Self::ServicesLogs(_) => "services_logs",
-      Self::LogAppend(_) => "log_append",
     }
   }
 
@@ -113,7 +104,6 @@ impl WireCommand {
         Some(&v.deployment)
       }
       Self::DeploymentStatus(v) | Self::DeploymentActivePackages(v) => Some(&v.deployment),
-      Self::LogAppend(v) => Some(&v.deployment),
       _ => None,
     }
   }
@@ -189,15 +179,6 @@ impl WireCommand {
   }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LogEventInput {
-  pub(crate) source: String,
-  pub(crate) level: String,
-  pub(crate) message: String,
-  #[serde(default)]
-  pub(crate) event_code: Option<String>,
-}
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ApiResponse {
   pub(crate) schema_version: String,

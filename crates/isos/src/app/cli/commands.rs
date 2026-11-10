@@ -1,14 +1,13 @@
 use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
 use crate::runtime::manager::{manager_session_id, next_correlation_id, service_call};
 use crate::{
-  app::config, runtime::owners::core_setup, domain::graph::graph_compat,
-  domain::graph::graph_migration, runtime::lock, runtime::logs as log_store,
-  domain::graph::node_sets, domain::packages, runtime::process, domain::registry::release,
-  domain::services, domain::graph::starter,
+  app::config, runtime::owners::core_setup, domain::graph::graph_contract,
+  domain::graph::graph_apply, runtime::logs as log_store, domain::graph::node_sets,
+  domain::packages, runtime::process, domain::registry::release, domain::services,
+  domain::graph::starter,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{fs, os::unix::net::UnixStream, path::Path};
 
 pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Result<()> {
@@ -34,29 +33,19 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
     ConfigCommand::Validate { file } => {
       let source = fs::read_to_string(&file)?;
       let graph = process::normalize_source(&source)?;
-      let specs = if matches!(graph["version"].as_str(), Some("0.1.0" | "0.2.0")) {
-        let bytes = serde_json::to_vec_pretty(&graph)?;
-        let proposal = graph_migration::Proposal {
-          revision: graph_compat::revision(&bytes),
-          graph,
-          bytes,
-          changes: Vec::new(),
-        };
-        graph_migration::prepare(paths, name, &proposal)
-          .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?
-          .specs
-      } else {
-        graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
-        process::validate_full_graph(&file)?;
-        let specs = process::project_with_packages(paths, &source)?;
-        let catalog = process::catalog_for_graph(paths, &graph)?;
-        crate::runtime::process::reader_features::check(paths, &graph, &specs, &catalog)?;
-        specs
+      ensure!(graph["version"] == "0.2.0", "graph version must be 0.2.0");
+      let bytes = serde_json::to_vec_pretty(&graph)?;
+      let proposal = graph_apply::Proposal {
+        revision: graph_contract::revision(&bytes),
+        graph,
+        bytes,
       };
-      println!("valid node graph: {} IsOS processes", specs.len());
+      graph_apply::prepare(paths, name, &proposal)
+        .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
+      println!("valid node graph");
     }
     ConfigCommand::Apply { file, revision } => {
-      let specs = apply_graph_file(paths, name, &file, revision.as_deref()).inspect_err(|_| {
+      apply_graph_file(paths, name, &file, revision.as_deref()).inspect_err(|_| {
         if let Ok(logs) = log_store::LogStore::new(paths, name) {
           let correlation = next_correlation_id();
           let manager = logs
@@ -76,48 +65,7 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
           );
         }
       })?;
-      println!("applied node graph: {} IsOS processes", specs.len());
-    }
-    ConfigCommand::Migrate {
-      preview,
-      target_version,
-      revision,
-      proposed_revision,
-    } => {
-      ensure!(
-        matches!(target_version.as_str(), "0.1.0" | "0.2.0"),
-        "--target-version must be 0.1.0 or 0.2.0"
-      );
-      if preview {
-        ensure!(
-          proposed_revision.is_none(),
-          "--preview does not accept --proposed-revision"
-        );
-        let result = (if target_version == "0.2.0" {
-          graph_migration::preview_unified
-        } else {
-          graph_migration::preview
-        })(paths, name, &revision)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        println!(
-          "{}",
-          serde_json::to_string_pretty(&json!({
-              "revision":revision,"proposed_revision":result.proposal.revision,
-              "graph":result.proposal.graph,"changes":result.proposal.changes,
-              "can_apply":result.diagnostic.is_none(),"diagnostics":result.diagnostic.into_iter().collect::<Vec<_>>()
-          }))?
-        );
-      } else {
-        let proposed_revision =
-          proposed_revision.context("--proposed-revision is required without --preview")?;
-        let result = (if target_version == "0.2.0" {
-          graph_migration::commit_unified
-        } else {
-          graph_migration::commit
-        })(paths, name, &revision, &proposed_revision)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        println!("migrated node graph: {}", result.revision);
-      }
+      println!("applied node graph");
     }
     ConfigCommand::Show => {
       println!("{}", fs::read_to_string(paths.node_graph_path(name))?);
@@ -131,101 +79,25 @@ pub(crate) fn apply_graph_file(
   name: &str,
   file: &Path,
   expected_revision: Option<&str>,
-) -> Result<Vec<process::ProcessSpec>> {
-  let source = fs::read_to_string(file)?;
-  let graph = process::normalize_source(&source)?;
-  if graph["version"] == "0.1.0" || graph["version"] == "0.2.0" {
-    let expected = expected_revision.context("revisioned graph Apply requires --revision")?;
-    let (_, specs) = graph_migration::apply_new(paths, name, graph, expected)
-      .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    return Ok(specs);
-  }
-  graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
-  let destination = paths.node_graph_path(name);
-  let mut expected_saved_revision = None;
-  {
-    let _lock = lock::Lock::take(paths)?;
-    if destination.exists() {
-      let saved = graph_compat::read(&destination)?;
-      if saved.value["version"] == "1.0.0" {
-        if let Some(diagnostic) =
-          graph_compat::projected_input_diagnostic(&saved, &graph, process::catalog().ok().as_ref())
-        {
-          bail!(diagnostic);
-        }
-        if let Some(diagnostic) = graph_compat::changed_legacy_diagnostic(&saved, &graph) {
-          if graph_compat::requires_migration(
-            &saved,
-            &graph,
-            paths
-              .generated(name)
-              .join("core-setup/launch-inputs.json")
-              .is_file(),
-          ) {
-            bail!(diagnostic);
-          }
-          expected_saved_revision = Some(saved.revision.clone());
-        } else {
-          process::validate_value(paths, &saved.value)?;
-          let specs = process::project_with_packages(paths, &serde_json::to_string(&saved.value)?)?;
-          let catalog = process::catalog_for_graph(paths, &saved.value)?;
-          crate::runtime::process::reader_features::check(paths, &saved.value, &specs, &catalog)?;
-          let rendered = core_setup::render_graph(paths, name, &saved.value, &saved.revision)?;
-          core_setup::write_rendered(paths, name, rendered)?;
-          return Ok(specs);
-        }
-      }
-      if saved.value["version"] != "1.0.0" {
-        bail!(saved.diagnostics.into_iter().next().map_or_else(
-          || "/version: migration_required: saved graph is read-only".to_owned(),
-          |diagnostic| diagnostic.to_string()
-        ));
-      }
-    }
-  }
+) -> Result<()> {
+  let pool = fs::canonicalize(paths.config.join("graph-pool"))?;
+  let selected = fs::canonicalize(file)?;
   ensure!(
-    graph["version"] == "1.0.0",
-    "/version: 0.1.0 writer is unavailable until core readers advertise support"
+    selected.parent() == Some(pool.as_path()),
+    "Apply file must be in the graph pool"
   );
-  process::validate_value(paths, &graph)?;
-  let normalized = serde_json::to_vec_pretty(&graph)?;
-  let specs = process::project_with_packages(paths, &String::from_utf8(normalized.clone())?)?;
-  let catalog = process::catalog_for_graph(paths, &graph)?;
-  crate::runtime::process::reader_features::check(paths, &graph, &specs, &catalog)?;
-  let revision = hex::encode(Sha256::digest(&normalized));
-  let rendered = core_setup::render_graph(paths, name, &graph, &revision)?;
-  let _lock = lock::Lock::take(paths)?;
-  packages::verify_graph_packages(paths, &graph)?;
-  let destination = paths.node_graph_path(name);
-  let previous = fs::read(&destination).ok();
-  ensure!(
-    previous.as_deref().map(graph_compat::revision) == expected_saved_revision,
-    "saved graph changed during Apply; reload before retrying"
-  );
-  if let Some(bytes) = &previous {
-    let saved = graph_compat::parse(bytes)?;
-    ensure!(
-      saved.value["version"] == "1.0.0"
-        && !paths
-          .generated(name)
-          .join("core-setup/launch-inputs.json")
-          .is_file(),
-      "saved graph changed or became applied during Apply; reload before migration"
-    );
-  }
-  config::atomic_write(&destination, &normalized)?;
-  if let Err(error) = core_setup::write_rendered(paths, name, rendered) {
-    if let Some(previous) = previous {
-      config::atomic_write(&destination, &previous)?;
-    } else {
-      let _ = fs::remove_file(&destination);
-    }
-    return Err(error);
-  }
-  if let Err(error) = clear_saved_setup_error(paths, name) {
-    eprintln!("saved graph applied, but could not clear prior setup error: {error}");
-  }
-  Ok(specs)
+  let filename = selected
+    .file_name()
+    .and_then(|value| value.to_str())
+    .context("invalid graph pool filename")?;
+  let pool_name = filename
+    .strip_suffix(".nodes.json")
+    .context("Apply requires a .nodes.json pool file")?;
+  process::validate_deployment_name(pool_name)?;
+  let expected = expected_revision.context("graph Apply requires --revision")?;
+  graph_apply::apply_pool(paths, name, pool_name, expected)
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+  Ok(())
 }
 
 pub(crate) fn clear_saved_setup_error(paths: &config::Paths, name: &str) -> Result<()> {
@@ -580,7 +452,7 @@ pub(crate) fn print_init_next_steps(mode: &str) {
   println!("\nNext steps:");
   println!("  Build EOS, EI, and IsosUI in this workspace ({mode} mode).");
   println!("  Configure ISOS_AETHER_BIN_DIR, ISOS_EI_BIN_DIR, and ISOSUI_DIST_DIR.");
-  println!("  isos version check                # inspect build and launch readiness");
+  println!("  isos doctor                       # inspect build and launch readiness");
   println!("  isos                               # open the workbench; cores stay stopped");
   println!("  In Graph, add a backend, then Check graph and Save graph before `isos run`.");
   println!("  Run `isos --help` for mode rules or `isos doctor` to check readiness.");

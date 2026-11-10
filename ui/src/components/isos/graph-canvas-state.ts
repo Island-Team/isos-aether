@@ -1,18 +1,43 @@
 import type { NodeGraph } from '@/services/isos/node-graph';
 import type { NodeChange } from 'reactflow';
-import { canonicalNodePath, removeNode } from './node-graph-edits';
+import { canonicalNodePath, graphNodes, removeNode } from './node-graph-edits';
 
 export type NodePositions = Record<string, { x: number; y: number }>;
 export type NodeMirrors = Record<string, boolean>;
 
+const forwardDemoPath = [
+  'isos/ui/button/trigger', 'ei/io/input/trigger', 'ei/cognition/intent/forwarder',
+  'ei/governance/safety/gate', 'eos/interface/ingress/trigger',
+  'eos/skill/demo/joint_delta', 'eos/dispatcher/arm/delta', 'eos/hardware/mock/arm',
+];
+const returnDemoPath = [
+  'eos/hardware/mock/arm_observer', 'eos/dispatcher/arm/monitor',
+  'eos/skill/demo/arm_status', 'eos/interface/egress/arm_status',
+  'ei/io/input/arm_status', 'ei/cognition/state/arm_status',
+  'ei/governance/monitor/arm_status', 'isos/ui/monitor/arm',
+];
+
+/** Place the two declared demo chains in opposite lanes; authored positions still win. */
+export function asyncDemoLayout(paths: string[]): { positions: NodePositions; mirrors: NodeMirrors; lanes: Record<string, 'forward' | 'return'> } | null {
+  if (paths.length !== 16 || ![...forwardDemoPath, ...returnDemoPath].every((path) => paths.includes(path))) return null;
+  const positions: NodePositions = {};
+  const mirrors: NodeMirrors = {};
+  const lanes: Record<string, 'forward' | 'return'> = {};
+  forwardDemoPath.forEach((path, index) => { positions[path] = { x: 50 + index * 340, y: 90 }; lanes[path] = 'forward'; });
+  returnDemoPath.forEach((path, index) => { positions[path] = { x: 50 + (7 - index) * 340, y: 490 }; mirrors[path] = true; lanes[path] = 'return'; });
+  return { positions, mirrors, lanes };
+}
+
 /** A stable graph identity keeps visual positions separate from graph revisions. */
 export function graphLayoutKey(graph: NodeGraph): string {
-  return `isosui-v2-layout:${encodeURIComponent(graph.robot.id)}`;
+  const base = `isosui-v2-layout:${encodeURIComponent(graph.robot.id)}`;
+  // Use fresh positions for the two independent demo chains.
+  return asyncDemoLayout(graphNodes(graph, []).map((entry) => entry.path)) ? `${base}:async-lanes-v2` : base;
 }
 
 export function graphMirrorKey(graph: NodeGraph): string { return `${graphLayoutKey(graph)}:mirrors`; }
 export function parseNodeMirrors(raw: string | null): NodeMirrors {
-  try { const value: unknown = JSON.parse(raw || '{}'); return value && !Array.isArray(value) && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => entry[1] === true).map(([path, mirrored]) => [canonicalNodePath(path), mirrored])) : {}; }
+  try { const value: unknown = JSON.parse(raw || '{}'); return value && !Array.isArray(value) && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean').map(([path, mirrored]) => [canonicalNodePath(path), mirrored])) : {}; }
   catch { return {}; }
 }
 

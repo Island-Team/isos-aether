@@ -1,5 +1,7 @@
 # Graph loading and status projection
 
+The browser remembers the last opened pool file name. On opening, it selects that file if present, otherwise `demo` or the first available file. If the remembered file is missing, the editor announces the fallback; if no file remains or the open file disappears, Save asks for a new name. Save uses the opened file revision fence and states that saving replaces the same named file. Apply selects the exact saved pool revision and regenerates owner configuration; Save and Run performs Save, Apply, then Run.
+
 IsOS owns saved graph bytes, revisions, catalogs, package receipts, readiness and process status. The browser holds only a draft and owner reported projections. The selected graph/catalog snapshot must have one matching `graph_revision` before the editor renders it or permits edits. An unsupported or mismatched snapshot remains read only.
 
 Graph opening and an explicit Reload request wait for the selected graph/catalog snapshot. The canvas may render as soon as that snapshot passes the revision and edit-generation checks. Node sets, process status and core readiness load independently afterward; failure or delay in one of these projections does not turn a valid graph into an unavailable graph. Late optional responses cannot replace a newer graph request, edit generation or status poll. An explicit reload retains the prior canvas while its snapshot is pending and discards a late snapshot after a local edit or newer catalog request.

@@ -24,7 +24,7 @@ struct Verifier {
   projection_revision: String,
   source_path: String,
   gate_path: String,
-  egia_vision_sha256: String,
+  ei_vision_sha256: String,
 }
 
 #[derive(Clone)]
@@ -61,7 +61,7 @@ impl OwnerVision {
       || !valid_run_id(run_id)
       || !valid_digest(&verifier.active_revision)
       || !valid_digest(&verifier.projection_revision)
-      || !valid_digest(&verifier.egia_vision_sha256)
+      || !valid_digest(&verifier.ei_vision_sha256)
       || verifier.source_path.is_empty()
       || verifier.gate_path.is_empty()
     {
@@ -152,10 +152,7 @@ impl OwnerVision {
     };
     let bytes = decode_hex_32(bearer).ok_or("invalid grant")?;
     let digest = format!("{:x}", Sha256::digest(bytes));
-    if !constant_time_equal(
-      digest.as_bytes(),
-      self.verifier.egia_vision_sha256.as_bytes(),
-    ) {
+    if !constant_time_equal(digest.as_bytes(), self.verifier.ei_vision_sha256.as_bytes()) {
       return deny(&mut stream, 403, "owner_grant_denied");
     }
     if !self.binding_current() {
@@ -187,7 +184,7 @@ impl OwnerVision {
         && value.run_id == self.verifier.run_id
         && value.active_revision == self.verifier.active_revision
         && value.projection_revision == self.verifier.projection_revision
-        && value.egia_vision_sha256 == self.verifier.egia_vision_sha256
+        && value.ei_vision_sha256 == self.verifier.ei_vision_sha256
         && value.source_path == self.verifier.source_path
         && value.gate_path == self.verifier.gate_path
     })
@@ -349,7 +346,7 @@ mod tests {
       projection_revision: "b".repeat(64),
       source_path: "eos/hardware/camera/front".into(),
       gate_path: "eos/interface/gate/front".into(),
-      egia_vision_sha256: format!("{:x}", Sha256::digest(decode_hex_32(&grant).unwrap())),
+      ei_vision_sha256: format!("{:x}", Sha256::digest(decode_hex_32(&grant).unwrap())),
     };
     let verifier_path = root.join("vision-verifier.json");
     fs::write(
@@ -357,7 +354,7 @@ mod tests {
       json!({"schema_version":1,"run_id":verifier.run_id,
       "active_revision":verifier.active_revision,"projection_revision":verifier.projection_revision,
       "source_path":verifier.source_path,"gate_path":verifier.gate_path,
-      "egia_vision_sha256":verifier.egia_vision_sha256})
+      "ei_vision_sha256":verifier.ei_vision_sha256})
       .to_string(),
     )
     .unwrap();

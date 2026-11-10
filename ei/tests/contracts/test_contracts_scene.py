@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from egia.contracts.endpoints import ResourceKind
-from egia.contracts.perception.world.detection import DetectionSnapshot
-from egia.contracts.perception.world.state import WorldStateSnapshot
-from egia.contracts.validate import load_resource_schema, validate_resource
+from ei.contracts.endpoints import ResourceKind
+from ei.contracts.perception.world.detection import DetectionSnapshot
+from ei.contracts.perception.world.state import WorldStateSnapshot
+from ei.contracts.validate import load_resource_schema, validate_resource
 
 
 def test_world_and_detection_contracts_select_canonical_schema_ids() -> None:

@@ -17,7 +17,7 @@ assert send["request"]["op"] == "primitive_typed"
 assert send["request"]["header"]["source_path"] == send["given"]["binding_path"]
 assert send["request"]["header"]["target_path"] == send["given"]["edge_target"]
 assert send["request"]["header"]["active_revision"] == fixture["revision_a"]
-assert send["given"]["node_type"] == "eos.dispatcher.primitive_base@v0.1"
+assert send["given"]["node_type"] == "isos.eos_dispatcher.primitive_base@v0.2"
 assert send["request"]["header"]["payload_length_bytes"] == len(json.dumps(send["request"]["payload"], separators=(",", ":")).encode())
 assert "authority_grant" not in send["request"] and "authority_grant" not in send["request"]["header"]
 assert next(case for case in cases if case["id"] == "mock_in_progress_then_result")["follow_request"]["op"] == "result"

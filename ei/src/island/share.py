@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from island.cfg import ConfigError, ProductConfig
-from island.path import Layout
+from island.path import Layout, Mode
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +85,16 @@ def configured_resources(
 
   selected_config = config or os.environ.get("ISLAND_CONFIG")
   if selected_config is None:
-    config_path = layout.etc / "island.toml"
+    bundled = layout.prefix / "etc/island.toml"
+    system_config = layout.etc / "island.toml"
+    if layout.is_source_ei_checkout:
+      config_path = layout.prefix.parent / "config/ei/island.toml"
+    elif (
+      layout.mode is Mode.SYSTEM and not system_config.is_file() and bundled.is_file()
+    ):
+      config_path = bundled
+    else:
+      config_path = system_config
   else:
     selected = Path(selected_config).expanduser()
     config_path = (
@@ -93,14 +102,16 @@ def configured_resources(
       if selected.is_absolute()
       else (layout.prefix / selected).resolve()
     )
-  product = load(
-    config_path,
-    defaults=layout.share / "defaults/island.toml",
-  )
+  defaults = layout.share / "defaults/island.toml"
+  if layout.mode is Mode.SYSTEM and (layout.prefix / "etc/island.toml").is_file():
+    defaults = layout.prefix / "share/defaults/island.toml"
+  if layout.is_source_ei_checkout:
+    defaults = layout.share / "isos/defaults/island.toml"
+  product = load(config_path, defaults=defaults)
   return SharedResources.resolve(product, layout)
 
 
 def repository_resources(root: Path) -> SharedResources:
   """Load the shared-resource index declared by a source checkout."""
   layout = Layout.resolve(mode="source", prefix=root, environ={})
-  return configured_resources(layout, root / "etc/island.toml")
+  return configured_resources(layout, root.parent / "config/ei/island.toml")

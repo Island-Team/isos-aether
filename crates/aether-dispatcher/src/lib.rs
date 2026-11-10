@@ -191,7 +191,9 @@ mod release_boundary_tests {
       .journal
       .lock()
       .unwrap()
-      .set_shutdown_pending(vec!["cores/eos/layers/hardware/groups/base/nodes/a".into()])
+      .set_shutdown_pending(vec![
+        "cores/isos/layers/eos_hardware/groups/base/nodes/a".into()
+      ])
       .unwrap();
     dispatcher
       .shutdown_marker_owned
@@ -419,7 +421,7 @@ mod release_boundary_tests {
         let mut request = stop(
           "gate-held",
           StopKind::MotionStop {
-            node_path: "cores/eos/layers/hardware/groups/base/nodes/a".into(),
+            node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/a".into(),
           },
           false,
         );
@@ -793,7 +795,7 @@ mod release_boundary_tests {
       let dispatcher = dispatcher.clone();
       std::thread::spawn(move || {
         dispatcher.dispatch_managed_movement(
-          managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+          managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
           move_a("prior-release"),
         )
       })
@@ -897,7 +899,7 @@ mod release_boundary_tests {
       let dispatcher = dispatcher.clone();
       std::thread::spawn(move || {
         dispatcher.dispatch_managed_movement(
-          managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+          managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
           move_a("prior-stop"),
         )
       })
@@ -987,7 +989,7 @@ mod release_boundary_tests {
       let dispatcher = dispatcher.clone();
       std::thread::spawn(move || {
         dispatcher.dispatch_managed_movement(
-          managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+          managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
           move_a("prior-stop-race"),
         )
       })
@@ -1203,7 +1205,7 @@ pub struct CommandRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityRole {
-  EgiaControl,
+  EiControl,
   OperatorControl,
 }
 
@@ -1333,7 +1335,7 @@ pub struct DispatchResult {
   pub reason: Option<String>,
 }
 
-/// Durable public-operation view. Legacy journal records deliberately have no
+/// Durable public-operation view. Unadmitted journal records have no
 /// typed identity and cannot be reconstructed as a primitive acknowledgement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayOperationInfo {
@@ -1410,7 +1412,7 @@ pub struct StopRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GatewayLookupError {
-  LegacyRecord,
+  UnadmittedRecord,
   Unauthorized,
   WrongRun,
   NotFound,
@@ -1651,15 +1653,6 @@ impl Dispatcher {
   /// movement inhibit.
   pub fn emergency_stopped(&self) -> bool {
     self.emergency_stopped.load(Ordering::SeqCst)
-  }
-
-  /// Legacy durable records cannot be projected into a typed public ack.
-  pub fn has_legacy_journal_records(&self) -> bool {
-    self
-      .journal
-      .lock()
-      .expect("journal poisoned")
-      .has_legacy_records()
   }
 
   /// Deterministic capacity injection for cross-crate transport tests. The
@@ -2050,11 +2043,11 @@ impl Dispatcher {
       return Ok(None);
     };
     let Some(operation) = &entry.operation else {
-      return Err(GatewayLookupError::LegacyRecord);
+      return Err(GatewayLookupError::UnadmittedRecord);
     };
     if let Some((run_id, role)) = authority {
       let Some(identity) = &operation.identity.admission else {
-        return Err(GatewayLookupError::LegacyRecord);
+        return Err(GatewayLookupError::UnadmittedRecord);
       };
       if identity.run_id != run_id {
         return Err(GatewayLookupError::WrongRun);
@@ -2628,8 +2621,8 @@ impl Dispatcher {
     }
     if !matches!(
       (context.authority_role, context.ingress),
-      (AuthorityRole::EgiaControl, AdmissionIngress::Grpc)
-        | (AuthorityRole::EgiaControl, AdmissionIngress::SkillWorker)
+      (AuthorityRole::EiControl, AdmissionIngress::Grpc)
+        | (AuthorityRole::EiControl, AdmissionIngress::SkillWorker)
         | (
           AuthorityRole::OperatorControl,
           AdmissionIngress::PrivateBridge

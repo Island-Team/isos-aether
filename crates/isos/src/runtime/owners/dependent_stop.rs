@@ -216,6 +216,7 @@ fn write(path: &Path, record: &Record, create: bool) -> Result<()> {
   result
 }
 
+#[cfg(test)]
 pub fn create_running(paths: &Paths, deployment: &str, run_id: &str, ids: &[String]) -> Result<()> {
   let path = record_path(paths, deployment, run_id)?;
   let record = Record {
@@ -231,6 +232,7 @@ pub fn create_running(paths: &Paths, deployment: &str, run_id: &str, ids: &[Stri
   write(&path, &record, true)
 }
 
+#[cfg(test)]
 pub fn publish_unknown(
   paths: &Paths,
   deployment: &str,
@@ -251,6 +253,7 @@ pub fn publish_unknown(
   write(&path, &record, false)
 }
 
+#[cfg(test)]
 pub fn publish_confirmed(paths: &Paths, deployment: &str, terminal: &Terminal) -> Result<()> {
   ensure!(
     terminal.outcome == "confirmed"
@@ -331,6 +334,7 @@ pub fn recover(paths: &Paths, deployment: &str, run_id: &str) -> Terminal {
   }
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReceiptPart {
@@ -339,6 +343,7 @@ struct ReceiptPart {
   outcome: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
@@ -362,6 +367,7 @@ struct Receipt {
   reason_code: Option<String>,
 }
 
+#[cfg(test)]
 pub struct ReceiptExpectation<'a> {
   pub run_id: &'a str,
   pub eos_pid: u32,
@@ -372,6 +378,7 @@ pub struct ReceiptExpectation<'a> {
 
 /// A strict selected-pipe check. Duplicate object keys are rejected by the
 /// typed deserializer, including nested part keys.
+#[cfg(test)]
 pub fn verify_receipt(line: &[u8], expected: &ReceiptExpectation<'_>) -> Result<bool> {
   ensure!(
     line.len() <= 4096 && line.last() == Some(&b'\n'),
@@ -478,7 +485,7 @@ mod tests {
       runtime: temp.path().join("run"),
     };
     paths.prepare().unwrap();
-    let ids = vec!["egia".into(), "eos".into()];
+    let ids = vec!["ei".into(), "eos".into()];
     create_running(&paths, "test", "r42", &ids).unwrap();
     assert_eq!(
       recover(&paths, "test", "r42").reason_code,

@@ -1,23 +1,23 @@
 //! Immutable 0.1 graph generations selected by the exact saved-byte revision.
-use crate::{app::config::Paths, domain::graph::graph_compat, domain::packages};
+use crate::{app::config::Paths, domain::graph::graph_contract, domain::packages};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::{ffi::OsString, os::unix::ffi::OsStrExt};
 use std::{
   collections::{BTreeMap, BTreeSet},
-  ffi::OsString,
   fs,
   io::Write,
   os::unix::{
-    ffi::OsStrExt,
     fs::{OpenOptionsExt, PermissionsExt},
   },
   path::{Component, Path, PathBuf},
 };
 
-const REQUIRED_EGIA: &[&str] = &[
-  "egia.toml",
+const REQUIRED_EI: &[&str] = &[
+  "ei.toml",
   "modes.toml",
   "profiles/isos.toml",
   "models.toml",
@@ -91,6 +91,13 @@ fn input_failure(stage: &'static str) -> Diagnostic {
     missing(stage)
   }
 }
+fn launch_input_changed(stage: &'static str) -> Diagnostic {
+  failure(
+    "generated_launch_input_mismatch",
+    stage,
+    "A configured core binary changed since Apply; Apply the saved graph again",
+  )
+}
 fn render_mismatch() -> Diagnostic {
   failure(
     "generated_render_mismatch",
@@ -102,7 +109,12 @@ pub fn owner_rejected(role: &str) -> Diagnostic {
   Diagnostic {
     code: "generated_owner_rejected",
     stage: "render",
-    path: format!("/cores/{role}"),
+    path: match role {
+      "ei" => "/cores/isos/layers/ei_io",
+      "eos" => "/cores/isos/layers/eos_dispatcher",
+      _ => "/cores/isos",
+    }
+    .into(),
     message: "Restore the selected owner and correct the graph",
   }
 }
@@ -186,21 +198,21 @@ struct SecretRef {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct EgiaCodeEntry {
+struct EiCodeEntry {
   root: String,
   path: String,
   sha256: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct EgiaChain {
+struct EiChain {
   prefix: String,
   mode: String,
   interpreter: String,
   interpreter_target: String,
   interpreter_sha256: String,
   binding: BTreeMap<String, String>,
-  code: Vec<EgiaCodeEntry>,
+  code: Vec<EiCodeEntry>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -215,9 +227,7 @@ struct Manifest {
   defaults: Vec<DefaultEntry>,
   secret_refs: Vec<SecretRef>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  egia_chain: Option<EgiaChain>,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  vision_selection_sha256: Option<String>,
+  ei_chain: Option<EiChain>,
 }
 
 fn checked_relative(path: &Path) -> std::result::Result<String, Diagnostic> {
@@ -347,7 +357,11 @@ fn check_parent_dirs(path: &Path, stage: &'static str) -> Result<(), Diagnostic>
   Ok(())
 }
 
-fn walk_tree(root: &Path, source: &str) -> Result<(Vec<DefaultEntry>, Files), Diagnostic> {
+fn walk_tree(
+  root: &Path,
+  source: &str,
+  linked_defaults: Option<&Path>,
+) -> Result<(Vec<DefaultEntry>, Files), Diagnostic> {
   if !root.is_absolute() {
     return Err(unsafe_path("defaults"));
   }
@@ -373,21 +387,31 @@ fn walk_tree(root: &Path, source: &str) -> Result<(Vec<DefaultEntry>, Files), Di
     for child in children {
       let child = child.map_err(|_| missing("defaults"))?.path();
       let metadata = fs::symlink_metadata(&child).map_err(|_| missing("defaults"))?;
-      if metadata.file_type().is_symlink() {
-        return Err(unsafe_path("defaults"));
-      }
+      let read_path = if metadata.file_type().is_symlink() {
+        let allowed = linked_defaults.ok_or_else(|| unsafe_path("defaults"))?;
+        let allowed = allowed
+          .canonicalize()
+          .map_err(|_| unsafe_path("defaults"))?;
+        let target = child.canonicalize().map_err(|_| unsafe_path("defaults"))?;
+        if !target.starts_with(&allowed) {
+          return Err(unsafe_path("defaults"));
+        }
+        target
+      } else {
+        child.clone()
+      };
       if metadata.file_type().is_dir() {
         pending.push(child);
         continue;
       }
-      if !metadata.file_type().is_file() {
+      if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
         return Err(unsafe_path("defaults"));
       }
       let relative = child
         .strip_prefix(root)
         .map_err(|_| unsafe_path("defaults"))?;
       let path = checked_relative(relative).map_err(|_| unsafe_path("defaults"))?;
-      let bytes = inspect_regular(&child, "defaults")?;
+      let bytes = inspect_regular(&read_path, "defaults")?;
       if bytes.len() > 1024 * 1024 || entries.len() >= 128 {
         return Err(unsafe_path("defaults"));
       }
@@ -402,7 +426,7 @@ fn walk_tree(root: &Path, source: &str) -> Result<(Vec<DefaultEntry>, Files), Di
         return Err(failure(
           "generated_invalid_default",
           "defaults",
-          "Restore valid EGIA defaults and Apply again",
+          "Restore valid EI defaults and Apply again",
         ));
       }
       entries.push(DefaultEntry {
@@ -419,23 +443,20 @@ fn walk_tree(root: &Path, source: &str) -> Result<(Vec<DefaultEntry>, Files), Di
 }
 
 fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
-  let enabled = crate::domain::graph::graph_compat::has_unified_ei_layers(graph)
+  let enabled = crate::domain::graph::graph_contract::has_unified_ei_layers(graph)
     || graph
-      .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
+      .pointer("/cores/isos/layers/process/groups/component/nodes/ei")
       .is_some_and(|node| node["enabled"] != false);
   if !enabled {
     return Ok((None, Vec::new(), Vec::new()));
   }
   let component = std::env::var_os("ISOS_EI_DEFAULTS_DIR")
-    .or_else(|| std::env::var_os("ISOS_EGIA_DEFAULTS_DIR"))
     .map(PathBuf::from)
     .ok_or_else(|| missing("defaults"))?;
   let factory = std::env::var_os("ISOS_EI_FACTORY_DEFAULTS_DIR")
-    .or_else(|| std::env::var_os("ISOS_EGIA_FACTORY_DEFAULTS_DIR"))
     .map(PathBuf::from)
     .ok_or_else(|| missing("defaults"))?;
   let bin = std::env::var_os("ISOS_EI_BIN_DIR")
-    .or_else(|| std::env::var_os("ISOS_EGIA_BIN_DIR"))
     .map(PathBuf::from)
     .ok_or_else(|| missing("binary"))?;
   let prefix = std::env::var_os("ISLAND_PREFIX")
@@ -443,9 +464,13 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
     .or_else(|| bin.parent().map(Path::to_path_buf))
     .ok_or_else(|| missing("binary"))?;
   validate_factory_root(&factory, &prefix)?;
-  let (mut component_entries, component_files) = walk_tree(&component, "component")?;
+  let (mut component_entries, component_files) = walk_tree(&component, "component", None)?;
   require_component_defaults(&component_entries)?;
-  let (factory_entries, _) = walk_tree(&factory, "factory")?;
+  let source_mode = prefix.join("pyproject.toml").is_file()
+    && prefix.join("src/ei").is_dir()
+    && prefix.join("../Cargo.toml").is_file();
+  let allowed_links = source_mode.then(|| prefix.join("../config/ei"));
+  let (factory_entries, _) = walk_tree(&factory, "factory", allowed_links.as_deref())?;
   component_entries.extend(factory_entries);
   component_entries.sort_by(|a, b| (&a.source, &a.path).cmp(&(&b.source, &b.path)));
   Ok((
@@ -459,7 +484,7 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
 }
 
 fn require_component_defaults(entries: &[DefaultEntry]) -> Result<(), Diagnostic> {
-  for required in REQUIRED_EGIA
+  for required in REQUIRED_EI
     .iter()
     .copied()
     .filter(|path| *path != "profiles/isos.toml")
@@ -472,29 +497,37 @@ fn require_component_defaults(entries: &[DefaultEntry]) -> Result<(), Diagnostic
 }
 
 fn validate_factory_root(factory: &Path, prefix: &Path) -> Result<(), Diagnostic> {
-  if factory != prefix.join("share/defaults/egia") {
-    return Err(failure(
+  let invalid = || {
+    failure(
       "generated_invalid_default",
       "defaults",
-      "Select the factory defaults used by the EGIA launcher",
-    ));
+      "Select the factory defaults used by the EI launcher",
+    )
+  };
+  let source_mode = prefix.join("pyproject.toml").is_file()
+    && prefix.join("src/ei").is_dir()
+    && prefix.join("../Cargo.toml").is_file();
+  let expected = if source_mode {
+    prefix.join("../share/ei/defaults/ei")
+  } else {
+    prefix.join("share/defaults/ei")
+  };
+  if factory.canonicalize().map_err(|_| invalid())?
+    != expected.canonicalize().map_err(|_| invalid())?
+  {
+    return Err(invalid());
   }
   Ok(())
 }
-pub fn check_defaults(graph: &Value) -> Result<(), Diagnostic> {
-  defaults(graph).map(|_| ())
-}
-
-fn egia_enabled(graph: &Value) -> bool {
-  crate::domain::graph::graph_compat::has_unified_ei_layers(graph)
+fn ei_enabled(graph: &Value) -> bool {
+  crate::domain::graph::graph_contract::has_unified_ei_layers(graph)
     || graph
-      .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
+      .pointer("/cores/isos/layers/process/groups/component/nodes/ei")
       .is_some_and(|node| node["enabled"] != false)
 }
 
 fn resolve_interpreter(prefix: &Path, source_mode: bool) -> Result<PathBuf, Diagnostic> {
   let selected = std::env::var_os("EI_PYTHON")
-    .or_else(|| std::env::var_os("EGIA_PYTHON"))
     .or_else(|| std::env::var_os("ISLAND_PYTHON"))
     .map(PathBuf::from)
     .unwrap_or_else(|| {
@@ -521,7 +554,7 @@ fn resolve_interpreter(prefix: &Path, source_mode: bool) -> Result<PathBuf, Diag
   Ok(absolute)
 }
 
-fn code_entries(root: &Path) -> Result<Vec<EgiaCodeEntry>, Diagnostic> {
+fn code_entries(root: &Path) -> Result<Vec<EiCodeEntry>, Diagnostic> {
   if !root.is_absolute() || !root.is_dir() {
     return Err(missing("binary"));
   }
@@ -563,7 +596,7 @@ fn code_entries(root: &Path) -> Result<Vec<EgiaCodeEntry>, Diagnostic> {
           .strip_prefix(root)
           .map_err(|_| unsafe_path("binary"))?,
       )?;
-      entries.push(EgiaCodeEntry {
+      entries.push(EiCodeEntry {
         root: root.to_string_lossy().into_owned(),
         path,
         sha256: digest(&bytes),
@@ -577,12 +610,11 @@ fn code_entries(root: &Path) -> Result<Vec<EgiaCodeEntry>, Diagnostic> {
   Ok(entries)
 }
 
-fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
-  if !egia_enabled(graph) {
+fn capture_ei_chain(graph: &Value) -> Result<Option<EiChain>, Diagnostic> {
+  if !ei_enabled(graph) {
     return Ok(None);
   }
   let bin = std::env::var_os("ISOS_EI_BIN_DIR")
-    .or_else(|| std::env::var_os("ISOS_EGIA_BIN_DIR"))
     .map(PathBuf::from)
     .ok_or_else(|| missing("binary"))?;
   if !bin.is_absolute() {
@@ -600,16 +632,16 @@ fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
   {
     return Err(unsafe_path("binary"));
   }
-  let source_mode = prefix.join("pyproject.toml").is_file() && prefix.join("src/egia").is_dir();
+  let source_mode = prefix.join("pyproject.toml").is_file() && prefix.join("src/ei").is_dir();
   let portable_mode = prefix.join("share/contracts").is_dir() && prefix.join("libexec").is_dir();
   let (mode, roots) = if source_mode {
-    let mut roots = vec![prefix.join("src/egia")];
+    let mut roots = vec![prefix.join("src/ei")];
     if prefix.join("libexec").is_dir() {
       roots.push(prefix.join("libexec"));
     }
     ("source", roots)
   } else {
-    let mut roots = vec![prefix.join("lib/island/egia")];
+    let mut roots = vec![prefix.join("lib/island/ei")];
     if !portable_mode && prefix.join("libexec/island").is_dir() {
       roots.push(prefix.join("libexec/island"));
     } else if prefix.join("libexec").is_dir() {
@@ -624,10 +656,6 @@ fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
   }
   code.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
   let mut binding = BTreeMap::new();
-  binding.insert(
-    "EGIA_PYTHON".into(),
-    interpreter.to_string_lossy().into_owned(),
-  );
   binding.insert(
     "EI_PYTHON".into(),
     interpreter.to_string_lossy().into_owned(),
@@ -655,7 +683,7 @@ fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
         .into_owned(),
     );
   }
-  Ok(Some(EgiaChain {
+  Ok(Some(EiChain {
     prefix: prefix.to_string_lossy().into_owned(),
     mode: mode.into(),
     interpreter: interpreter.to_string_lossy().into_owned(),
@@ -671,18 +699,17 @@ fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
 }
 
 /// Nonsecret, pinned environment handed to both the capability probe and child.
-pub fn egia_launch_env(graph: &Value) -> Result<BTreeMap<String, String>, Diagnostic> {
-  Ok(capture_egia_chain(graph)?.map_or_else(BTreeMap::new, |chain| chain.binding))
+pub fn ei_launch_env(graph: &Value) -> Result<BTreeMap<String, String>, Diagnostic> {
+  Ok(capture_ei_chain(graph)?.map_or_else(BTreeMap::new, |chain| chain.binding))
 }
 
-pub fn egia_chain_digest(graph: &Value) -> Result<String, Diagnostic> {
-  let chain = capture_egia_chain(graph)?.ok_or_else(|| missing("binary"))?;
+pub fn ei_chain_digest(graph: &Value) -> Result<String, Diagnostic> {
+  let chain = capture_ei_chain(graph)?.ok_or_else(|| missing("binary"))?;
   let bin = std::env::var_os("ISOS_EI_BIN_DIR")
-    .or_else(|| std::env::var_os("ISOS_EGIA_BIN_DIR"))
     .map(PathBuf::from)
     .ok_or_else(|| missing("binary"))?;
   let mut launchers = BTreeMap::new();
-  for name in ["egia", "egia-config"] {
+  for name in ["ei", "ei-config"] {
     launchers.insert(name, digest(&inspect_regular(&bin.join(name), "binary")?));
   }
   Ok(digest(
@@ -772,8 +799,10 @@ pub fn escape(value: &str) -> String {
   value.replace('~', "~0").replace('/', "~1")
 }
 
+#[cfg(test)]
 pub type SecretPlan = BTreeMap<String, BTreeMap<String, OsString>>;
 
+#[cfg(test)]
 pub fn secret_plan(
   specs: &[crate::runtime::process::ProcessSpec],
 ) -> Result<SecretPlan, Diagnostic> {
@@ -807,20 +836,9 @@ fn effective_files(
   owner_files: &[(PathBuf, Vec<u8>)],
 ) -> Result<EffectiveFiles, Diagnostic> {
   let (roots, defaults, component) = defaults(graph)?;
-  let ei_dir = if graph["version"] == "0.2.0" {
-    "ei"
-  } else {
-    "egia"
-  };
-  let retired_dir = if ei_dir == "ei" { "egia" } else { "ei" };
-  if owner_files
-    .iter()
-    .any(|(path, _)| path.starts_with(retired_dir))
-  {
-    return Err(unsafe_path("render"));
-  }
+  let ei_dir = "ei";
   if roots.is_some() {
-    require_egia_owner_overlays(owner_files, ei_dir)?;
+    require_ei_owner_overlays(owner_files, ei_dir)?;
   } else if owner_files.iter().any(|(path, _)| path.starts_with(ei_dir)) {
     return Err(unsafe_path("render"));
   }
@@ -839,12 +857,12 @@ fn effective_files(
     if !owner_paths.insert(path.clone()) {
       return Err(unsafe_path("render"));
     }
-    if files.insert(path, bytes.clone()).is_some() && !is_egia_overlay(relative, ei_dir) {
+    if files.insert(path, bytes.clone()).is_some() && !is_ei_overlay(relative, ei_dir) {
       return Err(unsafe_path("render"));
     }
   }
   if roots.is_some() {
-    for required in REQUIRED_EGIA {
+    for required in REQUIRED_EI {
       if !files.contains_key(&PathBuf::from(ei_dir).join(required)) {
         return Err(missing("render"));
       }
@@ -858,28 +876,23 @@ fn effective_files(
   Ok((files.into_iter().collect(), roots, defaults))
 }
 
-fn is_egia_overlay(path: &Path, directory: &str) -> bool {
-  [
-    "egia.toml",
-    "modes.toml",
-    "profiles/isos.toml",
-    "stages.json",
-  ]
-  .iter()
-  .any(|allowed| path == Path::new(directory).join(allowed))
+fn is_ei_overlay(path: &Path, directory: &str) -> bool {
+  ["ei.toml", "modes.toml", "profiles/isos.toml", "stages.json"]
+    .iter()
+    .any(|allowed| path == Path::new(directory).join(allowed))
 }
 
-fn require_egia_owner_overlays(
+fn require_ei_owner_overlays(
   owner_files: &[(PathBuf, Vec<u8>)],
   directory: &str,
 ) -> Result<(), Diagnostic> {
   if owner_files
     .iter()
-    .any(|(path, _)| path.starts_with(directory) && !is_egia_overlay(path, directory))
+    .any(|(path, _)| path.starts_with(directory) && !is_ei_overlay(path, directory))
   {
     return Err(unsafe_path("render"));
   }
-  for required in ["egia.toml", "modes.toml", "profiles/isos.toml"] {
+  for required in ["ei.toml", "modes.toml", "profiles/isos.toml"] {
     if !owner_files
       .iter()
       .any(|(path, _)| path == &Path::new(directory).join(required))
@@ -939,30 +952,7 @@ fn inventory(
     default_roots: roots,
     defaults,
     secret_refs: secret_refs(graph)?,
-    egia_chain: capture_egia_chain(graph)?,
-    vision_selection_sha256: if files
-      .iter()
-      .any(|(path, _)| path == Path::new(crate::runtime::process::vision_binding::TEMPLATE_FILE))
-    {
-      let (gate, fingerprint) =
-        crate::runtime::process::vision_binding::selected_gate_for_graph(graph)
-          .map_err(|_| mismatch())?
-          .ok_or_else(mismatch)?;
-      let template_bytes = files
-        .iter()
-        .find(|(path, _)| path == Path::new(crate::runtime::process::vision_binding::TEMPLATE_FILE))
-        .ok_or_else(mismatch)?
-        .1
-        .as_slice();
-      let template: crate::runtime::process::vision_binding::Template =
-        serde_json::from_slice(template_bytes).map_err(|_| mismatch())?;
-      if template.gate_path != gate || template.graph_revision != revision {
-        return Err(mismatch());
-      }
-      Some(fingerprint)
-    } else {
-      None
-    },
+    ei_chain: capture_ei_chain(graph)?,
   };
   manifest.generation = generation(&manifest).map_err(|_| mismatch())?;
   Ok((manifest, files))
@@ -982,22 +972,17 @@ fn check_launch_inputs(
         .and_then(Value::as_object)
         .is_some_and(|layers| layers.keys().any(|name| name.starts_with("eos_"))))
   {
-    for binary in [
-      "aether-profile",
-      "aether-runtime",
-      "aether-http-bridge",
-      "aether-config-server",
-    ] {
+    for binary in ["aether-profile", "aether-runtime"] {
       expected.insert(("eos".to_owned(), binary.to_owned()));
     }
   }
-  if crate::domain::graph::graph_compat::has_unified_ei_layers(graph)
+  if crate::domain::graph::graph_contract::has_unified_ei_layers(graph)
     || graph
-      .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
+      .pointer("/cores/isos/layers/process/groups/component/nodes/ei")
       .is_some_and(|node| node["enabled"] != false)
   {
-    for binary in ["egia-config", "egia"] {
-      expected.insert(("egia".to_owned(), binary.to_owned()));
+    for binary in ["ei-config", "ei"] {
+      expected.insert(("ei".to_owned(), binary.to_owned()));
     }
   }
   let present: BTreeSet<_> = inputs
@@ -1010,18 +995,23 @@ fn check_launch_inputs(
   for input in inputs {
     let selected = match input.core.as_str() {
       "eos" => crate::runtime::process::core_bins::resolve(&input.binary)
-        .map_err(|_| input_failure(stage))?,
-      "egia" => crate::runtime::owners::core_setup::adapter_path(paths, "egia")
-        .map_err(|_| input_failure(stage))?
+        .map_err(|_| launch_input_changed(stage))?,
+      "ei" => crate::runtime::owners::core_setup::adapter_path(paths, "ei")
+        .map_err(|_| launch_input_changed(stage))?
         .with_file_name(&input.binary),
       _ => return Err(input_failure(stage)),
     };
     let path = Path::new(&input.path);
-    if !path.is_absolute() || path != selected || !valid_hash(&input.sha256) {
+    if !path.is_absolute() || !valid_hash(&input.sha256) {
       return Err(input_failure(stage));
     }
-    if digest(&inspect_regular(path, stage).map_err(|_| input_failure(stage))?) != input.sha256 {
-      return Err(input_failure(stage));
+    if path != selected {
+      return Err(launch_input_changed(stage));
+    }
+    if digest(&inspect_regular(path, stage).map_err(|_| launch_input_changed(stage))?)
+      != input.sha256
+    {
+      return Err(launch_input_changed(stage));
     }
   }
   Ok(())
@@ -1080,9 +1070,16 @@ pub(crate) fn test_fail_parent_sync(path: &Path, kind: &str) -> bool {
   if crate::runtime::process::validate_deployment_name(&deployment).is_err() {
     return false;
   }
-  let required_parent = home.join(format!("data/generated/{deployment}/v2/required"));
+  let required_parent = home.join(format!(
+    "data/isos/state/generated/{deployment}/v2/required"
+  ));
   let scoped = match kind {
-    "selection" => path == home.join(format!("data/generated/{deployment}/selection.json")),
+    "selection" => {
+      path
+        == home.join(format!(
+          "data/isos/state/generated/{deployment}/selection.json"
+        ))
+    }
     "marker" => {
       path.parent() == Some(required_parent.as_path())
         && path
@@ -1188,19 +1185,6 @@ pub fn publish(
     schema_version: 2,
     entries: BTreeMap::new(),
   });
-  let graph_path = paths.node_graph_path(name);
-  if let Ok(saved) = graph_compat::read(&graph_path)
-    && saved.value["version"] == "0.1.0"
-    && !selection.entries.contains_key(&saved.revision)
-  {
-    if marker_path(&generated, &saved.revision).exists() {
-      if saved.revision != revision {
-        return Err(mismatch());
-      }
-    } else if generated.join(&saved.revision).is_dir() {
-      selection.entries.insert(saved.revision, Entry::G03);
-    }
-  }
   selection.entries.insert(
     revision.to_owned(),
     Entry::V2 {
@@ -1308,7 +1292,8 @@ pub fn selected(
   revision: &str,
   owner_files: Option<&[(PathBuf, Vec<u8>)]>,
 ) -> Result<Option<PathBuf>, Diagnostic> {
-  let saved = graph_compat::read(&paths.node_graph_path(name)).map_err(|_| revision_mismatch())?;
+  let saved =
+    graph_contract::read(&paths.node_graph_path(name)).map_err(|_| revision_mismatch())?;
   if saved.revision != revision || saved.value != *graph {
     return Err(revision_mismatch());
   }
@@ -1335,34 +1320,9 @@ pub fn selected(
       }
       if manifest.packages != package_inventory(paths, graph)?
         || manifest.secret_refs != secret_refs(graph)?
-        || manifest.egia_chain != capture_egia_chain(graph).map_err(|_| mismatch())?
+        || manifest.ei_chain != capture_ei_chain(graph).map_err(|_| mismatch())?
       {
         return Err(mismatch());
-      }
-      let selected_gate = crate::runtime::process::vision_binding::selected_gate_for_graph(graph)
-        .map_err(|_| mismatch())?;
-      let stored_template = manifest
-        .files
-        .iter()
-        .find(|entry| entry.path == crate::runtime::process::vision_binding::TEMPLATE_FILE);
-      match (selected_gate, stored_template) {
-        (None, None) => {}
-        (Some((gate, fingerprint)), Some(entry)) => {
-          let bytes = inspect_regular(
-            &root.join(crate::runtime::process::vision_binding::TEMPLATE_FILE),
-            "snapshot",
-          )?;
-          let template: crate::runtime::process::vision_binding::Template =
-            serde_json::from_slice(&bytes).map_err(|_| mismatch())?;
-          if template.gate_path != gate
-            || template.graph_revision != revision
-            || digest(&bytes) != entry.sha256
-            || manifest.vision_selection_sha256.as_deref() != Some(fingerprint.as_str())
-          {
-            return Err(mismatch());
-          }
-        }
-        _ => return Err(mismatch()),
       }
       check_launch_inputs(paths, graph, &manifest.launch_inputs, "snapshot")?;
       verify_leaf(&root, &manifest)?;
@@ -1388,7 +1348,7 @@ pub fn selected(
       }
       if !marked {
         let _lock = crate::runtime::lock::Lock::take(paths).map_err(|_| mismatch())?;
-        let saved = graph_compat::read(&paths.node_graph_path(name)).map_err(|_| mismatch())?;
+        let saved = graph_contract::read(&paths.node_graph_path(name)).map_err(|_| mismatch())?;
         if saved.revision != revision {
           return Err(revision_mismatch());
         }
@@ -1443,6 +1403,7 @@ pub fn selected_root(
 }
 
 /// Return only an explicitly selected, fully verified schema-2 V2 generation.
+#[cfg(test)]
 pub fn selected_v2_root(
   paths: &Paths,
   name: &str,
@@ -1473,6 +1434,15 @@ mod tests {
   use serde_json::json;
 
   #[test]
+  fn owner_rejection_points_to_current_graph_layer() {
+    assert_eq!(owner_rejected("ei").path, "/cores/isos/layers/ei_io");
+    assert_eq!(
+      owner_rejected("eos").path,
+      "/cores/isos/layers/eos_dispatcher"
+    );
+  }
+
+  #[test]
   fn unified_eos_layer_requires_owner_launch_inputs() {
     let temp = tempfile::tempdir().unwrap();
     let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{}}}}});
@@ -1488,7 +1458,7 @@ mod tests {
     }
   }
   fn graph() -> Value {
-    json!({"version":"0.1.0","robot":{},"cores":{}})
+    json!({"version":"0.2.0","robot":{},"cores":{"isos":{"layers":{}}}})
   }
   fn files(profile: &[u8]) -> Vec<(PathBuf, Vec<u8>)> {
     vec![
@@ -1498,7 +1468,7 @@ mod tests {
   }
   fn applied(paths: &Paths, graph: &Value) -> String {
     let bytes = serde_json::to_vec_pretty(graph).unwrap();
-    let revision = graph_compat::revision(&bytes);
+    let revision = graph_contract::revision(&bytes);
     crate::app::config::atomic_write(&paths.node_graph_path("test"), &bytes).unwrap();
     revision
   }
@@ -1800,7 +1770,7 @@ mod tests {
     let mut new_graph = graph();
     new_graph["robot"] = json!({"id":"future"});
     let new_bytes = serde_json::to_vec_pretty(&new_graph).unwrap();
-    let new_revision = graph_compat::revision(&new_bytes);
+    let new_revision = graph_contract::revision(&new_bytes);
     let new_leaf = publish(&paths, "test", &new_graph, &new_revision, &files(b"new")).unwrap();
     assert_eq!(
       selected(&paths, "test", &old_graph, &old_revision, None).unwrap(),
@@ -1828,9 +1798,9 @@ mod tests {
       fingerprint: None,
     };
     let mut second = first.clone();
-    second.id = "egia".into();
+    second.id = "ei".into();
     second.settings.env_from.insert(
-      "EGIA_API_KEY".into(),
+      "EI_API_KEY".into(),
       "ISOS_P04_TEST_NEVER_SET_9AA129EB".into(),
     );
     let error = secret_plan(&[first, second]).unwrap_err();
@@ -1839,7 +1809,7 @@ mod tests {
       (
         "generated_missing_secret",
         "spawn",
-        "/cores/isos/layers/process/groups/component/nodes/egia/settings/env_from/EGIA_API_KEY"
+        "/cores/isos/layers/process/groups/component/nodes/ei/settings/env_from/EI_API_KEY"
       )
     );
     assert!(!error.message.contains("ISOS_P04_TEST_NEVER_SET"));
@@ -1852,16 +1822,16 @@ mod tests {
     fs::create_dir(&root).unwrap();
     let file = root.join("models.toml");
     fs::write(&file, b"[models]\n").unwrap();
-    assert_eq!(walk_tree(&root, "component").unwrap().0.len(), 1);
+    assert_eq!(walk_tree(&root, "component", None).unwrap().0.len(), 1);
     fs::write(&file, b"[models\n").unwrap();
-    let error = walk_tree(&root, "component").unwrap_err();
+    let error = walk_tree(&root, "component", None).unwrap_err();
     assert_eq!(
       (error.code, error.stage),
       ("generated_invalid_default", "defaults")
     );
     fs::remove_file(&file).unwrap();
     std::os::unix::fs::symlink(temp.path().join("outside"), &file).unwrap();
-    let error = walk_tree(&root, "component").unwrap_err();
+    let error = walk_tree(&root, "component", None).unwrap_err();
     assert_eq!(
       (error.code, error.stage),
       ("generated_unsafe_path", "defaults")
@@ -1869,22 +1839,54 @@ mod tests {
   }
 
   #[test]
-  fn factory_default_root_must_match_selected_launcher_prefix() {
-    let prefix = Path::new("/opt/selected-egia");
-    assert!(
-      validate_factory_root(Path::new("/opt/selected-egia/share/defaults/egia"), prefix).is_ok()
+  fn source_factory_links_must_resolve_inside_ei_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("factory");
+    let allowed = temp.path().join("config/ei");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&allowed).unwrap();
+    let canonical = allowed.join("modes.toml");
+    fs::write(&canonical, "[modes]\n").unwrap();
+    let link = root.join("modes.toml");
+    std::os::unix::fs::symlink(&canonical, &link).unwrap();
+    assert_eq!(
+      walk_tree(&root, "factory", Some(&allowed)).unwrap().0.len(),
+      1
     );
-    let error =
-      validate_factory_root(Path::new("/opt/other-egia/share/defaults/egia"), prefix).unwrap_err();
+    assert!(walk_tree(&root, "factory", None).is_err());
+    fs::remove_file(&link).unwrap();
+    let outside = temp.path().join("outside.toml");
+    fs::write(&outside, "[modes]\n").unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    assert!(walk_tree(&root, "factory", Some(&allowed)).is_err());
+  }
+
+  #[test]
+  fn factory_default_root_must_match_selected_launcher_prefix() {
+    let temp = tempfile::tempdir().unwrap();
+    let prefix = temp.path().join("selected-ei");
+    let factory = prefix.join("share/defaults/ei");
+    fs::create_dir_all(&factory).unwrap();
+    assert!(validate_factory_root(&factory, &prefix).is_ok());
+    let other = temp.path().join("other-ei/share/defaults/ei");
+    fs::create_dir_all(&other).unwrap();
+    let error = validate_factory_root(&other, &prefix).unwrap_err();
     assert_eq!(
       (error.code, error.stage, error.path.as_str()),
       ("generated_invalid_default", "defaults", "")
     );
+    fs::write(prefix.join("pyproject.toml"), "[project]\n").unwrap();
+    fs::create_dir_all(prefix.join("src/ei")).unwrap();
+    fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+    let source_factory = temp.path().join("share/ei/defaults/ei");
+    fs::create_dir_all(&source_factory).unwrap();
+    assert!(validate_factory_root(&source_factory, &prefix).is_ok());
+    assert!(validate_factory_root(&factory, &prefix).is_err());
   }
 
   #[test]
-  fn each_required_egia_default_is_checked_before_render() {
-    let required: Vec<_> = REQUIRED_EGIA
+  fn each_required_ei_default_is_checked_before_render() {
+    let required: Vec<_> = REQUIRED_EI
       .iter()
       .copied()
       .filter(|path| *path != "profiles/isos.toml")
@@ -1911,37 +1913,30 @@ mod tests {
   }
 
   #[test]
-  fn egia_isos_profile_must_come_from_owner_render() {
+  fn ei_isos_profile_must_come_from_owner_render() {
     let complete = vec![
-      (PathBuf::from("egia/egia.toml"), b"mode = 'isos'\n".to_vec()),
+      (PathBuf::from("ei/ei.toml"), b"mode = 'isos'\n".to_vec()),
+      (PathBuf::from("ei/modes.toml"), b"mode = 'isos'\n".to_vec()),
       (
-        PathBuf::from("egia/modes.toml"),
-        b"mode = 'isos'\n".to_vec(),
-      ),
-      (
-        PathBuf::from("egia/profiles/isos.toml"),
+        PathBuf::from("ei/profiles/isos.toml"),
         b"managed = true\n".to_vec(),
       ),
     ];
-    require_egia_owner_overlays(&complete, "egia").unwrap();
+    require_ei_owner_overlays(&complete, "ei").unwrap();
     let mut extra = complete.clone();
-    extra.push((PathBuf::from("egia/prompts.toml"), b"override".to_vec()));
-    let error = require_egia_owner_overlays(&extra, "egia").unwrap_err();
+    extra.push((PathBuf::from("ei/prompts.toml"), b"override".to_vec()));
+    let error = require_ei_owner_overlays(&extra, "ei").unwrap_err();
     assert_eq!(
       (error.code, error.stage, error.path.as_str()),
       ("generated_unsafe_path", "render", "")
     );
-    for omitted in [
-      "egia/egia.toml",
-      "egia/modes.toml",
-      "egia/profiles/isos.toml",
-    ] {
+    for omitted in ["ei/ei.toml", "ei/modes.toml", "ei/profiles/isos.toml"] {
       let incomplete: Vec<_> = complete
         .iter()
         .filter(|(path, _)| path != Path::new(omitted))
         .cloned()
         .collect();
-      let error = require_egia_owner_overlays(&incomplete, "egia").unwrap_err();
+      let error = require_ei_owner_overlays(&incomplete, "ei").unwrap_err();
       assert_eq!(
         (error.code, error.stage, error.path.as_str()),
         ("generated_missing_input", "render", ""),

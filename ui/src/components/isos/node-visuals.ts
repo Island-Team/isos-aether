@@ -37,6 +37,13 @@ export function dataTypeColor(dataType: string): string {
   return `hsl(${hash % 360} 70% 45%)`;
 }
 
+/** Nice priority runs from -20 (highest) to 19 (lowest). */
+export function priorityColor(priority = 0): string {
+  const bounded = Math.max(-20, Math.min(19, priority));
+  const hue = Math.round(12 + ((bounded + 20) / 39) * 208);
+  return `hsl(${hue} 78% 42%)`;
+}
+
 export function frequencyPattern(rate?: number | null): 'unknown' | 'low' | 'medium' | 'high' | 'solid' {
   if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) return 'unknown';
   if (rate < 1) return 'low';
@@ -51,11 +58,11 @@ export function portVisual(port: PortDefinition): { className: string; style: Re
   return { className: `node-graph-port-transport--${transport} node-graph-port-delivery--${delivery}`, style: { '--port': dataTypeColor(port.data_type) } };
 }
 
-/** Anchor shape is transport, anchor color is exact type, line pattern is frequency. */
-export function interfaceVisual(port?: PortDefinition, edgeCap?: number): { className: string; style: Record<string, string>; label: string } {
+/** Port shape is channel, port color is payload, line pattern is frequency, line color is priority. */
+export function interfaceVisual(port?: PortDefinition, edgeCap?: number, priority = 0): { className: string; style: Record<string, string>; label: string } {
   const rate = edgeCap;
   const transport = (port?.transport || 'in_process').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  return { className: `node-graph-edge-frequency--${rate === undefined ? 'unlimited' : frequencyPattern(rate)}`, style: { '--wire': '#64748b' }, label: `${typeof rate === 'number' && rate > 0 ? `${rate} Hz cap` : 'Unlimited cap'} · ${transport} · ${port?.delivery_mode || 'snapshot'} · ${port?.data_type || 'unknown type'}` };
+  return { className: `node-graph-edge-frequency--${rate === undefined ? 'unlimited' : frequencyPattern(rate)}`, style: { '--wire': priorityColor(priority) }, label: `${typeof rate === 'number' && rate > 0 ? `${rate} Hz cap` : 'Unlimited cap'} · priority ${priority} · ${transport} · ${port?.delivery_mode || 'message'} · ${port?.data_type || 'unknown type'}` };
 }
 
 export function nodeSummary(definition: NodeTypeDefinition | undefined, node: NodeInstance): string[] {

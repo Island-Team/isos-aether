@@ -1,8 +1,7 @@
 pub(crate) mod edge_admission;
-pub(crate) mod control_path;
 pub(crate) mod generated_v2;
-pub(crate) mod graph_compat;
-pub(crate) mod graph_migration;
+pub(crate) mod graph_contract;
+pub(crate) mod graph_apply;
 pub(crate) mod node_options;
 pub(crate) mod node_sets;
 pub(crate) mod starter;

@@ -1,8 +1,0 @@
-find_package(GTest REQUIRED)
-
-add_executable(eos_skills_builtin_tests execution_correctness_test.cpp)
-target_compile_features(eos_skills_builtin_tests PRIVATE cxx_std_20)
-target_link_libraries(eos_skills_builtin_tests
-  PRIVATE eos_skills_builtin GTest::gtest GTest::gtest_main
-)
-add_test(NAME eos_skills_builtin_tests COMMAND eos_skills_builtin_tests)

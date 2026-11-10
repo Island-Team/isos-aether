@@ -1,0 +1,11 @@
+# Arm monitor node
+
+[中文](../../../../docs_cn/isos/interfaces/ui/node-monitor_cn.md) · [Node types](../node/README.md) · [Button event](node-events.md)
+
+The starter graph returns the mock arm's observed six-joint state through EOS hardware output, dispatcher monitor, skill status, and interface egress nodes; EI IO input, cognition state, and governance monitor nodes; and `isos.ui.monitor.arm@v0.2`. The hardware output is a source with no graph input. EOS reads the same mock arm sampler locally, so the graph has a separate return chain and no second actuator.
+
+Every return edge carries `arm_monitor_state@v0.2` on its `observation` port. The payload has the active `run_id` and `revision`, graph-declared observation `source_node` (`eos/hardware/mock/arm_observer` in the two-chain demo; `eos/hardware/mock/arm` in legacy graphs), increasing `sequence`, `sampled_at_monotonic_ns`, six ordered `joint_names`, `state` (`ready`, `degraded`, `stale`, or `stopped`), and nullable `reason_code`. `joint_positions_rad` contains six finite radians only in `ready` state; otherwise it is null. EOS checks each 100 Hz local sample before command admission, EI receives at most 20 Hz, and IsosUI refreshes at most 5 Hz. These rates and freshness limits are Advanced graph settings.
+
+`GET /api/isos/v1/nodes/monitor` uses the normal IsOS API envelope. Its data is `{state, data_type, run_id, active_revision, observation}`. A stopped deployment returns `state:"stopped"` and null identities and observation. For a running or degraded deployment with a known run, IsOS checks the saved graph revision and complete declared return path, then reads one validated EI snapshot at most once per 200 ms for all local UI readers. The cache key includes deployment, run, and revision; a changed run cannot receive an old snapshot. IsOS rechecks the run before replying. An incomplete path, stale graph, unavailable owner when a fresh read is required, or invalid reply fails closed. IsosUI calls only this IsOS route and clears an old run's values on Stop or run change.
+
+When the active run uses an older graph revision, the endpoint returns `graph_fence_stale` (409). IsosUI identifies this as an old active run rather than an editor conflict and keeps the monitor empty until the run is stopped or recovered and the saved graph is run.

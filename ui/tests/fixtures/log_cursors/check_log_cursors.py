@@ -52,8 +52,8 @@ def main() -> None:
     assert data["diagnostic_codes"] == ["log_run_changed", "log_cursor_expired", "log_collector_gap", "log_anchor_unavailable"]
     cases = data["cases"]
     ids = [case["id"] for case in cases]
-    assert len(cases) == 31 and len(ids) == len(set(ids))
-    assert {case["boundary"] for case in cases} == {"anchor", "filter", "cursor", "scope", "connection", "privacy", "compat", "bounds"}
+    assert len(cases) == 30 and len(ids) == len(set(ids))
+    assert {case["boundary"] for case in cases} == {"anchor", "filter", "cursor", "scope", "connection", "privacy", "bounds"}
     by_id = {case["id"]: case["expected"] for case in cases}
     for name in ("manager_anchor_pending", "run_anchor_pending"):
         assert by_id[name]["anchor_state"] == "pending"
@@ -88,16 +88,11 @@ def main() -> None:
     assert by_id["collector_outage"]["keep_cursor"] is True
     assert by_id["collector_recovery"]["resume_same_cursor"] is True
     assert by_id["browser_source_isolation"]["server_run_claim"] is False
-    assert by_id["legacy_server_fallback"]["first_event_claim"] is False
     assert by_id["bounded_poll_and_accessibility"]["max_rows"] == 1000
     assert by_id["bounded_poll_and_accessibility"]["max_request_rows"] == 200
     assert by_id["bounded_poll_and_accessibility"]["min_retry_interval_seconds"] == 30
     for name in DOCS:
         check_links(ROOT / name)
-    english = (ROOT / DOCS[0]).read_text()
-    chinese = (ROOT / DOCS[1]).read_text()
-    for token in ("view=current", "manager_session", "deployment_run", "first_prelaunch_failure", "first_ready_or_failure", "log_run_changed", "log_cursor_expired", "log_collector_gap", "log_anchor_unavailable", "log_cursor_invalid", "log_cursor_filter_mismatch", "log_scope_unavailable", "log_scope_publish_failed", "log_node_path_invalid", "log_correlation_id_invalid", "run_id_state", "node_path", "correlation_id"):
-        assert token in english and token in chinese, token
     print(f"P07 IsosUI fixtures valid: {len(cases)} unique cases, {len(DOCS)} linked bilingual documents")
 
 

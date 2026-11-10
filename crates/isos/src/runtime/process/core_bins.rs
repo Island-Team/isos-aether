@@ -33,7 +33,7 @@ pub fn resolve(name: &str) -> Result<PathBuf> {
     .unwrap()
     .join("target/release");
   required_in_dir(name, &workspace).map_err(|_| anyhow::anyhow!(
-        "{name} is unavailable; build EOS in this workspace and set paths.aether_bin_dir in config/isos.toml to the prebuilt binary directory"
+        "{name} is unavailable; build EOS in this workspace and set paths.aether_bin_dir in config/isos/isos.toml to the prebuilt binary directory"
     ))
 }
 

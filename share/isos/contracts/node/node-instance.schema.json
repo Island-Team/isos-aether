@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://island.team/isos/contracts/node/node-instance.schema.json",
+  "title": "IsOS saved node instance",
+  "type": "object",
+  "required": ["id", "node_type"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "node_type": {"type": "string", "minLength": 1},
+    "settings": {"type": "object"},
+    "inputs": {"type": "object"},
+    "references": {"type": "array", "items": {"type": "string"}},
+    "service_bindings": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["owner", "service", "version"],
+        "properties": {
+          "owner": {"type": "string", "minLength": 1},
+          "service": {"type": "string", "minLength": 1},
+          "version": {"type": "string", "minLength": 1},
+          "node": {"type": "string", "pattern": "^[^/]+/[^/]+/[^/]+/[^/]+$"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -35,10 +35,10 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
           );
           let base = format!(
             "/cores/{}/layers/{}/groups/{}/nodes/{}",
-            crate::domain::graph::graph_compat::pointer_segment(core_id),
-            crate::domain::graph::graph_compat::pointer_segment(layer_id),
-            crate::domain::graph::graph_compat::pointer_segment(group_id),
-            crate::domain::graph::graph_compat::pointer_segment(node_id)
+            crate::domain::graph::graph_contract::pointer_segment(core_id),
+            crate::domain::graph::graph_contract::pointer_segment(layer_id),
+            crate::domain::graph::graph_contract::pointer_segment(group_id),
+            crate::domain::graph::graph_contract::pointer_segment(node_id)
           );
           for (path, package) in [
             (format!("{base}/package"), node.get("package")),
@@ -71,9 +71,9 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
             }
           }
           let settings = &node["settings"];
-          if let Some(libraries) = settings["skill_libraries"].as_array() {
+          if let Some(libraries) = settings["skill_executables"].as_array() {
             for (index, entry) in libraries.iter().enumerate() {
-              let path = format!("{base}/settings/skill_libraries/{index}/package");
+              let path = format!("{base}/settings/skill_executables/{index}/package");
               let package = &entry["package"];
               let id = package["id"]
                 .as_str()
@@ -131,8 +131,8 @@ mod pin_tests {
   #[test]
   fn adapter_only_package_pin_selects_sidecar_and_blocks_removal() {
     let graph = serde_json::json!({
-        "cores": {"eos": {"layers": {"hardware": {"groups": {"base": {"nodes": {
-            "drive": {"node_type": "eos.hardware.base@v1.0", "adapter": {
+        "cores": {"isos": {"layers": {"eos_hardware": {"groups": {"base": {"nodes": {
+            "drive": {"node_type": "isos.eos_hardware.base@v0.2", "adapter": {
                 "type": "vendor-base", "package": {"id": "vendor/devices", "version": "2.0.0"}
             }}
         }}}}}}}
@@ -148,7 +148,7 @@ mod pin_tests {
   #[test]
   fn incomplete_adapter_pin_rejects_graph() {
     let graph = serde_json::json!({
-        "cores": {"eos": {"layers": {"hardware": {"groups": {"base": {"nodes": {
+        "cores": {"isos": {"layers": {"eos_hardware": {"groups": {"base": {"nodes": {
             "drive": {"adapter": {"package": {"id": "vendor/devices"}}}
         }}}}}}}
     });

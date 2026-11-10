@@ -3,6 +3,7 @@ import { request } from './api-client';
 /** One registered node type. Placement belongs to this definition, not an instance setting. */
 export interface NodeTypeDefinition {
   id: string;
+  deprecated?: boolean;
   description?: string;
   core: string;
   layer: string;
@@ -13,13 +14,18 @@ export interface NodeTypeDefinition {
   settings: SettingDefinition[];
   inputs: PortDefinition[];
   outputs: PortDefinition[];
+  implementation?: { kind: 'built_in' | 'native_plugin' | 'managed_process'; abi?: string };
+  service_inputs?: Record<string, ServiceDefinition>;
+  service_outputs?: Record<string, ServiceDefinition>;
   safety_adapter_type?: string | null;
 }
+export interface ServiceDefinition { owner: string; service: string; version: string; protocol: 'grpc' | 'http' | 'websocket' | 'socket'; carrier: 'in_process' | 'tcp' | 'unix_socket'; socket_protocol?: string; required?: boolean }
+export interface ServiceBinding { owner: string; service: string; version: string; node?: string }
 export function catalogTypeKey(type: Pick<NodeTypeDefinition, 'core' | 'layer' | 'group' | 'id'>): string {
   return JSON.stringify([type.core, type.layer, type.group, type.id]);
 }
-export interface SettingDefinition { name: string; data_type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object' | 'positive_integer' | 'nonnegative_integer' | 'positive_number' | 'endpoint' | 'string_array' | 'string_table'; required: boolean; description?: string; unit?: string; min?: number; max?: number; choices?: string[]; default?: unknown; selector?: { provider: 'package' | 'registry' | 'graph' | 'ui'; resource: string; package_from?: string; filter?: Record<string, string> } }
-export interface PortDefinition { name: string; data_type: string; required: boolean; cardinality?: 'one' | 'many'; description?: string; expected_rate_hz?: number | null; transport?: 'in_process' | 'unix_socket' | 'websocket' | 'ros2' | 'http' | string; delivery_mode?: 'request' | 'event' | 'stream' | 'snapshot' | string; data_class?: string }
+export interface SettingDefinition { name: string; data_type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object' | 'positive_integer' | 'nonnegative_integer' | 'positive_number' | 'endpoint' | 'string_array' | 'string_table'; required: boolean; description?: string; unit?: string; min?: number; max?: number; choices?: string[]; default?: unknown; selector?: { provider: 'package' | 'registry' | 'graph' | 'ui' | 'owner'; resource: string; package_from?: string; filter?: Record<string, string> } }
+export interface PortDefinition { name: string; data_type: string; contract?: { owner: string; id: string; version: string }; required: boolean; cardinality?: 'one' | 'many'; description?: string; expected_rate_hz?: number | null; transport?: 'in_process' | 'unix_socket' | 'websocket' | 'ros2' | 'http' | string; delivery_mode?: 'request' | 'event' | 'stream' | 'snapshot' | string; data_class?: string }
 export interface DataSchema { title?: string; description?: string; type?: string; properties?: Record<string, { type?: string; description?: string; 'x-unit'?: string; minimum?: number; maximum?: number }>; required?: string[]; [key: string]: unknown }
 export interface DataTypeDefinition { id: string; version: string; purpose: string; media_type: string; codec: string; schema: DataSchema; max_payload_bytes: number }
 
@@ -33,6 +39,7 @@ export interface NodeInstance {
   capabilities?: string[];
   settings?: Record<string, unknown>;
   inputs?: Record<string, NodeSource | NodeSource[]>;
+  service_bindings?: Record<string, ServiceBinding>;
   references?: string[];
   frame_id?: string;
   joint_names?: string[];
@@ -48,10 +55,11 @@ export interface NodeGraph {
   cores: Record<string, { layers: Record<string, { groups: Record<string, { nodes: Record<string, NodeInstance> }> }> }>;
   [key: string]: unknown;
 }
-export interface NodeGraphDocument { revision: string; graph: NodeGraph; read_only?: boolean; diagnostics?: NodeGraphDiagnostic[] }
+export interface NodeGraphDocument { revision: string; graph: NodeGraph; pool_name?: string; read_only?: boolean; diagnostics?: NodeGraphDiagnostic[] }
 export interface NodeGraphDiagnostic { path: string; code?: string; message: string }
-export interface ValidatedEdge { path: string; source: string; target: string; input: string; route_class: string; fixed: boolean; qos_eligible: boolean; routed: boolean; priority: number; frequency_hz?: number; data_type: string; transport: string }
+export interface ValidatedEdge { path: string; source: string; output?: string; target: string; input: string; route_class: string; fixed: boolean; qos_eligible: boolean; routed: boolean; priority: number; frequency_hz?: number; data_type: string; transport: string }
 export interface NodeGraphValidation { valid: boolean; diagnostics: NodeGraphDiagnostic[]; edges?: ValidatedEdge[] }
+export interface ConnectionPreviewResult { allowed: boolean; edge?: ValidatedEdge; diagnostic?: NodeGraphDiagnostic }
 export interface ProcessStatus {
   schema_version: '1.0.0';
   saved_revision?: string;
@@ -62,7 +70,7 @@ export interface ProcessStatus {
   run_id_state?: 'none' | 'known' | 'unavailable';
   vision_evidence?: import('../eos/vision').VisionEvidenceSelection | null;
   terminal?: StopTerminal | null;
-  processes: { id: string; pid?: number; restarts: number; state?: string; last_error?: string | null }[];
+  processes: { id: string; pid?: number; restarts: number; state?: string; last_error?: string | null; error?: string | null; health?: { error?: string | null } }[];
 }
 /** Stop is a terminal owner reply, not a process-status snapshot. */
 export interface StopTerminal { run_id: string; outcome: 'confirmed' | 'unknown'; reason_code: string | null; processes: { id: string; outcome: 'confirmed' | 'unknown'; reason_code: string | null }[] }
@@ -104,11 +112,15 @@ function isNodeSource(value: unknown): value is NodeSource {
   return isObject(value) && typeof value.node === 'string' && typeof value.output === 'string';
 }
 
+function isServiceBinding(value: unknown): value is ServiceBinding {
+  return isObject(value) && typeof value.owner === 'string' && typeof value.service === 'string' && typeof value.version === 'string' && (value.node === undefined || typeof value.node === 'string');
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
-/** A future graph may use a different tree; retain it for raw inspection. */
+/** Validate the editable graph tree before presenting controls. */
 export function nodeGraphHasEditableShape(graph: unknown): graph is NodeGraph {
   if (!isObject(graph) || typeof graph.version !== 'string' || !isObject(graph.robot) || typeof graph.robot.id !== 'string' || typeof graph.robot.name !== 'string' || !isObject(graph.cores)) return false;
   for (const core of Object.values(graph.cores)) {
@@ -127,6 +139,7 @@ export function nodeGraphHasEditableShape(graph: unknown): graph is NodeGraph {
               if (Array.isArray(sources) ? !sources.every(isNodeSource) : !isNodeSource(sources)) return false;
             }
           }
+          if (node.service_bindings !== undefined && (!isObject(node.service_bindings) || Object.values(node.service_bindings).some((binding) => !isServiceBinding(binding)))) return false;
           if (node.settings !== undefined && !isObject(node.settings)) return false;
           if (node.package !== undefined && (!isObject(node.package) || typeof node.package.id !== 'string' || typeof node.package.version !== 'string')) return false;
           if (node.capabilities !== undefined && !isStringArray(node.capabilities)) return false;
@@ -143,12 +156,12 @@ export function nodeGraphHasEditableShape(graph: unknown): graph is NodeGraph {
   return true;
 }
 
-/** Fail closed when the server or local catalog cannot establish graph compatibility. */
+/** Fail closed when the server or local catalog cannot establish the current graph. */
 export function nodeGraphReadOnlyReason(document: NodeGraphDocument, types: NodeTypeDefinition[] | null): string | null {
   if (document.read_only) return document.diagnostics?.map((issue) => issue.message).join('; ') || 'IsOS opened this graph read-only.';
   if (!nodeGraphHasEditableShape(document.graph)) return 'This graph structure cannot be edited by this IsosUI build.';
-  if (document.graph.version !== '0.2.0') return `Graph version ${document.graph.version} requires migration before editing.`;
-  if (Object.keys(document.graph.cores).some((core) => core !== 'isos')) return 'Graph 0.2.0 must have only the isos core.';
+  if (document.graph.version !== '0.2.0') return `Unsupported graph version ${document.graph.version}.`;
+  if (Object.keys(document.graph.cores).sort().join(',') !== 'ei,eos,isos') return 'Graph 0.2.0 requires the isos, ei, and eos cores.';
   if (!types) return 'Node type catalog is unavailable.';
   const known = new Set(types.map(catalogTypeKey));
   for (const [coreId, core] of Object.entries(document.graph.cores)) {
@@ -173,6 +186,12 @@ export function graphPackagePins(graph: NodeGraph): { id: string; version: strin
 }
 
 export function getNodeGraph(): Promise<NodeGraphDocument> { return request('/graph'); }
+/** A fresh 0.2.0 draft fenced by the current saved revision, including an obsolete graph. */
+export function getNewNodeGraph(): Promise<NodeGraphDocument> { return request('/graph/new'); }
+export interface GraphPoolEntry { name: string; revision: string; version: string }
+export function getGraphPool(): Promise<{ graphs: GraphPoolEntry[] }> { return request('/graph-pool'); }
+export function getGraphPoolEntry(name: string): Promise<{ name: string; revision: string; graph: NodeGraph }> { return request(`/graph-pool/${encodeURIComponent(name)}`); }
+export function putGraphPoolEntry(name: string, revision: string, graph: NodeGraph): Promise<{ name: string; revision: string; graph: NodeGraph }> { return request(`/graph-pool/${encodeURIComponent(name)}`, 'PUT', { schema_version: '0.1.0', revision, graph }); }
 export interface NodeTypeCatalog { types: NodeTypeDefinition[]; data_types?: DataTypeDefinition[]; primitive_specs?: PrimitiveSpec[] }
 export interface GraphCatalogSnapshot { graph: NodeGraphDocument; selected: NodeTypeCatalog | null; global: NodeTypeCatalog | null; reason: string | null }
 export function graphCatalogReadOnlyReason(snapshot: GraphCatalogSnapshot): string | null {
@@ -240,13 +259,7 @@ export function previewBackendLink(path: string, manifest?: string): Promise<Lin
   return request('/packages/preview-link', 'POST', { path, ...(manifest ? { manifest } : {}) });
 }
 export function getNodeOptions(graph: NodeGraph): Promise<NodeOptions> { return request('/catalog/node-options', 'POST', { schema_version: '0.1.0', graph }); }
-export function getLogPage(source: string, level: LogLevel, cursor?: string, limit = 200): Promise<LogPage> {
-  const params = new URLSearchParams({ source, level, limit: String(Math.max(1, Math.min(200, Math.floor(limit)))) });
-  if (cursor) params.set('cursor', cursor);
-  return request(`/runtime/logs?${params.toString()}`);
-}
-/** Request the opt-in P07 view; an older IsOS may still return the legacy shape. */
-export async function getCurrentLogPage(query: CurrentLogQuery, signal?: AbortSignal): Promise<CurrentLogPage | LogPage> {
+export async function getCurrentLogPage(query: CurrentLogQuery, signal?: AbortSignal): Promise<CurrentLogPage> {
   const { source, level, node_path, correlation_id, cursor, limit = 100 } = query;
   const params = new URLSearchParams({ view: 'current', source, level, limit: String(Math.max(1, Math.min(200, Math.floor(limit)))) });
   if (node_path) params.set('node_path', node_path);
@@ -254,7 +267,6 @@ export async function getCurrentLogPage(query: CurrentLogQuery, signal?: AbortSi
   if (cursor) params.set('cursor', cursor);
   const page = await request<unknown>(`/runtime/logs?${params.toString()}`, 'GET', undefined, signal);
   if (isCurrentLogPage(page)) return page;
-  if (isObject(page) && Array.isArray(page.lines) && page.lines.every(isLogLine) && (typeof page.next_cursor === 'string' || page.next_cursor === null) && typeof page.rotated === 'boolean' && !('scope' in page)) return page as unknown as LogPage;
   throw new Error('IsOS returned an invalid current log page.');
 }
 function isLogLine(value: unknown): value is LogLine {
@@ -276,6 +288,9 @@ export function isCurrentLogPage(page: unknown): page is CurrentLogPage {
 export function validateNodeGraph(graph: NodeGraph): Promise<NodeGraphValidation> {
   return request('/graph/validate', 'POST', { schema_version: '0.1.0', graph });
 }
-export function applyNodeGraph(revision: string, graph: NodeGraph): Promise<NodeGraphDocument> {
-  return request('/graph', 'PUT', { schema_version: '0.1.0', revision, graph });
+export function validateConnection(graph: NodeGraph, source: string, output: string, target: string, input: string): Promise<ConnectionPreviewResult> {
+  return request('/graph/connection', 'POST', { schema_version: '0.1.0', graph, source, output, target, input });
+}
+export function applyNodeGraph(poolName: string, revision: string): Promise<NodeGraphDocument> {
+  return request('/graph', 'PUT', { schema_version: '0.1.0', pool_name: poolName, revision });
 }

@@ -14,7 +14,7 @@
 | 未知资源 ID 或资源字节变化 | 类型化资源诊断 | 不启动子进程，不发布图。 |
 | 保存修订或运行栅栏过期 | 冲突诊断 | 不替换活动运行。 |
 
-直接安装/链接错误使用空图指针；图上错误使用实际选中节点的指针。诊断包含稳定代码、阶段、精确锁定、净化消息及规范指针，不泄露本地路径、原始元数据或秘密。响应封套见[HTTP 软件包](../../develop/http/packages_cn.md)。
+直接安装/链接错误使用空图指针；图上错误使用实际选中节点的指针。诊断包含稳定代码、阶段、精确锁定、净化消息及规范指针，不泄露本地路径、原始元数据或秘密。响应封套见[HTTP 软件包](../http/packages_cn.md)。
 
 ## 读取器与功能预检
 
@@ -46,4 +46,3 @@ IsOS 在消费合并所有者目录前检查图结构、精确锁定和经过验
 | `reader.requested` | 对象 / 请求声明 | 适用的图版本、完整类型、功能及精确软件包锁定；不适用值为 null。 |
 | `reader.supported` | 对象 / 已声明能力 | 排序后的图版本、类型版本、完整 ID 及功能；不可信声明为空数组。 |
 
-有界诊断示例（JSON 对象与英文文档相同）：`{"diagnostics":[{"code":"reader_feature_unsupported","path":"/cores/eos/layers/interface/groups/gate/nodes/preview/node_type","message":"selected owner lacks vision-gate; choose a compatible build","stage":"feature","reader":{"core":"eos","binary":"aether-runtime","binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requested":{"graph_version":"0.1.0","node_type":"eos.interface.camera_gate@v0.1","feature":"vision-gate","package":null},"supported":{"graph_versions":["0.1.0"],"node_type_versions":["0.1"],"node_types":["eos.interface.camera_gate@v0.1"],"features":[]}}}]}`。经过验证的 `compatible_upgrade` 只能命名精确检查过的发行包；列出它不会安装或应用。所有者迁移门槛见[待办](../../maintenance/todo_cn.md)。

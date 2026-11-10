@@ -17,7 +17,6 @@ use crate::{AdmissionContext, DispatchResult, GatewayRejectionCode, OutcomeStatu
 
 const SCHEMA_VERSION: &str = "2.0.0";
 const STOP_SCHEMA_VERSION: &str = "3.0.0";
-const LEGACY_CONTROL_SCHEMA_VERSION: &str = "1.0.0";
 const CONTROL_SCHEMA_VERSION: &str = "1.1.0";
 const MAX_ID_BYTES: usize = 128;
 const MAX_RECORD_BYTES: usize = 128 * 1024;
@@ -41,7 +40,7 @@ pub(crate) struct JournalEntry {
 }
 
 /// The public operation identity is stored in the existing command record.
-/// Legacy records have no identity and remain query-only, never guessed.
+/// Records without admitted identity remain query-only; identity is never guessed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum JournalTarget {
@@ -108,25 +107,6 @@ struct ControlBody {
   shutdown_targets: Vec<String>,
 }
 
-/// Preserve the exact 1.0.0 serialization used to calculate its checksum.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyControlBody {
-  version: String,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  robot_id: Option<String>,
-  robot_inhibited: bool,
-  robot_targets: Vec<String>,
-  estop_latched: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyControlRecord {
-  body: LegacyControlBody,
-  checksum: u64,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlRecord {
@@ -184,9 +164,6 @@ impl Journal {
   /// still unresolved in this process.
   pub(crate) fn retain_owner_lock(&self) -> io::Result<Option<File>> {
     self._lock.as_ref().map(File::try_clone).transpose()
-  }
-  pub(crate) fn has_legacy_records(&self) -> bool {
-    self.entries.values().any(|entry| entry.operation.is_none())
   }
   pub(crate) fn has_uncertain_movement(&self) -> bool {
     self.entries.values().any(|entry| {
@@ -857,56 +834,28 @@ fn validate_control(control: &ControlBody) -> io::Result<()> {
 }
 
 fn decode_control(bytes: &[u8]) -> io::Result<ControlBody> {
-  let value: serde_json::Value =
+  let record: ControlRecord =
     serde_json::from_slice(bytes).map_err(|error| invalid_data(error.to_string()))?;
-  match value
-    .pointer("/body/version")
-    .and_then(serde_json::Value::as_str)
-  {
-    Some(LEGACY_CONTROL_SCHEMA_VERSION) => {
-      let record: LegacyControlRecord =
-        serde_json::from_slice(bytes).map_err(|error| invalid_data(error.to_string()))?;
-      if checksum(&serde_json::to_vec(&record.body)?) != record.checksum {
-        return Err(invalid_data("journal control record is invalid"));
-      }
-      let body = ControlBody {
-        version: CONTROL_SCHEMA_VERSION.into(),
-        robot_id: record.body.robot_id,
-        robot_inhibited: record.body.robot_inhibited,
-        robot_targets: record.body.robot_targets,
-        estop_latched: record.body.estop_latched,
-        shutdown_pending: false,
-        shutdown_targets: Vec::new(),
-      };
-      validate_control(&body)?;
-      Ok(body)
-    }
-    Some(CONTROL_SCHEMA_VERSION) => {
-      let record: ControlRecord =
-        serde_json::from_slice(bytes).map_err(|error| invalid_data(error.to_string()))?;
-      if checksum(&serde_json::to_vec(&record.body)?) != record.checksum {
-        return Err(invalid_data("journal control record is invalid"));
-      }
-      validate_control(&record.body)?;
-      Ok(record.body)
-    }
-    _ => Err(invalid_data("journal control version is unsupported")),
+  if checksum(&serde_json::to_vec(&record.body)?) != record.checksum {
+    return Err(invalid_data("journal control record is invalid"));
   }
+  validate_control(&record.body)?;
+  Ok(record.body)
 }
 
 fn valid_hardware_path(path: &str) -> bool {
   // The dispatcher registry verifies kind after reservation.
   let segments: Vec<_> = path.split('/').collect();
   (segments.len() == 4
-    && ((segments[0] == "eos" && segments[1] == "hardware")
-      || (segments[0] == "isos" && segments[1] == "eos_hardware"))
+    && segments[0] == "isos"
+    && segments[1] == "eos_hardware"
     && valid_segment(segments[2])
     && valid_segment(segments[3]))
     || (segments.len() == 8
       && segments[0] == "cores"
-      && ((segments[1] == "eos" && segments[3] == "hardware")
-        || (segments[1] == "isos" && segments[3] == "eos_hardware"))
+      && segments[1] == "isos"
       && segments[2] == "layers"
+      && segments[3] == "eos_hardware"
       && segments[4] == "groups"
       && valid_segment(segments[5])
       && segments[6] == "nodes"
@@ -924,15 +873,14 @@ fn record_path(directory: &Path, id: &str) -> io::Result<PathBuf> {
   if id.is_empty() || id.len() > MAX_ID_BYTES {
     return Err(invalid_input("command ID exceeds journal path bound"));
   }
-  // Preserve historical filenames while keeping the new 128-byte public
-  // identity below common 255-byte filesystem component limits.
+  // Keep short IDs readable as hex and bound longer filename components.
   let mut name = if id.len() <= 120 {
-    let mut legacy = String::with_capacity(id.len() * 2 + 4);
+    let mut encoded = String::with_capacity(id.len() * 2 + 4);
     for byte in id.bytes() {
       use std::fmt::Write;
-      write!(legacy, "{byte:02x}").expect("hex formatting cannot fail");
+      write!(encoded, "{byte:02x}").expect("hex formatting cannot fail");
     }
-    legacy
+    encoded
   } else {
     format!("sha256-{:x}", Sha256::digest(id.as_bytes()))
   };
@@ -1003,7 +951,7 @@ mod tests {
 
   fn entry(id: &str) -> JournalEntry {
     JournalEntry {
-      node_path: "cores/eos/layers/hardware/groups/base/nodes/base".into(),
+      node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/base".into(),
       signature: "2.0.0:{\"movement\":1}".into(),
       phase: CommandPhase::Prepared,
       result: DispatchResult {
@@ -1107,7 +1055,7 @@ mod tests {
     let mut journal = Journal::memory();
     journal.bind_robot_id("r").unwrap();
     let mut old = movement("old-target");
-    old.node_path = "cores/eos/layers/hardware/groups/base/nodes/old".into();
+    old.node_path = "cores/isos/layers/eos_hardware/groups/base/nodes/old".into();
     old.operation.as_mut().unwrap().identity.target = JournalTarget::Hardware {
       node_path: old.node_path.clone(),
     };
@@ -1121,7 +1069,7 @@ mod tests {
       .unwrap();
     journal
       .set_shutdown_pending(vec![
-        "cores/eos/layers/hardware/groups/base/nodes/new".into()
+        "cores/isos/layers/eos_hardware/groups/base/nodes/new".into()
       ])
       .unwrap();
     assert!(journal.resolve_shutdown_pending().is_err());
@@ -1140,7 +1088,7 @@ mod tests {
   #[test]
   fn crash_between_stop_clear_and_terminal_record_restores_inhibit() {
     let path = directory();
-    let target = "cores/eos/layers/hardware/groups/base/nodes/base".to_string();
+    let target = "cores/isos/layers/eos_hardware/groups/base/nodes/base".to_string();
     let mut journal = Journal::open(&path).unwrap();
     let mut record = entry("clear-gap");
     record.node_path.clear();
@@ -1202,7 +1150,7 @@ mod tests {
   }
 
   #[test]
-  fn prepared_legacy_record_recovers_cancelled_without_movement_inhibit() {
+  fn prepared_untyped_record_recovers_cancelled_without_movement_inhibit() {
     let path = directory();
     let mut journal = Journal::open(&path).unwrap();
     journal
@@ -1265,13 +1213,13 @@ mod tests {
     let path = directory();
     let mut journal = Journal::open(&path).unwrap();
     let mut command = entry("mujoco-drive");
-    command.node_path = "cores/eos/layers/hardware/groups/mujoco/nodes/drive".into();
+    command.node_path = "cores/isos/layers/eos_hardware/groups/mujoco/nodes/drive".into();
     journal.insert("mujoco-drive".into(), command).unwrap();
     drop(journal);
     let recovered = Journal::open(&path).unwrap();
     assert_eq!(
       recovered.get("mujoco-drive").unwrap().node_path,
-      "cores/eos/layers/hardware/groups/mujoco/nodes/drive"
+      "cores/isos/layers/eos_hardware/groups/mujoco/nodes/drive"
     );
     drop(recovered);
     fs::remove_dir_all(path).unwrap();
@@ -1355,11 +1303,11 @@ mod tests {
     journal.insert("cmd-4".into(), entry("cmd-4")).unwrap();
     assert!(journal
       .update("cmd-4", |entry| entry.node_path =
-        "cores/eos/layers/hardware/groups/base/nodes/other".into())
+        "cores/isos/layers/eos_hardware/groups/base/nodes/other".into())
       .is_err());
     assert_eq!(
       journal.get("cmd-4").unwrap().node_path,
-      "cores/eos/layers/hardware/groups/base/nodes/base"
+      "cores/isos/layers/eos_hardware/groups/base/nodes/base"
     );
     assert!(journal
       .update("cmd-4", |entry| entry.phase = CommandPhase::Terminal)
@@ -1454,11 +1402,11 @@ mod tests {
   }
 
   #[test]
-  fn active_unbound_legacy_control_has_no_rebind_proof() {
+  fn active_unbound_control_has_no_rebind_proof() {
     let mut journal = Journal::memory();
     journal
       .set_robot_inhibit(vec![
-        "cores/eos/layers/hardware/groups/base/nodes/base".into()
+        "cores/isos/layers/eos_hardware/groups/base/nodes/base".into(),
       ])
       .unwrap();
     assert_eq!(
@@ -1468,65 +1416,38 @@ mod tests {
   }
 
   #[test]
-  fn legacy_control_checksum_is_verified_before_upgrade_without_read_write() {
+  fn unsupported_control_schema_is_rejected_without_rewriting() {
     let path = directory();
-    fs::create_dir_all(&path).unwrap();
-    let old = LegacyControlBody {
-      version: LEGACY_CONTROL_SCHEMA_VERSION.into(),
-      robot_id: Some("r".into()),
-      robot_inhibited: false,
-      robot_targets: Vec::new(),
-      estop_latched: true,
-    };
-    let bytes = serde_json::to_vec(&LegacyControlRecord {
-      checksum: checksum(&serde_json::to_vec(&old).unwrap()),
-      body: old,
+    let mut value = serde_json::to_value(ControlRecord {
+      body: ControlBody {
+        version: CONTROL_SCHEMA_VERSION.into(),
+        robot_id: Some("r".into()),
+        robot_inhibited: false,
+        robot_targets: Vec::new(),
+        estop_latched: true,
+        shutdown_pending: false,
+        shutdown_targets: Vec::new(),
+      },
+      checksum: 0,
     })
     .unwrap();
+    value["body"]["version"] = serde_json::json!("0.0.0");
+    let body: ControlBody = serde_json::from_value(value["body"].clone()).unwrap();
+    value["checksum"] = serde_json::json!(checksum(&serde_json::to_vec(&body).unwrap()));
+    let bytes = serde_json::to_vec(&value).unwrap();
     fs::write(path.join(".control"), &bytes).unwrap();
-    let mut journal = Journal::open(&path).unwrap();
-    journal.bind_robot_id("r").unwrap();
+    assert_eq!(
+      Journal::open(&path).err().unwrap().kind(),
+      ErrorKind::InvalidData
+    );
     assert_eq!(fs::read(path.join(".control")).unwrap(), bytes);
-    assert!(journal.estop_latched());
-    journal
-      .set_robot_inhibit(vec!["eos/hardware/base/drive".into()])
-      .unwrap();
-    let upgraded: ControlRecord =
-      serde_json::from_slice(&fs::read(path.join(".control")).unwrap()).unwrap();
-    assert_eq!(upgraded.body.version, CONTROL_SCHEMA_VERSION);
-    assert!(upgraded.body.estop_latched && upgraded.body.robot_inhibited);
-    assert!(!upgraded.body.shutdown_pending);
-    drop(journal);
-    let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    malformed["body"]["shutdown_pending"] = serde_json::json!(false);
-    fs::write(
-      path.join(".control"),
-      serde_json::to_vec(&malformed).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-      Journal::open(&path).err().unwrap().kind(),
-      ErrorKind::InvalidData
-    );
-    fs::write(path.join(".control"), &bytes).unwrap();
-    malformed = serde_json::from_slice(&bytes).unwrap();
-    malformed["checksum"] = serde_json::json!(0);
-    fs::write(
-      path.join(".control"),
-      serde_json::to_vec(&malformed).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-      Journal::open(&path).err().unwrap().kind(),
-      ErrorKind::InvalidData
-    );
     fs::remove_dir_all(path).unwrap();
   }
 
   #[test]
   fn shutdown_marker_is_profile_bound_and_resolves_without_clearing_other_safety() {
     let path = directory();
-    let target = "eos/hardware/base/drive".to_owned();
+    let target = "isos/eos_hardware/base/drive".to_owned();
     let mut journal = Journal::open(&path).unwrap();
     journal.bind_robot_id("r").unwrap();
     journal.set_robot_inhibit(vec![target.clone()]).unwrap();
@@ -1538,7 +1459,7 @@ mod tests {
     recovered.bind_robot_id("r").unwrap();
     assert!(recovered.shutdown_pending());
     assert!(recovered
-      .bind_shutdown_targets(&["eos/hardware/base/other".into()])
+      .bind_shutdown_targets(&["isos/eos_hardware/base/other".into()])
       .is_err());
     recovered
       .bind_shutdown_targets(std::slice::from_ref(&target))
@@ -1569,11 +1490,11 @@ mod tests {
     fs::create_dir_all(&path).unwrap();
     let cases = [
       (true, vec![], Some("r")),
-      (false, vec!["eos/hardware/base/drive"], Some("r")),
-      (true, vec!["eos/hardware/base/drive"], None),
+      (false, vec!["isos/eos_hardware/base/drive"], Some("r")),
+      (true, vec!["isos/eos_hardware/base/drive"], None),
       (
         true,
-        vec!["eos/hardware/base/z", "eos/hardware/base/a"],
+        vec!["isos/eos_hardware/base/z", "isos/eos_hardware/base/a"],
         Some("r"),
       ),
     ];

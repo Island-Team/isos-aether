@@ -166,15 +166,22 @@ pub(crate) async fn logs(
       }
     };
     let data = store
-      .read_current(crate::runtime::logs::CurrentQuery {
-        source: query.get("source").map_or("all", String::as_str),
-        level: query.get("level").map_or("info", String::as_str),
-        node_path: query.get("node_path").map(String::as_str),
-        correlation_id: query.get("correlation_id").map(String::as_str),
-        cursor: query.get("cursor").map(String::as_str),
-        limit,
-        active_revision,
-      })
+      .read_local_current(
+        &app.paths,
+        status
+          .as_ref()
+          .ok()
+          .and_then(|value| value["run_id"].as_str()),
+        crate::runtime::logs::CurrentQuery {
+          source: query.get("source").map_or("all", String::as_str),
+          level: query.get("level").map_or("info", String::as_str),
+          node_path: query.get("node_path").map(String::as_str),
+          correlation_id: query.get("correlation_id").map(String::as_str),
+          cursor: query.get("cursor").map(String::as_str),
+          limit,
+          active_revision,
+        },
+      )
       .map_err(|error| {
         diagnostic_failure(
           StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST),
@@ -194,23 +201,38 @@ pub(crate) async fn logs(
     .unwrap_or(100);
   let store = LogStore::new(&app.paths, &app.deployment)
     .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?;
-  let data = store
-    .read_filtered(
-      source,
-      query.get("cursor").map(String::as_str),
-      limit,
-      query.get("level").map(String::as_str),
+  let paths = app.paths.clone();
+  let deployment = app.deployment.clone();
+  let status = tokio::task::spawn_blocking(move || {
+    crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+  })
+  .await
+  .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  let page = store
+    .read_local_current(
+      &app.paths,
+      status
+        .as_ref()
+        .ok()
+        .and_then(|value| value["run_id"].as_str()),
+      crate::runtime::logs::CurrentQuery {
+        source,
+        level: query.get("level").map_or("trace", String::as_str),
+        node_path: None,
+        correlation_id: None,
+        cursor: query.get("cursor").map(String::as_str),
+        limit,
+        active_revision: None,
+      },
     )
     .map_err(|error| {
-      let message = error.to_string();
-      let status = if message.contains("unavailable") {
-        StatusCode::NOT_FOUND
-      } else {
-        StatusCode::BAD_REQUEST
-      };
-      internal_err(status, &error)
+      diagnostic_failure(
+        StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST),
+        error.public_error(),
+        error.diagnostic(),
+      )
     })?;
-  ok(data)
+  ok(json!({"lines":page["lines"],"next_cursor":page["next_cursor"],"rotated":page["rotated"]}))
 }
 #[derive(Deserialize)]
 pub(crate) struct CoreSetupEdit {
@@ -228,8 +250,8 @@ pub(crate) async fn core_setup_route(
   body: Option<Json<CoreSetupEdit>>,
 ) -> ApiResult {
   authorized(&app, &headers)?;
-  if !matches!(role.as_str(), "eos" | "egia")
-    || !matches!(op.as_str(), "catalog" | "validate" | "render")
+  if !matches!(role.as_str(), "eos" | "ei")
+    || !matches!(op.as_str(), "catalog" | "options" | "validate" | "render")
   {
     return Err(err(StatusCode::NOT_FOUND, "unknown core setup operation"));
   }

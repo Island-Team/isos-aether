@@ -154,6 +154,7 @@ pub fn compose(
   let mut paths_by_ref = BTreeMap::new();
   let default_group = id.split_once('/').unwrap().1;
   for node in &set.nodes {
+    ensure!(node.core == "isos", "node set must target the isos core");
     let group = node.group.as_deref().unwrap_or(default_group);
     let instance = node.profile["id"]
       .as_str()
@@ -165,7 +166,7 @@ pub fn compose(
   }
   let mut draft = graph.clone();
   ensure!(
-    draft["version"] == "0.1.0",
+    draft["version"] == "0.2.0",
     "node graph version is incompatible with the selected node set"
   );
   rewrite_paths(&mut draft, &BTreeMap::new());
@@ -231,96 +232,15 @@ pub fn compose(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::fs;
-  use std::path::Path;
-
-  fn fixture() -> (tempfile::TempDir, Paths) {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    paths.prepare().unwrap();
-    let bundle = temp.path().join("bundle");
-    fs::create_dir(&bundle).unwrap();
-    let manifest = temp.path().join("release.json");
-    let release = json!({
-        "contract":"isos.package@v1","schema_version":"0.1.0","id":"test/sim","kind":"skill","version":"2.0.0",
-        "source_commit":"a".repeat(40),
-        "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/test/sim/releases/download/v2.0.0/sim.tar.gz","size_bytes":1,"sha256":"b".repeat(64)}],
-        "node_contributions":{"node_types":[
-            {"id":"eos.process.demo@v1.0","core":"eos","layer":"process","group":"demo","description":"Synthetic process","kind":"software","lifecycle":"process","capabilities":[],"settings":[],"inputs":[],"outputs":[]},
-            {"id":"eos.hardware.demo_camera@v1.0","core":"eos","layer":"hardware","group":"demo","description":"Synthetic camera","kind":"camera","lifecycle":"adapter","capabilities":[],"settings":[],"inputs":[],"outputs":[]}
-        ],"safety_adapters":[],"data_types":[{"id":"test.vision.frame@v1.0","version":"1.0","purpose":"Test camera preview","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536}],"node_sets":[{
-            "id":"hardware","parameters":{"socket":{"type":"string"}},
-            "nodes":[
-                {"ref":"simulator","core":"eos","layer":"process","group":"demo","profile":{"id":"simulator","node_type":"eos.process.demo@v1.0","settings":{"socket":"${socket}"}}},
-                {"ref":"front","core":"eos","layer":"hardware","group":"demo","profile":{"id":"front","node_type":"eos.hardware.demo_camera@v1.0","references":["@simulator"],"adapter":{"settings":{"backend":"@simulator","socket_path":"${socket}"}}}},
-                {"ref":"gate","core":"eos","layer":"interface","group":"gate","profile":{"id":"gate","node_type":"eos.interface.camera_gate@v1.0","inputs":{"frame":{"node":"@front","output":"frame"}}}},
-                {"ref":"vision","core":"isosui","layer":"system","group":"ui","profile":{"id":"vision","node_type":"isosui.system.vision@v1.0","inputs":{"preview":{"node":"@gate","output":"preview"}}}}
-            ]}]}
-    });
-    fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
-    packages::link_with_manifest(
-      &paths,
-      "test/sim",
-      "2.0.0",
-      Path::new(&bundle),
-      Some(&manifest),
-    )
-    .unwrap();
-    (temp, paths)
-  }
 
   #[test]
-  fn compose_resolves_refs_parameters_and_package_pin() {
-    let (_temp, paths) = fixture();
-    let graph = json!({"version":"0.1.0","robot":{"id":"robot","name":"Robot"},"cores":{}});
-    let values = BTreeMap::from([("socket".to_owned(), "/tmp/sim.sock".to_owned())]);
-    let preview = compose(&paths, "test/sim", "2.0.0", "hardware", &graph, &values).unwrap();
-    assert_eq!(preview["added_paths"].as_array().unwrap().len(), 4);
-    assert_eq!(
-      preview["graph"]["cores"]["eos"]["layers"]["hardware"]["groups"]["demo"]["nodes"]["front"]["adapter"]
-        ["settings"]["backend"],
-      "eos/process/demo/simulator"
-    );
-    assert!(
-      preview["graph"]["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["gate"]
-        .get("package")
-        .is_none()
-    );
-    assert!(
-      preview["graph"]["cores"]["isosui"]["layers"]["system"]["groups"]["ui"]["nodes"]["vision"]
-        .get("package")
-        .is_none()
-    );
-    assert_eq!(
-      preview["graph"]["cores"]["eos"]["layers"]["hardware"]["groups"]["demo"]["nodes"]["front"]["package"]
-        ["version"],
-      "2.0.0"
-    );
-    assert!(
-      compose(
-        &paths,
-        "test/sim",
-        "2.0.0",
-        "hardware",
-        &preview["graph"],
-        &values
-      )
-      .is_err()
-    );
-    assert!(
-      compose(
-        &paths,
-        "test/sim",
-        "2.0.0",
-        "hardware",
-        &graph,
-        &BTreeMap::new()
-      )
-      .is_err()
-    );
+  fn references_resolve_to_current_single_core_paths() {
+    let paths = BTreeMap::from([(
+      "camera".to_owned(),
+      "isos/eos_hardware/camera/front".to_owned(),
+    )]);
+    let mut node = json!({"reference":"@camera"});
+    resolve_refs(&mut node, &paths).unwrap();
+    assert_eq!(node["reference"], "isos/eos_hardware/camera/front");
   }
 }

@@ -1,0 +1,116 @@
+name: Release IsOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vMAJOR.MINOR.PATCH tag at current master
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-isos-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Check release source
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch origin master --tags
+          python3 scripts/verify_product_release.py "$TAG"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - name: Build and verify platform bundle
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$ARCH"
+          mkdir -p dist
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          archive="$PWD/dist/isos-${version}-linux-${ARCH}.tar.gz"
+          ./install.sh --prefix "$RUNNER_TEMP/isos" --bundle-output "$archive"
+          (cd dist && sha256sum -c "$(basename "$archive").sha256")
+          ./install.sh --prefix "$RUNNER_TEMP/verify" --bundle "$archive"
+          "$RUNNER_TEMP/verify/bin/isos" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isos-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Recheck release source
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch origin master --tags
+          python3 scripts/verify_product_release.py "$TAG"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: isos-*
+          path: dist
+          merge-multiple: true
+      - name: Verify both platform assets
+        run: |
+          cd dist
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 2
+          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 2
+          for checksum in *.sha256; do sha256sum -c "$checksum"; done
+      - name: Publish unified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists" >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<NOTES
+          IsOS ${TAG#v} — $(date -u +%Y-%m-%d)
+
+          - One IsOS command and versioned Linux bundles for x86_64 and aarch64.
+          - Bundle includes EOS, EI, Web UI, and TUI with an internal file manifest.
+          - Install or upgrade with \`isos upgrade $TAG\`, or verify a downloaded archive with its adjacent SHA256 file and install using \`./install.sh --bundle /absolute/archive.tar.gz\`.
+          - Interface and graph schema versions remain independently versioned; run \`isos doctor\` for installed compatibility.
+          - Verification: source version gate, per-platform bundle roundtrip, internal manifest, and external SHA256 checks.
+          NOTES
+          gh release create "$TAG" dist/* --verify-tag --title "IsOS $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -2,101 +2,146 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import ReactFlow, { Background, Handle, MiniMap, Position, ReactFlowProvider, SelectionMode, type Connection, type Edge, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { catalogTypeKey, combineNodeTypeCatalogs, type NodeOptions, getGraphCatalogSnapshot, getNodeGraph, getNodeSets, getProcessStatus, getCoreReadiness, getNodeOptions, graphCatalogReadOnlyReason, nodeGraphHasEditableShape, nodeGraphReadOnlyReason, previewNodeSet, validateNodeGraph, type CoreReadiness, type DataTypeDefinition, type NodeGraph, type NodeGraphDiagnostic, type NodeInstance, type NodeSetDefinition, type NodeSetPreview, type NodeTypeDefinition, type ProcessStatus, type ValidatedEdge } from '@/services/isos/node-graph';
+import { catalogTypeKey, combineNodeTypeCatalogs, type NodeOptions, getGraphCatalogSnapshot, getNewNodeGraph, getNodeTypes, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, getNodeGraph, getNodeSets, getProcessStatus, getCoreReadiness, getNodeOptions, graphCatalogReadOnlyReason, nodeGraphHasEditableShape, nodeGraphReadOnlyReason, previewNodeSet, validateConnection, validateNodeGraph, type CoreReadiness, type DataTypeDefinition, type GraphPoolEntry, type NodeGraph, type NodeGraphDiagnostic, type NodeInstance, type NodeSetDefinition, type NodeSetPreview, type NodeTypeDefinition, type ProcessStatus, type ValidatedEdge } from '@/services/isos/node-graph';
 import type { Language } from '@/types';
 import { hasActiveDeployment } from './deployment-phase';
-import { addNode, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, removeNode, removedNodePaths, renameNode, sameNodePath, updateNode, type GraphNode } from './node-graph-edits';
+import { addNode, addableTypes, admittedConnection, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, removeNode, removedNodePaths, renameNode, sameNodePath, updateNode, type GraphNode } from './node-graph-edits';
 import { interfaceVisual, nodeVisualStyle, portVisual, dataTypeColor } from './node-visuals';
-import { applyNodeSelection, graphLayoutKey, graphMirrorKey, parseNodeMirrors, parseNodePositions, removeSelectedNodes, type NodeMirrors, type NodePositions } from './graph-canvas-state';
-import { DISPATCHER_PATH, withControlTarget, withSkillSteps } from './control-node-config';
+import { applyNodeSelection, asyncDemoLayout, graphLayoutKey, graphMirrorKey, parseNodeMirrors, parseNodePositions, removeSelectedNodes, type NodeMirrors, type NodePositions } from './graph-canvas-state';
 import { GraphCoreWindow, readCoreWindow, type CoreWindowState } from './GraphCoreWindow';
 import { edgeContracts, edgeInputDiagnostics } from './edge-idl';
-import { edgeSource, updateEdgeQos, validatedSource } from './edge-qos';
-import { EdgeQosInspector } from './EdgeQosInspector';
 import { validatedApply } from './validated-apply';
-import { EgiaWorkbench } from './EgiaWorkbench';
+import { EiWorkbench } from './EiWorkbench';
 import { clampInfoCard } from './node-info-card';
-import { getNodeLive } from '@/services/eos/node-live';
 import { processRunFeedback } from './process-run-feedback';
 import { stopReplyFeedback, stopFailureFeedback } from './stop-feedback';
 import { requestRunStop } from './run-stop-fence';
 import { deploymentStopEpoch, runDeployment, stopDeploymentConverged } from './deployment-control';
 import { browserLog } from '@/services/isos/browser-logs';
 import { publishUiMessage } from '@/services/isos/ui-messages';
+import { getButtonActivationResult, newButtonEventId, sendButtonActivation, type ButtonActivationResult } from '@/services/isos/node-events';
+import { IsosApiError } from '@/services/isos/api-client';
 import { draftValidationStamp, validationDisplayIsCurrent, validationResponseIsCurrent, type DraftValidationStamp } from './draft-validation';
 import { CatalogSelector, settingOptionGroup } from './CatalogSelector';
 import { CatalogBrowser } from './CatalogBrowser';
-import { KeyboardNodeControl } from './KeyboardNodeControl';
-import { UiKeySelector } from './UiKeySelector';
+import { ArmMonitorView, useArmMonitor, type ArmMonitorReading } from './ArmMonitor';
+import { DEFAULT_MONITOR_REFRESH_HZ, monitorRefreshHz } from '@/services/isos/arm-monitor';
 import { catalogReloadGraph, catalogReloadIsCurrent, catalogSelectionBlocks, optionResponseIsCurrent, type OptionSnapshot } from './catalog-options';
 import './node-graph-manager.scss';
 
 interface Props { lang: Language; visible?: boolean; onDirtyChange?: (dirty: boolean) => void; onOpenPanel?: (name: 'control' | 'logs') => void; onStopIntent?: (runId: string | null) => void; onStopOutcome?: (feedback: { text: string; alert: boolean }, terminalRun?: string | null) => void }
-interface FlowData { entry: GraphNode; error: boolean; mirrored: boolean; lang: Language; liveAllowed: boolean; liveRunId: string | null; dataTypes: DataTypeDefinition[] }
+interface FlowData { entry: GraphNode; error: boolean; mirrored: boolean; lane?: 'forward' | 'return'; lang: Language; dataTypes: DataTypeDefinition[]; options?: NodeOptions | null; readOnly?: boolean; currentRun?: boolean; runId?: string | null; activeRevision?: string | null; monitorReading?: ArmMonitorReading; onSettingsChange?: (path: string, settings: Record<string, unknown>) => void; onNodeChange?: (path: string, change: Partial<NodeInstance>) => void }
 const COPY = {
-  en: { nodeSets: 'Package node sets', previewRemoves: 'Package preview would remove existing nodes. Edit the graph explicitly before adding this set.', noNodeSets: 'No installed package offers a node set.', chooseSet: 'Choose a node set', previewSet: 'Preview nodes', addSet: 'Add previewed nodes', previewCount: 'nodes will be added', previewStale: 'The graph changed. Preview the set again.', title: 'Node graph', connect: 'Connect to local IsOS', add: 'Add node', refresh: 'Refresh', validate: 'Check graph', apply: 'Save graph', saved: 'Graph saved and core configuration generated. Restart to use this revision.', valid: 'Graph is valid.', dirty: 'Unsaved changes', clean: 'Saved', catalog: 'Node library', inspector: 'Node configuration', diagnostics: 'Diagnostics', noSelection: 'Select a node to edit it.', selectedCount: 'nodes selected', noNodes: 'Add a registered node type to start.', id: 'Node ID', label: 'Label', description: 'Description', settings: 'Settings', gui: 'Show MuJoCo window when EOS starts this backend', details: 'Hardware and advanced fields (JSON)', applyDetails: 'Apply fields', remove: 'Remove node', capabilities: 'Capabilities', source: 'Source', target: 'Target', invalid: 'Invalid JSON object.', duplicate: 'Node ID already exists or is invalid.', port: 'Connect matching typed ports by dragging from an output to an input.', robot: 'Robot', name: 'Name', lifecycle: 'Lifecycle', type: 'Type', disconnected: 'IsOS node graph API is unavailable.', stale: 'Graph changed on the server. Refresh and retry.', discard: 'Discard unsaved changes?', choose: 'Choose a type', process: 'Process status', noStatus: 'Process status is not available from this IsOS build.', search: 'Search types', undo: 'Undo', redo: 'Redo', disconnect: 'Disconnect line', hint: 'Left drag selects nodes; middle drag pans. Right-click to add or disconnect. Delete removes selected nodes.', savedRevision: 'Saved', activeRevision: 'Active' },
-  cn: { nodeSets: '软件包节点集', previewRemoves: '软件包预览会删除现有节点。请先明确编辑节点图，再添加此节点集。', noNodeSets: '已安装的软件包没有提供节点集。', chooseSet: '选择节点集', previewSet: '预览节点', addSet: '添加已预览节点', previewCount: '个节点将被添加', previewStale: '节点图已更改，请重新预览。', title: '节点图', connect: '连接本机 IsOS', add: '添加节点', refresh: '刷新', validate: '检查节点图', apply: '保存节点图', saved: '节点图已保存，核心配置已生成。重启后使用此修订。', valid: '节点图有效。', dirty: '未保存更改', clean: '已保存', catalog: '节点库', inspector: '节点配置', diagnostics: '诊断', noSelection: '选择节点后编辑配置。', selectedCount: '个节点已选中', noNodes: '添加已注册的节点类型以开始。', id: '节点 ID', label: '标签', description: '描述', settings: '设置', gui: 'EOS 启动此后端时显示 MuJoCo 窗口', details: '硬件与高级字段（JSON）', applyDetails: '应用字段', remove: '删除节点', capabilities: '能力', source: '来源', target: '目标', invalid: 'JSON 对象无效。', duplicate: '节点 ID 已存在或无效。', port: '从输出端口拖到类型相同的输入端口以连接。', robot: '机器人', name: '名称', lifecycle: '生命周期', type: '类型', disconnected: 'IsOS 节点图 API 不可用。', stale: '服务器上的图已更改。刷新后重试。', discard: '放弃未保存的更改？', choose: '选择类型', process: '进程状态', noStatus: '当前 IsOS 版本未提供进程状态。', search: '搜索类型', undo: '撤销', redo: '重做', disconnect: '断开连线', hint: '左键拖动框选节点，中键拖动平移。右键添加节点或断开连线。Delete 删除选中节点。', savedRevision: '已保存', activeRevision: '运行中' },
+  en: { nodeSets: 'Package node sets', previewRemoves: 'Package preview would remove existing nodes. Edit the graph explicitly before adding this set.', noNodeSets: 'No installed package offers a node set.', chooseSet: 'Choose a node set', previewSet: 'Preview nodes', addSet: 'Add previewed nodes', previewCount: 'nodes will be added', previewStale: 'The graph changed. Preview the set again.', title: 'Node graph', connect: 'Connect to local IsOS', add: 'Add node', refresh: 'Refresh', validate: 'Check graph', apply: 'Apply graph', saved: 'Graph file applied and core configuration generated. Restart to use this revision.', valid: 'Graph is valid.', dirty: 'Unsaved changes', clean: 'Saved', catalog: 'Node library', inspector: 'Node configuration', diagnostics: 'Diagnostics', noSelection: 'Select a node to edit it.', selectedCount: 'nodes selected', noNodes: 'Add a registered node type to start.', id: 'Node ID', label: 'Label', description: 'Description', settings: 'Settings', gui: 'Show MuJoCo window when EOS starts this backend', details: 'Hardware and advanced fields (JSON)', applyDetails: 'Apply fields', remove: 'Remove node', capabilities: 'Capabilities', source: 'Source', target: 'Target', invalid: 'Invalid JSON object.', duplicate: 'Node ID already exists or is invalid.', port: 'Connect matching typed ports by dragging from an output to an input.', robot: 'Robot', name: 'Name', lifecycle: 'Lifecycle', type: 'Type', disconnected: 'IsOS node graph API is unavailable.', stale: 'Graph changed on the server. Refresh and retry.', discard: 'Discard unsaved changes?', choose: 'Choose a type', process: 'Process status', noStatus: 'Process status is not available from this IsOS build.', search: 'Search types', undo: 'Undo', redo: 'Redo', disconnect: 'Disconnect line', hint: 'Left drag selects nodes; middle drag pans. Right-click to add or disconnect. Delete removes selected nodes.', savedRevision: 'Saved', activeRevision: 'Active' },
+  cn: { nodeSets: '软件包节点集', previewRemoves: '软件包预览会删除现有节点。请先明确编辑节点图，再添加此节点集。', noNodeSets: '已安装的软件包没有提供节点集。', chooseSet: '选择节点集', previewSet: '预览节点', addSet: '添加已预览节点', previewCount: '个节点将被添加', previewStale: '节点图已更改，请重新预览。', title: '节点图', connect: '连接本机 IsOS', add: '添加节点', refresh: '刷新', validate: '检查节点图', apply: '应用节点图', saved: '图库文件已应用，核心配置已生成。重启后使用此修订。', valid: '节点图有效。', dirty: '未保存更改', clean: '已保存', catalog: '节点库', inspector: '节点配置', diagnostics: '诊断', noSelection: '选择节点后编辑配置。', selectedCount: '个节点已选中', noNodes: '添加已注册的节点类型以开始。', id: '节点 ID', label: '标签', description: '描述', settings: '设置', gui: 'EOS 启动此后端时显示 MuJoCo 窗口', details: '硬件与高级字段（JSON）', applyDetails: '应用字段', remove: '删除节点', capabilities: '能力', source: '来源', target: '目标', invalid: 'JSON 对象无效。', duplicate: '节点 ID 已存在或无效。', port: '从输出端口拖到类型相同的输入端口以连接。', robot: '机器人', name: '名称', lifecycle: '生命周期', type: '类型', disconnected: 'IsOS 节点图 API 不可用。', stale: '服务器上的图已更改。刷新后重试。', discard: '放弃未保存的更改？', choose: '选择类型', process: '进程状态', noStatus: '当前 IsOS 版本未提供进程状态。', search: '搜索类型', undo: '撤销', redo: '重做', disconnect: '断开连线', hint: '左键拖动框选节点，中键拖动平移。右键添加节点或断开连线。Delete 删除选中节点。', savedRevision: '已保存', activeRevision: '运行中' },
 } as const;
 
 export function FlowNode({ data, selected }: NodeProps<FlowData>): React.ReactElement {
   const { entry } = data;
   const [open, setOpen] = useState(false);
+  const [configureOpen, setConfigureOpen] = useState(false);
+  const [pendingEvent, setPendingEvent] = useState<string | null>(null);
+  const [lastEventId, setLastEventId] = useState<string | null>(null);
+  const [eventResult, setEventResult] = useState<ButtonActivationResult | null>(null);
+  const [eventError, setEventError] = useState('');
+  const [eventUncertain, setEventUncertain] = useState(false);
+  const [submittedFence, setSubmittedFence] = useState<string | null>(null);
+  const eventPollAbort = useRef<AbortController | null>(null);
   const [location, setLocation] = useState({ left: 8, top: 8 });
-  const [live, setLive] = useState<{ status: string; health: string; at: number } | null>(null);
-  const [liveClock, setLiveClock] = useState(Date.now());
   const hideTimer = useRef<number | null>(null);
   const hoverTimer = useRef<number | null>(null);
   const pointerFocus = useRef(false);
   const cardRef = useRef<HTMLElement | null>(null);
+  const configCloseRef = useRef<HTMLButtonElement | null>(null);
+  const configureButtonRef = useRef<HTMLButtonElement | null>(null);
+  const currentFence = data.currentRun && data.runId && data.activeRevision ? `${data.runId}:${data.activeRevision}` : null;
+  const currentFenceRef = useRef(currentFence);
+  currentFenceRef.current = currentFence;
+  useEffect(() => { if (configureOpen) configCloseRef.current?.focus(); }, [configureOpen]);
+  const closeConfigure = (): void => { setConfigureOpen(false); configureButtonRef.current?.focus(); };
   const place = (x: number, y: number): void => setLocation(clampInfoCard(x + 16, y + 16, 340, 340, window.innerWidth, window.innerHeight));
   const cancelHover = (): void => { if (hoverTimer.current !== null) { window.clearTimeout(hoverTimer.current); hoverTimer.current = null; } };
   const show = (x: number, y: number): void => { cancelHover(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); place(x, y); setOpen(true); };
   const showAfterPause = (x: number, y: number): void => { if (open || pointerFocus.current) return; cancelHover(); hoverTimer.current = window.setTimeout(() => show(x, y), 550); };
   const hideSoon = (): void => { cancelHover(); hideTimer.current = window.setTimeout(() => setOpen(false), 120); };
   useEffect(() => () => { cancelHover(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }, []);
-  useEffect(() => { if (!open || !data.liveAllowed || !/^eos\.hardware\.(camera|base|manipulator)@v0\.1$/.test(entry.node.node_type)) { setLive(null); return; }
-    let disposed = false; let pending = false;
-    const poll = async (): Promise<void> => {
-      const now = Date.now(); setLiveClock(now);
-      if (document.visibilityState !== 'visible') { setLive(null); return; }
-      if (pending) return;
-      pending = true;
-      try { const value = await getNodeLive(entry.path); if (!disposed) { const at = Date.now(); setLive({ ...value, at }); setLiveClock(at); } }
-      catch { if (!disposed) setLive(null); }
-      finally { pending = false; }
-    };
-    void poll(); const timer = window.setInterval(() => { void poll(); }, 2000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, [open, data.liveAllowed, data.liveRunId, entry.path, entry.node.node_type]);
+  useEffect(() => () => eventPollAbort.current?.abort(), []);
   useEffect(() => { if (!open) return; const clamp = (): void => setLocation((value) => clampInfoCard(value.left, value.top, 340, 340, window.innerWidth, window.innerHeight)); window.addEventListener('resize', clamp); return () => window.removeEventListener('resize', clamp); }, [open]);
-  const labels = data.lang === 'cn' ? { info: '节点信息', type: '类型描述', instance: '实例描述', input: '输入', output: '输出', status: 'EOS 实时状态', stale: 'EOS 状态不可用或已过期', missing: '目录无描述（兼容版本）', close: '关闭' } : { info: 'Node information', type: 'Type description', instance: 'Instance description', input: 'Inputs', output: 'Outputs', status: 'EOS live status', stale: 'EOS status unavailable or stale', missing: 'No catalog description (compatibility version)', close: 'Close' };
-  return <div className={`node-graph-card${selected ? ' node-graph-card--selected' : ''}${data.error ? ' node-graph-card--error' : ''}${data.mirrored ? ' node-graph-card--mirrored' : ''}`} style={nodeVisualStyle(entry.definition) as React.CSSProperties} tabIndex={0} aria-label={`${entry.node.label || entry.node.id}: ${entry.node.node_type}`} onMouseEnter={(event) => showAfterPause(event.clientX, event.clientY)} onMouseMove={(event) => showAfterPause(event.clientX, event.clientY)} onMouseLeave={hideSoon} onPointerDown={() => { pointerFocus.current = true; cancelHover(); setOpen(false); }} onPointerUp={() => { pointerFocus.current = false; }} onPointerCancel={() => { pointerFocus.current = false; }} onFocus={(event) => { if (pointerFocus.current) return; const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }} onBlur={(event) => { if (!cardRef.current?.contains(event.relatedTarget as globalThis.Node)) hideSoon(); }} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}>
-    <div className="node-graph-card__heading"><small>{entry.definition?.layer || 'Unknown layer'} / {entry.definition?.group || 'unknown'}</small><span>{entry.node.node_type.split('@').pop() || 'v1.0'}</span></div>
-    <strong>{entry.node.label || entry.node.id}</strong><button type="button" className="node-graph-card__info nodrag nowheel" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} aria-expanded={open} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }}>ⓘ</button>
+  const labels = data.lang === 'cn' ? { info: '节点信息', type: '类型描述', instance: '实例描述', input: '输入', output: '输出', missing: '目录无描述', close: '关闭' } : { info: 'Node information', type: 'Type description', instance: 'Instance description', input: 'Inputs', output: 'Outputs', missing: 'No catalog description', close: 'Close' };
+  const buttonNode = entry.node.node_type === 'isos.ui.button.trigger@v0.2';
+  const activate = async (): Promise<void> => {
+    if (!buttonNode || !data.currentRun || !data.runId || !data.activeRevision || pendingEvent) return;
+    const eventId = newButtonEventId();
+    const fence = `${data.runId}:${data.activeRevision}`;
+    const query = { schema_version: '0.2.0' as const, source_node: entry.path, run_id: data.runId, active_revision: data.activeRevision, event_id: eventId };
+    const controller = new AbortController();
+    eventPollAbort.current = controller;
+    setSubmittedFence(fence); setPendingEvent(eventId); setLastEventId(eventId); setEventResult(null); setEventError(''); setEventUncertain(false);
+    try {
+      let result = await sendButtonActivation({ schema_version: '0.2.0', source_node: entry.path, output: 'activation', data_type: 'button_activation@v0.2', run_id: data.runId, active_revision: data.activeRevision, payload: { event_id: eventId, kind: 'activate' } });
+      if (currentFenceRef.current === fence) {
+        setEventResult(result);
+        if (result.status === 'outcome_unknown') setEventUncertain(true);
+      } else {
+        setEventError(data.lang === 'cn' ? '运行已改变；旧结果仅用于排查。' : 'Run changed; the prior result is stale.');
+      }
+      for (let attempt = 0; attempt < 100 && ['accepted', 'running'].includes(result.status) && currentFenceRef.current === fence && !controller.signal.aborted; attempt += 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+        if (controller.signal.aborted || currentFenceRef.current !== fence) break;
+        try {
+          result = await getButtonActivationResult(query, controller.signal);
+          if (currentFenceRef.current === fence) setEventResult(result);
+          if (result.status === 'outcome_unknown') setEventUncertain(true);
+        } catch (error) {
+          if (error instanceof IsosApiError && error.status < 500) throw error;
+        }
+      }
+      if (['accepted', 'running'].includes(result.status) && !controller.signal.aborted && currentFenceRef.current === fence) {
+        setEventUncertain(true);
+        setEventError(data.lang === 'cn' ? '结果仍在处理中；请用同一事件 ID 查询。' : 'Result still pending; query with the same event ID.');
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const uncertain = !(error instanceof IsosApiError && error.status < 500 && error.code !== 'owner_outcome_unknown');
+      if (uncertain && currentFenceRef.current === fence) {
+        for (let attempt = 0; attempt < 100 && !controller.signal.aborted && currentFenceRef.current === fence; attempt += 1) {
+          try {
+            const result = await getButtonActivationResult(query, controller.signal);
+            setEventResult(result);
+            if (result.status === 'outcome_unknown') setEventUncertain(true);
+            if (!['accepted', 'running'].includes(result.status)) return;
+          } catch (resultError) {
+            if (resultError instanceof IsosApiError && resultError.status === 409) break;
+          }
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+        }
+      }
+      setEventUncertain(uncertain);
+      setEventError(error instanceof Error ? error.message : String(error));
+    } finally { eventPollAbort.current = null; setPendingEvent(null); }
+  };
+  return <div className={`node-graph-card${selected ? ' node-graph-card--selected' : ''}${data.error ? ' node-graph-card--error' : ''}${data.mirrored ? ' node-graph-card--mirrored' : ''}`} style={nodeVisualStyle(entry.definition) as React.CSSProperties} tabIndex={0} aria-label={`${entry.node.label || entry.node.id}: ${entry.node.node_type}`} onMouseEnter={(event) => showAfterPause(event.clientX, event.clientY)} onMouseMove={(event) => showAfterPause(event.clientX, event.clientY)} onMouseLeave={hideSoon} onPointerDown={() => { pointerFocus.current = true; cancelHover(); setOpen(false); }} onPointerUp={() => { pointerFocus.current = false; }} onPointerCancel={() => { pointerFocus.current = false; }} onFocus={(event) => { if (pointerFocus.current || event.target !== event.currentTarget) return; const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }} onBlur={(event) => { if (!cardRef.current?.contains(event.relatedTarget as globalThis.Node)) hideSoon(); }} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}>
+    <div className="node-graph-card__heading"><small>{entry.path.split('/')[1]} / {entry.path.split('/')[2]}</small><span>{entry.node.node_type.split('@').pop() || 'v0.2'}</span></div>
+    {data.lane && <small className="node-graph-card__lane">{data.lane === 'forward' ? (data.lang === 'cn' ? '前向 · 异步命令 →' : 'Forward · async command →') : (data.lang === 'cn' ? '← 返回 · 最新状态' : '← Return · latest state')}</small>}<strong>{entry.node.label || entry.node.id}</strong><button type="button" className="node-graph-card__info nodrag nowheel" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} aria-expanded={open} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }}>ⓘ</button>
+    <div className="node-graph-card__actions nodrag nowheel"><button ref={configureButtonRef} type="button" aria-expanded={configureOpen} aria-label={`${data.lang === 'cn' ? '配置' : 'Configure'}: ${entry.node.label || entry.node.id}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (configureOpen) { closeConfigure(); return; } const bounds = event.currentTarget.getBoundingClientRect(); place(bounds.right, bounds.top); setOpen(false); setConfigureOpen(true); }}>{data.lang === 'cn' ? '配置' : 'Configure'}</button>{buttonNode && <button type="button" disabled={!data.currentRun || !!pendingEvent} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void activate(); }}>{pendingEvent ? (data.lang === 'cn' ? '发送中…' : 'Sending…') : (data.lang === 'cn' ? '触发' : 'Activate')}</button>}</div>
+    {buttonNode && (eventResult || eventError) && <small className="node-graph-card__result" role={eventError || eventUncertain || submittedFence !== currentFence ? 'alert' : 'status'}>{lastEventId && <code>{lastEventId}</code>} · {submittedFence !== currentFence ? (data.lang === 'cn' ? '旧运行的结果；当前状态已改变' : 'Prior run result; current state changed') : eventError ? `${eventUncertain ? (data.lang === 'cn' ? '结果不确定；请勿自动重试' : 'Outcome uncertain; do not retry automatically') : ''} · ${eventError}` : eventResult ? `${eventResult.status}${eventResult.joint_positions_rad ? ` · ${eventResult.joint_positions_rad.join(', ')} rad` : ''}${eventUncertain ? (data.lang === 'cn' ? ' · 结果不确定；请勿自动重试' : ' · Outcome uncertain; do not retry automatically') : ''}` : ''}</small>}
+    {entry.node.node_type === 'isos.ui.monitor.arm@v0.2' && <ArmMonitorView lang={data.lang} reading={data.monitorReading || { snapshot: null, receivedAt: null, error: '' }} expectedRunId={data.runId} expectedRevision={data.activeRevision} compact />}
     <div className="node-graph-card__badges"><span>{entry.definition?.core || 'unknown'}</span><span>{entry.definition?.kind || 'unknown'}</span>{entry.node.package && <span>{entry.node.package.id}@{entry.node.package.version}</span>}</div>
-    <div className="node-graph-card__ports"><div>{entry.definition?.inputs.map((port) => <div className={`node-graph-card__port ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><Handle type="target" position={data.mirrored ? Position.Right : Position.Left} id={`in:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /><span>{port.name}{port.required ? ' *' : ''}</span><small>{port.data_type}</small></div>)}</div><div>{entry.definition?.outputs.map((port) => <div className={`node-graph-card__port node-graph-card__port--output ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><span>{port.name}</span><small>{port.data_type}</small><Handle type="source" position={data.mirrored ? Position.Left : Position.Right} id={`out:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /></div>)}</div></div>
-    {open && createPortal(<aside ref={cardRef} className="node-graph-info-card nodrag nowheel" role="note" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} style={location} onMouseEnter={(event) => { event.stopPropagation(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }} onMouseLeave={(event) => { event.stopPropagation(); hideSoon(); }} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}><button type="button" onClick={() => setOpen(false)} aria-label={labels.close}>×</button><h3>{entry.node.label || entry.node.id}</h3><code>{entry.node.node_type}</code><p><strong>{labels.type}:</strong> {entry.definition?.description || labels.missing}</p><p><strong>{labels.instance}:</strong> {entry.node.description || '—'}</p>{([['input', entry.definition?.inputs], ['output', entry.definition?.outputs]] as const).map(([direction, ports]) => <section key={direction}><h4>{labels[direction]}</h4><ul>{ports?.map((port) => { const schema = data.dataTypes.find((item) => item.id === port.data_type)?.schema; const units = [...new Set(Object.values(schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))]; return <li key={port.name}><code>{port.name}</code> · {port.data_type}{units.length ? ` · ${units.join(', ')}` : ''}{port.description ? ` · ${port.description}` : ''}{port.transport ? ` · ${port.transport}` : ''}{port.delivery_mode ? ` · ${port.delivery_mode}` : ''}</li>; })}</ul></section>)}{data.liveAllowed && /^eos\.hardware\.(camera|base|manipulator)@v0\.1$/.test(entry.node.node_type) && <p role="status"><strong>{labels.status}:</strong> {live && liveClock - live.at <= 5000 ? `${live.status} · ${live.health}` : labels.stale}</p>}</aside>, document.body)}
+    <div className="node-graph-card__ports">{!entry.definition && <span className="node-graph-card__no-ports" role="alert">{data.lang === 'cn' ? '目录类型不可用；无法显示端口' : 'Catalog type unavailable; ports cannot be shown'}</span>}{entry.definition && !entry.definition.inputs.length && !entry.definition.outputs.length && <span className="node-graph-card__no-ports">{entry.node.node_type.endsWith('.health@v0.2') ? (data.lang === 'cn' ? '无图端口 · 归属方健康' : 'No graph ports · owner health') : (data.lang === 'cn' ? '无图端口' : 'No graph ports')}</span>}<div>{entry.definition?.inputs.map((port) => <div className={`node-graph-card__port ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><Handle type="target" position={data.mirrored ? Position.Right : Position.Left} id={`in:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /><span>{port.name}{port.required ? ' *' : ''}</span><small>{port.data_type}</small></div>)}</div><div>{entry.definition?.outputs.map((port) => <div className={`node-graph-card__port node-graph-card__port--output ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><span>{port.name}</span><small>{port.data_type}</small><Handle type="source" position={data.mirrored ? Position.Left : Position.Right} id={`out:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /></div>)}</div></div>
+    {open && createPortal(<aside ref={cardRef} className="node-graph-info-card nodrag nowheel" role="note" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} style={location} onMouseEnter={(event) => { event.stopPropagation(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }} onMouseLeave={(event) => { event.stopPropagation(); hideSoon(); }} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}><button type="button" onClick={() => setOpen(false)} aria-label={labels.close}>×</button><h3>{entry.node.label || entry.node.id}</h3><code>{entry.node.node_type}</code><p><strong>{labels.type}:</strong> {entry.definition?.description || labels.missing}</p><p><strong>{labels.instance}:</strong> {entry.node.description || '—'}</p>{([['input', entry.definition?.inputs], ['output', entry.definition?.outputs]] as const).map(([direction, ports]) => <section key={direction}><h4>{labels[direction]}</h4><ul>{ports?.map((port) => { const payload = data.dataTypes.find((item) => item.id === port.data_type); const schema = payload?.schema; const units = [...new Set(Object.values(schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))]; return <li key={port.name}><code>{port.name}</code> · {port.data_type}{units.length ? ` · ${units.join(', ')}` : ''}{port.description ? ` · ${port.description}` : ''}{port.transport ? ` · ${port.transport}` : ''}{port.delivery_mode ? ` · ${port.delivery_mode}` : ''}{port.contract ? ` · ${port.contract.owner}/${port.contract.id}@${port.contract.version}` : ' · static declaration'}{payload ? ` · ${payload.codec} · ${payload.media_type} · ${payload.max_payload_bytes} bytes · fields: ${Object.keys(schema?.properties || {}).join(', ') || '—'}` : ''}</li>; })}</ul></section>)}</aside>, document.body)}
+    {configureOpen && createPortal(<aside className="node-graph-config-card nodrag nowheel" role="dialog" aria-label={`${data.lang === 'cn' ? '配置' : 'Configure'}: ${entry.node.label || entry.node.id}`} style={location} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { closeConfigure(); event.stopPropagation(); } }}><button ref={configCloseRef} type="button" className="node-graph-config-card__close" onClick={closeConfigure} aria-label={labels.close}>×</button><h3>{entry.node.label || entry.node.id}</h3><QuickNodeSettings data={data} /></aside>, document.body)}
   </div>;
 }
 const nodeTypes = { profile: FlowNode };
-function DataIdl({ definition, lang }: { definition: DataTypeDefinition; lang: Language }): React.ReactElement {
-  const fields = Object.entries(definition.schema.properties || {});
-  return <><h3>{definition.schema.title || definition.id}</h3><p><code>{definition.id}@{definition.version}</code> · {definition.media_type} · {definition.codec}</p><p>{definition.purpose}</p><p>{definition.schema.description}</p><p>{lang === 'cn' ? '最大负载' : 'Maximum payload'}: {definition.max_payload_bytes} bytes</p><dl>{fields.map(([name, field]) => <React.Fragment key={name}><dt>{name} <small>{field.type || 'value'}{field['x-unit'] ? ` · ${field['x-unit']}` : ''}{definition.schema.required?.includes(name) ? ' *' : ''}</small></dt><dd>{field.description || '—'}{field.minimum !== undefined || field.maximum !== undefined ? ` (${field.minimum ?? '−∞'}…${field.maximum ?? '+∞'})` : ''}</dd></React.Fragment>)}</dl></>;
+export function EdgeIdlPanel({ edge, entries, dataTypes = [], diagnostics, validated, processStatus, lang }: { edge: Edge; entries: GraphNode[]; dataTypes?: DataTypeDefinition[]; diagnostics: NodeGraphDiagnostic[]; validated: boolean; processStatus: ProcessStatus | null; lang: Language }): React.ReactElement {
+  const { sourceType, targetType, sourcePort, targetPort, sourceIdl } = edgeContracts(entries, edge, dataTypes);
+  const declaration = sourcePort?.delivery_mode === 'declaration' && targetPort?.delivery_mode === 'declaration';
+  const protocol = sourcePort?.contract;
+  const units = [...new Set(Object.values(sourceIdl?.schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))];
+  const issues = validated ? edgeInputDiagnostics({ ...edge, inputIndex: edge.data?.inputIndex, inputCount: edge.data?.inputCount }, diagnostics) : [];
+  return <section className="node-graph-edge-idl"><h2>{declaration ? (lang === 'cn' ? '静态拓扑连接' : 'Static topology link') : (lang === 'cn' ? '实时数据连接' : 'Live data connection')}</h2><p><code>{edge.source}.{sourcePort?.name || '—'}</code> → <code>{edge.target}.{targetPort?.name || '—'}</code></p>{declaration ? <p>{lang === 'cn' ? '此连接只声明节点顺序，不传输数据。' : 'This link declares node order and carries no data.'}</p> : <><p>{lang === 'cn' ? '通道' : 'Channel'}: {sourcePort?.transport || '—'} · {lang === 'cn' ? '传送方式' : 'Delivery'}: {sourcePort?.delivery_mode || '—'}</p><p>{lang === 'cn' ? '协议' : 'Protocol'}: {protocol ? `${protocol.owner}/${protocol.id}@${protocol.version}` : '—'}</p><p>{lang === 'cn' ? '数据类型' : 'Payload type'}: {sourceType || '—'}{units.length ? ` · ${units.join(', ')}` : ''}</p>{sourceIdl && <p>{sourceIdl.codec} · {sourceIdl.media_type} · {sourceIdl.max_payload_bytes} bytes · {lang === 'cn' ? '字段' : 'Fields'}: {Object.keys(sourceIdl.schema?.properties || {}).join(', ') || '—'}</p>}</>}{sourceType !== targetType && <p role="alert">{lang === 'cn' ? '端口类型不匹配。' : 'Port types do not match.'}</p>}{issues.map((issue, index) => <p role="alert" key={index}>{issue.message}</p>)}<p>{lang === 'cn' ? '部署状态' : 'Deployment state'}: {processStatus?.state || '—'}</p></section>;
 }
-function EdgeIdlPanel({ edge, entries, dataTypes, diagnostics, validated, processStatus, onOpenMonitor, lang, graph, validatedEdges, readOnly, onQosChange, onInvalidChange }: { edge: Edge; entries: GraphNode[]; dataTypes: DataTypeDefinition[]; diagnostics: NodeGraphDiagnostic[]; validated: boolean; processStatus: ProcessStatus | null; onOpenMonitor: () => void; lang: Language; graph: NodeGraph; validatedEdges: ValidatedEdge[]; readOnly: boolean; onQosChange: (change: { priority?: number; frequency_hz?: number | null }) => void; onInvalidChange: (invalid: boolean) => void }): React.ReactElement {
-  const { sourceType, targetType, sourceIdl, targetIdl } = edgeContracts(entries, edge, dataTypes);
-  const inputIssues = validated ? edgeInputDiagnostics({ ...edge, inputIndex: edge.data?.inputIndex, inputCount: edge.data?.inputCount }, diagnostics) : [];
-  const typeUnknown = !sourceType || !targetType;
-  const typeMismatch = !typeUnknown && sourceType !== targetType;
-  const missing = lang === 'cn' ? '目录中没有此数据类型的 IDL。' : 'No IDL for this data type in the catalog.';
-  const input = String(edge.targetHandle).replace(/^in:/, '');
-  const index = edge.data?.inputIndex ?? 0;
-  const selectedSource = edgeSource(graph, edge.target, input, index);
-  const authority = selectedSource ? validatedSource(validatedEdges, edge.target, input, index, selectedSource.array) : undefined;
-  const producerHint = entries.find((entry) => entry.path === edge.source)?.definition?.outputs.find((port) => port.name === String(edge.sourceHandle).replace(/^out:/, ''))?.expected_rate_hz;
-  return <section className="node-graph-edge-idl"><h2>{lang === 'cn' ? '数据接口 IDL' : 'Data interface IDL'}</h2><p><code>{edge.source}.{String(edge.sourceHandle).replace('out:', '')}</code> → <code>{edge.target}.{String(edge.targetHandle).replace('in:', '')}</code></p><p>{edge.label}</p><p>{lang === 'cn' ? '来源类型' : 'Source type'}: <code>{sourceType || '—'}</code></p><p>{lang === 'cn' ? '目标类型' : 'Target type'}: <code>{targetType || '—'}</code></p><h3>{lang === 'cn' ? '草稿连接检查' : 'Draft connection check'}</h3><p role={typeMismatch || inputIssues.length ? 'alert' : 'status'}>{typeMismatch ? (lang === 'cn' ? '端口类型不匹配。' : 'Port types do not match.') : typeUnknown ? (lang === 'cn' ? '端口类型元数据不可用；请检查节点图。' : 'Port type metadata is unavailable; check the graph.') : !validated ? (lang === 'cn' ? '尚未检查当前草稿。' : 'Current draft has not been checked.') : inputIssues.length ? (lang === 'cn' ? 'IsOS 拒绝了此输入端口。' : 'IsOS rejected this input port.') : (lang === 'cn' ? '此输入端口没有 IsOS 诊断。' : 'No IsOS diagnostic for this input port.')}</p>{inputIssues.map((issue, index) => <p className="node-graph-error" key={index}><code>{issue.code || issue.path}</code>: {issue.message}</p>)}{selectedSource && <EdgeQosInspector source={selectedSource.source} authority={authority} current={validated} readOnly={readOnly} lang={lang} producerHint={producerHint} onChange={onQosChange} onInvalidChange={onInvalidChange} />}<h3>{lang === 'cn' ? '运行状态' : 'Runtime state'}</h3><p>{lang === 'cn' ? '部署' : 'Deployment'}: {processStatus?.state || (lang === 'cn' ? '未知' : 'unknown')}. {lang === 'cn' ? '节点实时健康请查看 EOS 监视器。' : 'See the EOS monitor for live node health.'}</p><button type="button" onClick={onOpenMonitor}>{lang === 'cn' ? '打开 EOS 监视器' : 'Open EOS monitor'}</button>{sourceIdl ? <DataIdl definition={sourceIdl} lang={lang} /> : <p>{missing}</p>}{targetType && targetType !== sourceType && <><h3>{lang === 'cn' ? '目标接口' : 'Target interface'}</h3>{targetIdl ? <DataIdl definition={targetIdl} lang={lang} /> : <p>{missing}</p>}</>}</section>;
-}
-const DETAIL_FIELDS = ['frame_id', 'joint_names', 'adapter', 'health_timing', 'observation', 'movement', 'references'] as const;
+const DETAIL_FIELDS = ['frame_id', 'joint_names', 'adapter', 'health_timing', 'observation', 'movement', 'references', 'service_bindings'] as const;
 
 export function settingValue(value: unknown, dataType: string): string {
   if (dataType === 'endpoint') return JSON.stringify(value ?? null, null, 2);
@@ -123,54 +168,63 @@ function SettingEditor({ name, dataType, required, value, onChange, description,
   const commit = (): void => { try { if (!draft.trim() && !required) { onChange(undefined); setError(''); return; } const parsed = parseSetting(draft, dataType); if (typeof parsed === 'number' && (min !== undefined && parsed < min || max !== undefined && parsed > max)) throw new Error(`Expected ${min ?? '−∞'}…${max ?? '+∞'}.`); onChange(parsed); setError(''); } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)); } };
   const guidance = `${dataType}${unit ? ` · ${unit}` : ''}${description ? ` · ${description}` : ''}`;
   const effectiveChoices = dataType === 'boolean' ? ['true', 'false'] : choices;
-  return <label className="node-graph-setting"><span>{name}{required ? ' *' : ''}</span>{dataType === 'endpoint' ? <><pre aria-describedby={helpId}>{draft}</pre><small>{lang === 'cn' ? '端点由归属方管理；请在归属方配置中修改。' : 'Owner-managed endpoint; edit the owning configuration.'}</small></> : effectiveChoices?.length ? <select aria-describedby={helpId} value={draft} onChange={(event) => { setDraft(event.target.value); onChange(dataType === 'boolean' ? event.target.value === 'true' : event.target.value); }}><option value="">—</option>{!effectiveChoices.includes(draft) && draft && <option value={draft}>{draft}</option>}{effectiveChoices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}</select> : ['string_array', 'string_table', 'array', 'object'].includes(dataType) ? <textarea aria-describedby={helpId} rows={dataType === 'string_table' || dataType === 'object' ? 4 : 3} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} /> : <input aria-describedby={helpId} type={dataType.includes('integer') || dataType === 'positive_number' || dataType === 'number' ? 'number' : 'text'} step={dataType === 'positive_number' || dataType === 'number' ? 'any' : undefined} min={min} max={max} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />}<small id={helpId} className="node-graph-setting__metadata">{guidance}{min !== undefined || max !== undefined ? ` · ${min ?? '−∞'}…${max ?? '+∞'}` : ''}</small>{error && <small role="alert" className="node-graph-error">{error}</small>}</label>;
+  return <label className="node-graph-setting"><span>{name}{required ? ' *' : ''}</span>{dataType === 'endpoint' ? <><pre aria-describedby={helpId}>{draft}</pre><small>{lang === 'cn' ? '端点由归属方管理；请在归属方配置中修改。' : 'Owner-managed endpoint; edit the owning configuration.'}</small></> : effectiveChoices?.length ? <select aria-describedby={helpId} value={draft} onChange={(event) => { setDraft(event.target.value); onChange(dataType === 'boolean' ? event.target.value === 'true' : event.target.value); }}><option value="">—</option>{!effectiveChoices.includes(draft) && draft && <option value={draft}>{draft}</option>}{effectiveChoices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}</select> : ['string_array', 'string_table', 'array', 'object'].includes(dataType) ? <textarea aria-describedby={helpId} rows={dataType === 'string_table' || dataType === 'object' ? 4 : 3} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} /> : <input aria-describedby={helpId} type={dataType?.includes('integer') || dataType === 'positive_number' || dataType === 'number' ? 'number' : 'text'} step={dataType === 'positive_number' || dataType === 'number' ? 'any' : undefined} min={min} max={max} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />}<small id={helpId} className="node-graph-setting__metadata">{guidance}{min !== undefined || max !== undefined ? ` · ${min ?? '−∞'}…${max ?? '+∞'}` : ''}</small>{error && <small role="alert" className="node-graph-error">{error}</small>}</label>;
 }
 
-function HardwareFields({ node, path, definition, options, lang, onChange }: { node: NodeInstance; path: string; definition: NodeTypeDefinition; options: NodeOptions | null; lang: Language; onChange: (change: Partial<NodeInstance>) => void }): React.ReactElement {
+function QuickNodeSettings({ data }: { data: FlowData }): React.ReactElement {
+  const { entry, lang } = data;
+  const fields = entry.definition?.settings || [];
+  const basic = fields.filter((field) => field.required && field.default === undefined);
+  const advanced = fields.filter((field) => !basic.includes(field));
+  const change = (name: string, value: unknown): void => {
+    const settings = { ...entry.node.settings };
+    const field = fields.find((candidate) => candidate.name === name);
+    if (value === undefined || value === '' && !field?.required || field?.default !== undefined && JSON.stringify(value) === JSON.stringify(field.default)) delete settings[name]; else settings[name] = value;
+    data.onSettingsChange?.(entry.path, settings);
+  };
+  const renderField = (field: NodeTypeDefinition['settings'][number]): React.ReactElement => {
+    const group = settingOptionGroup(data.options || null, entry.path, field.name);
+    const effective = entry.node.settings?.[field.name] ?? field.default;
+    const overridden = Object.prototype.hasOwnProperty.call(entry.node.settings || {}, field.name);
+    return <div key={field.name} className="node-graph-config-card__field">
+      {group ? <CatalogSelector group={group} label={field.name} value={String(effective ?? '')} lang={lang} pin={entry.node.package} help={field.description} onChange={(value) => change(field.name, value)} /> : field.selector ? <p role="status">{lang === 'cn' ? '选项尚未就绪；请刷新拥有方选项。' : 'Options are unavailable; refresh owner options.'}</p> : <SettingEditor name={field.name} dataType={field.data_type} required={field.required} description={field.description} unit={field.unit} min={field.min} max={field.max} choices={field.choices} value={effective} lang={lang} onChange={(value) => change(field.name, value)} />}
+      {advanced.includes(field) && <div className="node-graph-config-card__default"><small>{field.default === undefined ? (overridden ? (lang === 'cn' ? '已设置可选值' : 'Optional override') : (lang === 'cn' ? '未设置可选值' : 'Optional, unset')) : `${overridden ? (lang === 'cn' ? '已覆盖默认值' : 'Override') : (lang === 'cn' ? '使用默认值' : 'Default')}: ${settingValue(field.default, field.data_type)}`}</small>{overridden && <button type="button" onClick={() => change(field.name, undefined)}>{lang === 'cn' ? '恢复默认' : 'Reset to default'}</button>}</div>}
+    </div>;
+  };
+  return <fieldset disabled={data.readOnly} className="node-graph-readonly-fieldset"><h4>{lang === 'cn' ? '基本设置' : 'Basic'}</h4>{basic.map(renderField)}{entry.definition?.lifecycle === 'adapter' && <HardwareFields mode="basic" node={entry.node} path={entry.path} definition={entry.definition} options={data.options || null} lang={lang} onChange={(change) => data.onNodeChange?.(entry.path, change)} />}{!basic.length && entry.definition?.lifecycle !== 'adapter' && <p>{lang === 'cn' ? '无需填写；节点已就绪。' : 'Nothing required; this node is ready.'}</p>}<details><summary>{lang === 'cn' ? '高级设置' : 'Advanced'}</summary>{advanced.length ? advanced.map(renderField) : <p>{lang === 'cn' ? '没有其他目录设置。' : 'No additional catalog settings.'}</p>}{entry.definition?.lifecycle === 'adapter' && <HardwareFields mode="advanced" node={entry.node} path={entry.path} definition={entry.definition} options={data.options || null} lang={lang} onChange={(change) => data.onNodeChange?.(entry.path, change)} />}</details></fieldset>;
+}
+
+function HardwareFields({ node, path, definition, options, lang, onChange, mode = 'all' }: { node: NodeInstance; path: string; definition: NodeTypeDefinition; options: NodeOptions | null; lang: Language; onChange: (change: Partial<NodeInstance>) => void; mode?: 'all' | 'basic' | 'advanced' }): React.ReactElement {
   const adapter = node.adapter || { type: '', settings: {} };
   const adapterSettings = adapter.settings || {};
   const setAdapter = (key: string, value: unknown): void => onChange({ adapter: { ...adapter, settings: { ...adapterSettings, [key]: value } } });
+  const adapterTypeGroup = settingOptionGroup(options, path, 'adapter.type');
   const deviceGroup = settingOptionGroup(options, path, 'adapter.settings.device_id');
   const simulatorGroup = settingOptionGroup(options, path, 'adapter.settings.simulator_node');
+  const ownerDeviceOptions = adapter.type === 'mujoco-v2' || !!deviceGroup;
+  const ownerSimulatorOptions = adapter.type === 'mujoco-v2' || !!simulatorGroup;
   const timing = node.health_timing;
   const observation = node.observation;
   const movement = node.movement;
   const limits = definition.kind === 'base' ? ['max_linear_m_s', 'max_angular_rad_s', 'max_velocity_lease_ms'] : definition.kind === 'manipulator' ? ['max_joint_position_rad', 'max_joint_speed_rad_s'] : [];
   return <div className="node-graph-hardware-fields">
+    {mode !== 'advanced' && <>
     <h3>Adapter</h3>
-    <label>{lang === 'cn' ? '适配器族' : 'Adapter family'}<select value={adapter.type} onChange={(event) => onChange({ adapter: { ...adapter, type: event.target.value } })}><option value={adapter.type}>{adapter.type}</option>{options?.adapter_families.filter((option) => option.device_kinds.includes(definition.kind) && option.id !== adapter.type).map((option) => <option key={option.id} value={option.id} disabled={!option.available}>{option.id}{option.available ? '' : ` — ${option.reason || 'unavailable'}`}</option>)}</select></label>
-    {options?.adapter_families.find((option) => option.id === adapter.type)?.reason && <small role="status">{options.adapter_families.find((option) => option.id === adapter.type)?.reason}</small>}
+    {adapterTypeGroup ? <CatalogSelector group={adapterTypeGroup} label={lang === 'cn' ? '适配器族' : 'Adapter family'} value={adapter.type} lang={lang} onChange={(value) => onChange({ adapter: { ...adapter, type: value } })} /> : <p role="status" className="node-graph-error">{lang === 'cn' ? '适配器选项尚未就绪。请检查 EOS 服务。' : 'Adapter options are unavailable. Check the EOS service.'}</p>}
     {(['backend', 'socket_path'] as const).map((key) => <SettingEditor key={`${node.id}:${key}`} name={key} dataType="string" required value={adapterSettings[key]} onChange={(value) => setAdapter(key, value)} />)}
-    {deviceGroup ? <CatalogSelector group={deviceGroup} pin={node.adapter?.package} label="device_id" value={String(adapterSettings.device_id || '')} lang={lang} onChange={(value) => setAdapter('device_id', value)} /> : <SettingEditor name="device_id" dataType="string" required value={adapterSettings.device_id} onChange={(value) => setAdapter('device_id', value)} />}
-    {simulatorGroup ? <CatalogSelector group={simulatorGroup} pin={node.adapter?.package} label="simulator_node" value={String(adapterSettings.simulator_node || '')} lang={lang} onChange={(value) => setAdapter('simulator_node', value)} /> : adapterSettings.simulator_node !== undefined ? <SettingEditor name="simulator_node" dataType="string" required value={adapterSettings.simulator_node} onChange={(value) => setAdapter('simulator_node', value)} /> : null}
+    {deviceGroup ? <CatalogSelector group={deviceGroup} pin={node.adapter?.package} label="device_id" value={String(adapterSettings.device_id || '')} lang={lang} onChange={(value) => setAdapter('device_id', value)} /> : ownerDeviceOptions ? <p role="status" className="node-graph-error">{lang === 'cn' ? '设备选项尚未就绪。请检查 EOS 服务。' : 'Device options are unavailable. Check the EOS service.'}</p> : <SettingEditor name="device_id" dataType="string" required value={adapterSettings.device_id} onChange={(value) => setAdapter('device_id', value)} />}
+    {simulatorGroup ? <CatalogSelector group={simulatorGroup} pin={node.adapter?.package} label="simulator_node" value={String(adapterSettings.simulator_node || '')} lang={lang} onChange={(value) => setAdapter('simulator_node', value)} /> : ownerSimulatorOptions ? <p role="status" className="node-graph-error">{lang === 'cn' ? '模拟器节点选项尚未就绪。请检查 EOS 服务。' : 'Simulator node options are unavailable. Check the EOS service.'}</p> : adapterSettings.simulator_node !== undefined ? <SettingEditor name="simulator_node" dataType="string" required value={adapterSettings.simulator_node} onChange={(value) => setAdapter('simulator_node', value)} /> : null}
     <SettingEditor name="frame_id" dataType="string" required value={node.frame_id} onChange={(value) => onChange({ frame_id: String(value) })} />
     {definition.kind === 'manipulator' && <SettingEditor name="joint_names" dataType="string_array" required value={node.joint_names} onChange={(value) => onChange({ joint_names: value as string[] })} />}
+    </>}
+    {mode !== 'basic' && <>
     <h3>Health timing</h3>
     {(['poll_interval_ms', 'stale_after_ms'] as const).map((key) => <SettingEditor key={`${node.id}:${key}`} name={key} dataType="positive_integer" required unit="ms" value={timing?.[key]} onChange={(value) => onChange({ health_timing: { ...timing, [key]: value as number } as NodeInstance['health_timing'] })} />)}
     <h3>Observation</h3>
     <label>max_rate_hz<small>number · Hz</small><input type="number" min={0.1} step="0.1" value={observation?.max_rate_hz ?? ''} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value > 0) onChange({ observation: { ...observation, max_rate_hz: value } as NodeInstance['observation'] }); }} /></label>
     <SettingEditor name="max_payload_bytes" dataType="positive_integer" required unit="bytes" value={observation?.max_payload_bytes} onChange={(value) => onChange({ observation: { ...observation, max_payload_bytes: value as number } as NodeInstance['observation'] })} />
     {limits.length > 0 && <><h3>Movement limits</h3><SettingEditor name="modes" dataType="string_array" required value={movement?.modes} onChange={(value) => onChange({ movement: { ...movement, modes: value as string[] } as NodeInstance['movement'] })} />{limits.map((key) => <label key={key}>{key}<small>number · {key.endsWith('_ms') ? 'ms' : key.includes('rad') ? 'rad or rad/s' : 'm/s'}</small><input type="number" min={0} step="any" value={movement?.limits[key] ?? ''} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 0) onChange({ movement: { ...movement, limits: { ...movement?.limits, [key]: value } } as NodeInstance['movement'] }); }} /></label>)}</>}
-  </div>;
-}
-
-function ControlNodeSettings({ entry, entries, lang, onChange }: { entry: GraphNode; entries: GraphNode[]; lang: Language; onChange: (change: Partial<NodeInstance>) => void }): React.ReactElement {
-  const isSkill = entry.node.node_type === 'eos.control.skill@v1.0';
-  const isPrimitive = entry.node.node_type === 'eos.control.primitive@v1.0';
-  const dispatcher = entries.some(({ path, node }) => path === DISPATCHER_PATH && node.node_type === 'eos.dispatcher.control@v1.0');
-  const hardware = entries.filter(({ node }) => node.node_type === 'eos.hardware.base@v1.0' || node.node_type === 'eos.hardware.manipulator@v1.0');
-  const primitives = entries.filter(({ node }) => node.node_type === 'eos.control.primitive@v1.0' && node.settings?.target);
-  const targetPath = typeof entry.node.settings?.target === 'string' ? entry.node.settings.target : '';
-  const target = hardware.find(({ path }) => path === targetPath);
-  const steps = Array.isArray(entry.node.settings?.steps) ? entry.node.settings.steps.filter((value): value is string => typeof value === 'string') : [];
-  const [nextStep, setNextStep] = useState('');
-  const labels = lang === 'cn' ? { target: '目标硬件', mode: '运动模式', steps: '原语步骤（按顺序）', add: '添加步骤', up: '上移', down: '下移', remove: '移除', dispatcher: '需要 ID 为 command 的 EOS 调度器节点。', empty: '先添加并配置原语节点。' }
-    : { target: 'Target hardware', mode: 'Movement mode', steps: 'Primitive steps (in order)', add: 'Add step', up: 'Move up', down: 'Move down', remove: 'Remove', dispatcher: 'Add the EOS dispatcher node with ID command.', empty: 'Add and configure a primitive node first.' };
-  const setSteps = (updated: string[]): void => onChange(withSkillSteps(entry.node, updated));
-  return <div className="node-graph-control-settings">
-    {!dispatcher && <p role="alert" className="node-graph-error">{labels.dispatcher}</p>}
-    {isSkill ? <><h3>{labels.steps}</h3>{primitives.length || steps.length ? <><ol className="node-graph-control-steps">{steps.map((path, index) => <li key={`${index}:${path}`}><span>{primitives.find((item) => item.path === path)?.node.label || path}</span><div><button type="button" aria-label={`${labels.up} ${index + 1}`} disabled={index === 0} onClick={() => { const next = [...steps]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; setSteps(next); }}>↑</button><button type="button" aria-label={`${labels.down} ${index + 1}`} disabled={index === steps.length - 1} onClick={() => { const next = [...steps]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; setSteps(next); }}>↓</button><button type="button" aria-label={`${labels.remove} ${index + 1}`} onClick={() => setSteps(steps.filter((_, i) => i !== index))}>×</button></div></li>)}</ol><label>{labels.add}<select value={nextStep} onChange={(event) => setNextStep(event.target.value)}><option value="">—</option>{primitives.map((item) => <option key={item.path} value={item.path}>{item.node.label || item.node.id}</option>)}</select></label><button type="button" disabled={!nextStep || steps.length >= 16} onClick={() => { setSteps([...steps, nextStep]); setNextStep(''); }}>{labels.add}</button></> : <p>{labels.empty}</p>}</> : <><label>{labels.target}<select value={targetPath} onChange={(event) => { const selected = hardware.find((item) => item.path === event.target.value); if (selected) onChange(withControlTarget(entry.node, selected.path, selected.node)); }}><option value="">—</option>{hardware.map((item) => <option key={item.path} value={item.path}>{item.node.label || item.node.id} · {item.node.node_type.split('.')[2]}</option>)}</select></label>
-      {isPrimitive && target && <label>{labels.mode}<select value={String(entry.node.settings?.movement_type || '')} onChange={(event) => onChange({ settings: { ...entry.node.settings, movement_type: event.target.value } })}><option value="">—</option>{target.node.movement?.modes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>}</>}
+    </>}
   </div>;
 }
 
@@ -183,13 +237,13 @@ function NodeInspector({ entry, entries, lang, options, runId, activeRevision, c
   useEffect(() => { setId(entry.node.id); setRaw(JSON.stringify(Object.fromEntries(Object.entries(entry.node).filter(([key]) => (DETAIL_FIELDS as readonly string[]).includes(key))), null, 2)); setError(''); }, [entry.path, entry.node]);
   const commitDetails = (): void => { try { const parsed: unknown = JSON.parse(raw); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object' || Object.keys(parsed).some((key) => !(DETAIL_FIELDS as readonly string[]).includes(key))) throw new Error(copy.invalid); const details = parsed as Partial<NodeInstance>; for (const field of DETAIL_FIELDS) if (!(field in details) && field in entry.node) Object.assign(details, { [field]: undefined }); onChange(details); setError(''); } catch { setError(copy.invalid); } };
   return <section className="node-graph-inspector">
-    <h2>{copy.inspector}</h2><p><strong>{lang === 'cn' ? '类型描述' : 'Type description'}:</strong> {entry.definition?.description || (lang === 'cn' ? '当前目录没有类型描述（兼容版本）。' : 'No type description in this catalog (compatibility version).')}</p><p><strong>{copy.type}:</strong> {entry.node.node_type}</p><p><strong>{copy.lifecycle}:</strong> {entry.definition?.lifecycle || '—'}</p>
+    <h2>{copy.inspector}</h2><p><strong>{lang === 'cn' ? '类型描述' : 'Type description'}:</strong> {entry.definition?.description || (lang === 'cn' ? '当前目录没有类型描述。' : 'No type description in this catalog.')}</p><p><strong>{copy.type}:</strong> {entry.node.node_type}</p><p><strong>{copy.lifecycle}:</strong> {entry.definition?.lifecycle || '—'}</p>
     <label>{copy.id}<input value={id} onChange={(event) => setId(event.target.value.toLowerCase())} onBlur={() => { if (id !== entry.node.id) onRename(id.trim()); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
     <label>{copy.label}<input value={entry.node.label} onChange={(event) => onChange({ label: event.target.value })} /></label>
     <label>{lang === 'cn' ? '实例描述' : 'Instance description'}<textarea rows={2} value={entry.node.description} onChange={(event) => onChange({ description: event.target.value })} /></label>
     <h3>{copy.capabilities}</h3><div className="node-graph-capabilities">{entry.definition?.capabilities.map((capability) => <label key={capability}><input type="checkbox" checked={entry.node.capabilities?.includes(capability) || false} onChange={(event) => onChange({ capabilities: event.target.checked ? [...(entry.node.capabilities || []), capability] : (entry.node.capabilities || []).filter((item) => item !== capability) })} />{capability}</label>)}</div>
     {(/^(?:eos\.dispatcher|isos\.eos_dispatcher)\.primitive_/.test(entry.node.node_type)) && <section className="node-graph-binding"><h3>{lang === 'cn' ? '原语绑定' : 'Primitive binding'}</h3><p>{options?.primitive_bindings.find((option) => option.node_type === entry.node.node_type)?.reason || ''}</p><label>{lang === 'cn' ? '目标硬件' : 'Target hardware'}<select value={bindingTarget} onChange={(event) => onBind(event.target.value)}><option value="">—</option>{bindingTarget && !options?.targets.some((target) => sameNodePath(target.path, bindingTarget)) && <option value={bindingTarget}>{bindingTarget}</option>}{options?.targets.filter((target) => target.device_kind === (entry.node.node_type.includes('_base') ? 'base' : 'manipulator')).map((target) => <option key={target.path} value={target.path} disabled={!target.available}>{target.path}{target.available ? '' : ` — ${target.reason || 'unavailable'}`}</option>)}</select></label>{!options && <p role="status">{lang === 'cn' ? '节点选项服务不可用' : 'Node options service unavailable'}</p>}</section>}
-    {(/^(?:eos\.control|isos\.eos_control)\./.test(entry.node.node_type)) && <ControlNodeSettings entry={entry} entries={entries} lang={lang} onChange={onChange} />}
+
     {!!entry.definition?.settings.length && <><h3>{copy.settings}</h3>{entry.definition.settings.map((field) => {
       const group = settingOptionGroup(options, entry.path, field.name);
       const update = (value: unknown): void => {
@@ -197,13 +251,11 @@ function NodeInspector({ entry, entries, lang, options, runId, activeRevision, c
         if (value === undefined) delete settings[field.name]; else settings[field.name] = value;
         onChange({ settings });
       };
-      if (field.selector?.provider === 'ui') return field.selector.resource === 'keys'
-        ? <UiKeySelector key={`${entry.path}:${field.name}`} label={field.name} value={String(entry.node.settings?.[field.name] ?? '')} lang={lang} description={field.description} modifiers={Array.isArray(entry.node.settings?.modifiers) ? entry.node.settings.modifiers.filter((value): value is string => typeof value === 'string') : []} onCapture={(code, modifiers) => { const settings = { ...entry.node.settings, [field.name]: code }; if (entry.definition?.settings.some((candidate) => candidate.name === 'modifiers' && ['array', 'string_array'].includes(candidate.data_type))) settings.modifiers = modifiers; onChange({ settings }); }} />
-        : <p key={`${entry.path}:${field.name}`} role="alert" className="node-graph-error">{lang === 'cn' ? '不支持此浏览器选择器。' : 'Unsupported browser selector.'}</p>;
-      if (group) return <CatalogSelector key={`${entry.path}:${field.name}`} group={group} pin={entry.node.package} help={field.description} label={field.name} value={String(entry.node.settings?.[field.name] ?? '')} lang={lang} onChange={update} />;
-      return <div key={`${entry.path}:${field.name}`}>{field.selector && <p role="status">{lang === 'cn' ? '目录选项暂不可用；输入已注册的稳定 ID。' : 'Catalog options unavailable; enter a registered stable ID.'}</p>}<SettingEditor lang={lang} name={field.name} dataType={field.data_type} required={field.required} description={field.description} unit={field.unit} min={field.min} max={field.max} choices={field.choices} value={entry.node.settings?.[field.name] ?? field.default} onChange={update} /></div>;
+      if (field.selector?.provider === 'ui') return <p key={`${entry.path}:${field.name}`} role="alert" className="node-graph-error">{lang === 'cn' ? '当前图不支持浏览器输入选择器。' : 'Browser input selectors are unsupported by the current graph.'}</p>;
+      if (group) return <CatalogSelector key={`${entry.path}:${field.name}`} group={group} pin={entry.node.package} help={field.description} label={field.name} value={String(entry.node.settings?.[field.name] ?? field.default ?? '')} lang={lang} onChange={update} />;
+      if (field.selector) return <div key={`${entry.path}:${field.name}`} className="node-graph-catalog-selector"><strong>{field.name}</strong>{field.description && <small>{field.description}</small>}<p role="status" className="node-graph-error">{lang === 'cn' ? '此节点的可用选项尚未就绪。请检查拥有方服务，然后刷新选项。' : 'Options for this node are unavailable. Check the owner service, then refresh options.'}</p></div>;
+      return <SettingEditor key={`${entry.path}:${field.name}`} lang={lang} name={field.name} dataType={field.data_type} required={field.required} description={field.description} unit={field.unit} min={field.min} max={field.max} choices={field.choices} value={entry.node.settings?.[field.name] ?? field.default} onChange={update} />;
     })}</>}
-    {((entry.definition?.core === 'isosui' && entry.definition.layer === 'input') || (entry.definition?.core === 'isos' && entry.definition.layer === 'ui')) && entry.definition.group === 'keyboard' && <KeyboardNodeControl node={entry.node} path={entry.path} runId={runId} activeRevision={activeRevision} current={currentRun} lang={lang} />}
     {entry.definition?.lifecycle === 'adapter' && <HardwareFields node={entry.node} path={entry.path} definition={entry.definition} options={options} lang={lang} onChange={onChange} />}
     {entry.definition?.lifecycle === 'adapter' && <><h3>{copy.details}</h3><textarea rows={12} value={raw} onChange={(event) => setRaw(event.target.value)} /><button type="button" onClick={commitDetails}>{copy.applyDetails}</button></>}
     {error && <p role="alert" className="node-graph-error">{error}</p>}<button type="button" className="node-graph-remove" onClick={onRemove}>{copy.remove}</button>
@@ -254,6 +306,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const catalogReloadRequest = useRef(0);
   const statusRequest = useRef(0);
   const readinessRequest = useRef(0);
+  const lastDeploymentFailure = useRef('');
   const graphForCatalog = useRef(graph);
   const revisionForCatalog = useRef(revision);
   graphForCatalog.current = graph;
@@ -263,6 +316,24 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const [stopping, setStopping] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [readiness, setReadiness] = useState<CoreReadiness | null>(null);
+  useEffect(() => {
+    const failedOwners = processStatus?.state === 'degraded' ? processStatus.processes
+      .filter((process) => !['running', 'ready'].includes(process.state || ''))
+      .map((process) => `${process.id}: ${process.error || process.last_error || process.health?.error || process.state || 'unavailable'}`)
+      .join('; ') : '';
+    const failure = [processStatus?.last_error, failedOwners].filter(Boolean).join(' — ') || (processStatus?.state === 'degraded' ? 'Deployment is degraded; check owner process status.' : '');
+    const key = failure ? `${processStatus?.run_id || 'unknown'}:${failure}` : '';
+    if (key && key !== lastDeploymentFailure.current) browserLog('error', `Deployment ${processStatus?.run_id || 'unknown'}: ${failure}`);
+    lastDeploymentFailure.current = key;
+  }, [processStatus?.run_id, processStatus?.state, processStatus?.last_error]);
+  const [graphLoadError, setGraphLoadError] = useState('');
+  const [newEmptyDraft, setNewEmptyDraft] = useState(false);
+  const [poolEntries, setPoolEntries] = useState<GraphPoolEntry[]>([]);
+  const [poolName, setPoolName] = useState('');
+  const [poolSelected, setPoolSelected] = useState('');
+  const [poolRevision, setPoolRevision] = useState('');
+  const [fallbackNotice, setFallbackNotice] = useState('');
+  const poolFileExists = poolEntries.some((entry) => entry.name === poolName);
   const [viewLost, setViewLost] = useState(false);
   const initialFitDone = useRef(false);
   const layoutKeyRef = useRef('');
@@ -271,7 +342,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const [positions, setPositions] = useState<NodePositions>({});
   const [mirrors, setMirrors] = useState<NodeMirrors>({});
   const [viewOpen, setViewOpen] = useState(false);
-  const [coreWindows, setCoreWindows] = useState<Record<'egia', CoreWindowState>>(() => ({ egia: readCoreWindow('isosui-graph-egia-window', 190) }));
+  const [coreWindows, setCoreWindows] = useState<Record<'ei', CoreWindowState>>(() => ({ ei: readCoreWindow('isosui-graph-ei-window', 190) }));
   const dirty = Boolean(graph && JSON.stringify(graph) !== saved);
   const readOnly = readOnlyReason !== null;
   const draftKey = graph ? JSON.stringify(graph) : '';
@@ -289,6 +360,8 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   }, [graph, readOnly, packageGeneration]);
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   const entries = useMemo(() => graph ? graphNodes(graph, types) : [], [graph, types]);
+  const monitorRateHz = useMemo(() => { try { return monitorRefreshHz(saved ? JSON.parse(saved) as NodeGraph : null); } catch { return DEFAULT_MONITOR_REFRESH_HZ; } }, [saved]);
+  const monitorReading = useArmMonitor(visible && entries.some((entry) => entry.node.node_type === 'isos.ui.monitor.arm@v0.2'), monitorRateHz);
   const selectorBlocked = catalogSelectionBlocks(graph?.version, entries, nodeOptions);
   useEffect(() => { if (graph) browserLog('debug', `Graph revision ${revision.slice(0, 8) || 'unsaved'}: ${entries.length} nodes; visible=${visible}`); }, [graph, revision, visible]);
   useEffect(() => {
@@ -345,7 +418,8 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     }, 100);
     return () => window.clearTimeout(timer);
   }, [graph, visible, flowInstance, entries.length]);
-  const quickTypes = useMemo(() => types.filter((type) => `${type.id} ${type.core} ${type.layer} ${type.group} ${type.kind}`.toLowerCase().includes(quickSearch.toLowerCase())), [types, quickSearch]);
+  const availableTypes = useMemo(() => addableTypes(types), [types]);
+  const quickTypes = useMemo(() => availableTypes.filter((type) => `${type.id} ${type.core} ${type.layer} ${type.group} ${type.kind}`.toLowerCase().includes(quickSearch.toLowerCase())), [availableTypes, quickSearch]);
   const selectedSet = nodeSets.find((set) => `${set.package.id}@${set.package.version}/${set.id}` === setKey);
   useEffect(() => { if (quickAdd) quickSearchRef.current?.focus(); }, [quickAdd]);
   useEffect(() => { if (diagnostics.length) setDiagnosticsOpen(true); }, [diagnostics]);
@@ -356,6 +430,96 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     overviewTimer.current = setTimeout(() => setShowOverview(false), 1800);
   };
   const chosen = selected.length === 1 ? entries.find((entry) => entry.path === selected[0]) : undefined;
+  const refreshPool = async (): Promise<void> => {
+    try { setPoolEntries((await getGraphPool()).graphs); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
+  };
+  const loadPoolGraph = async (name = poolSelected): Promise<void> => {
+    if (!name) return;
+    if (dirty && !window.confirm(copy.discard)) return;
+    setBusy(true);
+    try {
+      const [entry, snapshot] = await Promise.all([getGraphPoolEntry(name), getGraphCatalogSnapshot()]);
+      if (!nodeGraphHasEditableShape(entry.graph) || entry.graph.version !== '0.2.0') throw new Error('Selected pool graph is not an editable 0.2.0 graph.');
+      const catalog = combineNodeTypeCatalogs(snapshot.selected, snapshot.global);
+      const sameAsSaved = JSON.stringify(entry.graph) === JSON.stringify(snapshot.graph.graph);
+      const poolReadOnlyReason = sameAsSaved
+        ? graphCatalogReadOnlyReason(snapshot)
+        : snapshot.reason || nodeGraphReadOnlyReason({ ...snapshot.graph, graph: entry.graph, read_only: false, diagnostics: [] }, catalog.types);
+      editGeneration.current += 1;
+      catalogReloadRequest.current += 1;
+      setGraph(entry.graph); setRawGraph(null); setRevision(entry.revision); setSaved(JSON.stringify(entry.graph));
+      setNewEmptyDraft(false); setReadOnlyReason(poolReadOnlyReason); setGraphLoadError('');
+      setTypes(catalog.types); setDataTypes(catalog.data_types || []);
+      setDiagnostics([]); setValidatedEdges([]); setValidationStamp(null);
+      setSelected([]); setUndoStack([]); setRedoStack([]);
+      setPositions(parseNodePositions(localStorage.getItem(graphLayoutKey(entry.graph))));
+      setMirrors(parseNodeMirrors(localStorage.getItem(graphMirrorKey(entry.graph))));
+      layoutKeyRef.current = graphLayoutKey(entry.graph);
+      setOptionSnapshot(null);
+      setPoolRevision(entry.revision);
+      setPoolName(entry.name);
+      setPoolSelected(entry.name);
+      setFallbackNotice('');
+      localStorage.setItem('isosui-graph-pool-last-name', entry.name);
+      setMessage(lang === 'cn' ? `已打开图库文件“${entry.name}”。` : `Opened graph file “${entry.name}”.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
+    finally { setBusy(false); }
+  };
+  const savePoolGraph = async (): Promise<void> => {
+    if (!graph || busy) return;
+    setBusy(true);
+    try {
+      const latest = (await getGraphPool()).graphs;
+      setPoolEntries(latest);
+      const bound = latest.find((entry) => entry.name === poolName);
+      const name = bound ? poolName : window.prompt(lang === 'cn' ? '原文件不存在。请输入新文件名：' : 'The original file is missing. Name a new graph file:', poolName || '')?.trim();
+      if (!name) return;
+      if (!bound && latest.some((entry) => entry.name === name)) { setMessage(lang === 'cn' ? '该文件名已存在。请选择其他名称。' : 'That file name already exists. Choose another name.', true); return; }
+      let savedEntry;
+      try { savedEntry = await putGraphPoolEntry(name, bound ? poolRevision : '', graph); }
+      catch (error) {
+        const afterFailure = (await getGraphPool()).graphs;
+        setPoolEntries(afterFailure);
+        if (!bound || afterFailure.some((entry) => entry.name === name)) throw error;
+        const newName = window.prompt(lang === 'cn' ? '原文件已删除。请输入新文件名：' : 'The file was deleted. Name a new graph file:', name)?.trim();
+        if (!newName || afterFailure.some((entry) => entry.name === newName)) return;
+        savedEntry = await putGraphPoolEntry(newName, '', graph);
+      }
+      setPoolRevision(savedEntry.revision);
+      setPoolName(savedEntry.name); setPoolSelected(savedEntry.name);
+      setRevision(savedEntry.revision); setSaved(JSON.stringify(savedEntry.graph));
+      localStorage.setItem('isosui-graph-pool-last-name', savedEntry.name);
+      setPoolEntries((await getGraphPool()).graphs);
+      setMessage(lang === 'cn' ? `已保存图库文件“${savedEntry.name}”。` : `Saved graph file “${savedEntry.name}”.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
+    finally { setBusy(false); }
+  };
+  const newDemoGraph = async (): Promise<void> => {
+    if (busy) return;
+    if (dirty && !window.confirm(copy.discard)) return;
+    setBusy(true);
+    try {
+      const document = await getNewNodeGraph();
+      if (!nodeGraphHasEditableShape(document.graph) || document.graph.version !== '0.2.0') throw new Error('IsOS did not provide an editable 0.2.0 graph.');
+      const catalog = await getNodeTypes();
+      editGeneration.current += 1;
+      catalogReloadRequest.current += 1;
+      setGraph(document.graph);
+      setRawGraph(null);
+      setRevision(document.revision);
+      setSaved('');
+      setPoolName(''); setPoolRevision('');
+      setNewEmptyDraft(true);
+      setTypes(catalog.types); setDataTypes(catalog.data_types || []);
+      setReadOnlyReason(null); setGraphLoadError('');
+      setDiagnostics([]); setValidatedEdges([]); setValidationStamp(null);
+      setSelected([]); setUndoStack([]); setRedoStack([]);
+      setPositions({}); setMirrors({}); setOptionSnapshot(null);
+      setMessage(lang === 'cn' ? '已载入当前节点演示草稿。保存后才会替换已保存的节点图。' : 'Current node demo loaded as a draft. Save it to replace the saved graph.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
+    finally { setBusy(false); }
+  };
   const refresh = useCallback(async (confirm = false): Promise<void> => {
     if (confirm && dirty && !window.confirm(copy.discard)) return;
     const generation = editGeneration.current;
@@ -383,9 +547,11 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
         }
       }
       setGraph(shaped ? document.graph : null);
+      setNewEmptyDraft(false);
       setRawGraph(shaped ? null : document.graph);
       setSaved(JSON.stringify(document.graph));
       setRevision(document.revision);
+      if (document.pool_name) { setPoolName(document.pool_name); setPoolSelected(document.pool_name); setPoolRevision(document.revision); }
       setTypes(catalog?.types || []);
       setDataTypes(catalog?.data_types || []);
       setNodeSets([]);
@@ -397,12 +563,23 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       setSelected((current) => shaped ? current.filter((path) => graphNodes(document.graph, []).some((entry) => entry.path === path)) : []);
       setDiagnostics(document.diagnostics || []);
       setReadOnlyReason(graphCatalogReadOnlyReason(snapshot));
+      setGraphLoadError('');
       setUndoStack([]); setRedoStack([]); setMessage('');
     }
-    catch (error) { if (catalogRequestId === catalogReloadRequest.current && generation === editGeneration.current) { setReadOnlyReason('Graph compatibility could not be checked.'); setMessage(error instanceof Error ? error.message : copy.disconnected, true); } }
+    catch (error) { if (catalogRequestId === catalogReloadRequest.current && generation === editGeneration.current) { const reason = error instanceof Error ? error.message : copy.disconnected; setReadOnlyReason(reason); setGraphLoadError(reason); setMessage(reason, true); } }
     finally { if (catalogRequestId === catalogReloadRequest.current) setBusy(false); }
   }, [dirty, copy.discard, copy.disconnected, lang]);
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void (async () => {
+    await refresh();
+    try {
+      const pool = await getGraphPool();
+      setPoolEntries(pool.graphs);
+      const remembered = localStorage.getItem('isosui-graph-pool-last-name');
+      if (remembered && !pool.graphs.some((entry) => entry.name === remembered) && !pool.graphs.length) { setPoolName(remembered); setPoolRevision(''); return; }
+      const name = pool.graphs.find((entry) => entry.name === remembered)?.name || pool.graphs.find((entry) => entry.name === 'demo')?.name || pool.graphs[0]?.name;
+      if (name) { setPoolSelected(name); await loadPoolGraph(name); if (remembered && remembered !== name) setFallbackNotice(lang === 'cn' ? `上次使用的图库文件“${remembered}”不存在，已打开“${name}”。` : `The last graph file “${remembered}” is missing. Opened “${name}”.`); }
+    } catch { /* The active graph error is already shown by refresh. */ }
+  })(); }, []);
   useEffect(() => {
     if (!visible) return;
     let active = true;
@@ -435,14 +612,14 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       setReadOnlyReason(savedReason || (currentGraph
         ? nodeGraphReadOnlyReason({ ...document, graph: currentGraph }, catalog.types)
         : 'Saved graph revision changed; refresh before editing.'));
-    }).catch((error: unknown) => { if (catalogReloadIsCurrent(requestId, catalogReloadRequest.current)) { setReadOnlyReason('Graph compatibility could not be checked.'); setMessage(error instanceof Error ? error.message : String(error)); } }); };
+    }).catch((error: unknown) => { if (catalogReloadIsCurrent(requestId, catalogReloadRequest.current)) { setReadOnlyReason('Graph catalog could not be checked.'); setMessage(error instanceof Error ? error.message : String(error)); } }); };
     window.addEventListener('isosui:packages-changed', reloadCatalog);
     return () => { window.removeEventListener('isosui:packages-changed', reloadCatalog); catalogReloadRequest.current += 1; };
   }, []);
   useEffect(() => { if (!graph) return; const key = graphLayoutKey(graph); const timer = window.setTimeout(() => localStorage.setItem(key, JSON.stringify(positions)), 250); return () => window.clearTimeout(timer); }, [graph?.robot.id, positions]);
   useEffect(() => { if (graph) localStorage.setItem(graphMirrorKey(graph), JSON.stringify(mirrors)); }, [graph?.robot.id, mirrors]);
-  useEffect(() => { for (const id of ['egia'] as const) localStorage.setItem(`isosui-graph-${id}-window`, JSON.stringify(coreWindows[id])); }, [coreWindows]);
-  const updateCoreWindow = (id: 'egia', patch: Partial<CoreWindowState>): void => setCoreWindows((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  useEffect(() => { for (const id of ['ei'] as const) localStorage.setItem(`isosui-graph-${id}-window`, JSON.stringify(coreWindows[id])); }, [coreWindows]);
+  const updateCoreWindow = (id: 'ei', patch: Partial<CoreWindowState>): void => setCoreWindows((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
   useEffect(() => { const beforeUnload = (event: BeforeUnloadEvent): void => { if (dirty) event.preventDefault(); }; window.addEventListener('beforeunload', beforeUnload); return () => window.removeEventListener('beforeunload', beforeUnload); }, [dirty]);
   const edit = (change: (current: NodeGraph) => NodeGraph): void => {
     if (!graph || readOnly) return;
@@ -472,9 +649,9 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     setMessage(`${setPreview.result.added_paths.length} ${copy.previewCount}.`);
     setSetPreview(null);
   };
-  const add = (automatic = false): void => { const definition = types.find((type) => catalogTypeKey(type) === typeId); if (!definition || !graph || readOnly) return; const id = automatic || !newId.trim() ? nextNodeId(graph, definition) : newId.trim(); try { edit((current) => addNode(current, definition, id)); setSelected([nodePath(definition, id)]); setNewId(''); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : copy.duplicate, true); } };
+  const add = (automatic = false): void => { const definition = availableTypes.find((type) => catalogTypeKey(type) === typeId); if (!definition || !graph || readOnly) return; const id = automatic || !newId.trim() ? nextNodeId(graph, definition) : newId.trim(); try { edit((current) => addNode(current, definition, id)); setSelected([nodePath(definition, id)]); setNewId(''); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : copy.duplicate, true); } };
   const addAtCursor = (definition: NodeTypeDefinition): void => {
-    if (!quickAdd || !graph || readOnly) return;
+    if (!quickAdd || !graph || readOnly || definition.deprecated) return;
     const id = nextNodeId(graph, definition);
     try {
       edit((current) => addNode(current, definition, id));
@@ -489,7 +666,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     const rect = canvasRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const position = flowInstance.project({ x, y });
+    const position = flowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
     setEdgeMenu(null); setQuickDetail(''); setQuickSearch('');
     setQuickAdd({ left: Math.max(8, Math.min(x, rect.width - 284)), top: Math.max(8, Math.min(y, rect.height - 300)), x: position.x, y: position.y });
   };
@@ -501,7 +678,21 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     setQuickAdd(null);
     setEdgeMenu({ left: Math.max(8, Math.min(event.clientX - rect.left, rect.width - 180)), top: Math.max(8, Math.min(event.clientY - rect.top, rect.height - 56)), id: edge.id });
   };
-  const connect = (connection: Connection): void => { if (!graph || readOnly || !connection.source || !connection.target) return; try { edit((current) => connectNodes(current, types, connection.source!, connection.sourceHandle?.replace(/^out:/, '') || '', connection.target!, connection.targetHandle?.replace(/^in:/, '') || '')); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } };
+  const connect = async (connection: Connection): Promise<void> => {
+    if (!graph || readOnly || !connection.source || !connection.target) return;
+    const generation = editGeneration.current;
+    const output = connection.sourceHandle?.replace(/^out:/, '') || '';
+    const input = connection.targetHandle?.replace(/^in:/, '') || '';
+    try {
+      const candidate = connectNodes(graph, types, connection.source, output, connection.target, input);
+      const result = await validateConnection(candidate, canonicalNodePath(connection.source), output, canonicalNodePath(connection.target), input);
+      if (generation !== editGeneration.current) return;
+      if (!result.allowed) throw new Error(result.diagnostic?.message || 'IsOS rejected this connection.');
+      if (!admittedConnection(result, connection.source, output, connection.target, input)) throw new Error('No owner-supported route delivers this connection.');
+      edit(() => candidate);
+      setMessage('');
+    } catch (error) { if (generation === editGeneration.current) setMessage(error instanceof Error ? error.message : String(error), true); }
+  };
   useEffect(() => { const onKey = (event: KeyboardEvent): void => {
     if (!visible || readOnly) return;
     const target = event.target as HTMLElement;
@@ -510,28 +701,63 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); }
     else if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length) { event.preventDefault(); edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); }
-    else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !quickAdd && !edgeMenu && selected.length) { event.preventDefault(); setMirrors((current) => { const next = { ...current }; for (const path of selected) next[path] = !next[path]; return next; }); }
+    else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !quickAdd && !edgeMenu && selected.length) { event.preventDefault(); setMirrors((current) => { const next = { ...current }; for (const path of selected) next[path] = !(next[path] ?? asyncDemoLayout(entries.map((entry) => entry.path))?.mirrors[path] ?? false); return next; }); }
   }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [graph, undoStack, redoStack, selected, quickAdd, edgeMenu, visible, readOnly]);
   const validate = async (): Promise<boolean> => { if (!graph || readOnly) return false; const generation = editGeneration.current; setBusy(true); try { const result = await validateNodeGraph(graph); if (!validationResponseIsCurrent(generation, editGeneration.current)) return false; setDiagnostics(result.diagnostics); setValidatedEdges(result.valid && Array.isArray(result.edges) ? result.edges : []); setValidationStamp(draftValidationStamp(graph, generation)); setMessage(result.valid ? copy.valid : `${result.diagnostics.length} ${copy.diagnostics.toLowerCase()}`, !result.valid); return result.valid; } catch (error) { if (validationResponseIsCurrent(generation, editGeneration.current)) { setValidationStamp(null); setMessage(error instanceof Error ? error.message : String(error), true); } return false; } finally { setBusy(false); } };
-  const saveSnapshot = async (snapshot: NodeGraph, expectedRevision: string): Promise<string | null> => {
+  const saveSnapshot = async (snapshot: NodeGraph): Promise<string | null> => {
     if (selectorBlocked || edgeInputInvalid) { setMessage(edgeInputInvalid ? (lang === 'cn' ? '请修复连线服务质量字段。' : 'Repair the edge QoS fields.') : (lang === 'cn' ? '请等待选项更新并修复不可用的目录选项。' : 'Wait for options to refresh and repair unavailable catalog selections.'), true); return null; }
     const generation = editGeneration.current;
-    const result = await validatedApply(snapshot, expectedRevision, () => validationResponseIsCurrent(generation, editGeneration.current), (checked) => {
+    const latest = (await getGraphPool()).graphs;
+    setPoolEntries(latest);
+    const bound = latest.find((entry) => entry.name === poolName);
+    let name = poolName;
+    let fileRevision = poolRevision;
+    if (!bound) {
+      name = window.prompt(lang === 'cn' ? '原文件不存在。请输入新文件名：' : 'The original file is missing. Name a new graph file:', name)?.trim() || '';
+      if (!name) return null;
+      const existing = latest.find((entry) => entry.name === name);
+      if (existing) { setMessage(lang === 'cn' ? '该文件名已存在。请选择其他名称。' : 'That file name already exists. Choose another name.', true); return null; }
+      fileRevision = '';
+    }
+    const applyChecked = (targetName: string, targetRevision: string) => validatedApply(snapshot, targetName, targetRevision, () => validationResponseIsCurrent(generation, editGeneration.current), (checked) => {
       setDiagnostics(checked.diagnostics);
       setValidatedEdges(checked.valid && Array.isArray(checked.edges) ? checked.edges : []);
       setValidationStamp(draftValidationStamp(snapshot, generation));
     });
+    let result;
+    try { result = await applyChecked(name, fileRevision); }
+    catch (error) {
+      const afterFailure = (await getGraphPool()).graphs;
+      setPoolEntries(afterFailure);
+      if (!bound || afterFailure.some((entry) => entry.name === name)) {
+        const savedFile = await getGraphPoolEntry(name).catch(() => null);
+        if (savedFile && JSON.stringify(savedFile.graph) === JSON.stringify(snapshot)) {
+          setPoolRevision(savedFile.revision); setRevision(savedFile.revision); setSaved(JSON.stringify(savedFile.graph));
+          setPoolName(savedFile.name); setPoolSelected(savedFile.name);
+        }
+        throw error;
+      }
+      const newName = window.prompt(lang === 'cn' ? '原文件已删除。请输入新文件名：' : 'The file was deleted. Name a new graph file:', name)?.trim();
+      if (!newName) return null;
+      if (afterFailure.some((entry) => entry.name === newName)) { setMessage(lang === 'cn' ? '该文件名已存在。请选择其他名称。' : 'That file name already exists. Choose another name.', true); return null; }
+      name = newName;
+      result = await applyChecked(name, '');
+    }
     if (result.state === 'stale') return null;
     if (result.state === 'rejected') { setMessage(result.validation.diagnostics.map((item) => item.message).join('; ') || copy.invalid, true); setSideCollapsed(false); setDiagnosticsOpen(true); return null; }
     const document = result.document;
     catalogReloadRequest.current += 1;
     const newerDraft = editGeneration.current !== generation;
     setSaved(JSON.stringify(document.graph));
+    setNewEmptyDraft(false);
     setRevision(document.revision);
+    setPoolName(name); setPoolSelected(name); setPoolRevision(document.revision);
+    localStorage.setItem('isosui-graph-pool-last-name', name);
+    void refreshPool();
     if (!newerDraft) setGraph(document.graph);
     let selected;
     try { selected = await getGraphCatalogSnapshot(); }
-    catch { setReadOnlyReason('Graph compatibility could not be checked.'); setMessage('Graph compatibility could not be checked.', true); return null; }
+    catch { setReadOnlyReason('Graph catalog could not be checked.'); setMessage('Graph catalog could not be checked.', true); return null; }
     const selectedReason = graphCatalogReadOnlyReason(selected);
     if (selected.graph.revision !== document.revision || selectedReason) {
       const reason = selectedReason || 'Saved graph revision changed; refresh before running.';
@@ -545,41 +771,18 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     setMessage(newerDraft ? (lang === 'cn' ? '已保存先前版本，新的修改仍未保存。' : 'Earlier draft saved; newer edits remain unsaved.') : copy.saved);
     return newerDraft ? null : document.revision;
   };
-  const apply = async (): Promise<void> => { if (!graph || readOnly || busy || selectorBlocked || edgeInputInvalid) return; setBusy(true); try { await saveSnapshot(graph, revision); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } finally { setBusy(false); } };
+  const apply = async (): Promise<void> => { if (!graph || readOnly || busy || selectorBlocked || edgeInputInvalid) return; setBusy(true); try { await saveSnapshot(graph); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } finally { setBusy(false); } };
   const running = hasActiveDeployment(processStatus);
   const primaryLabel = lang === 'cn' ? (dirty ? (running ? '保存并重启' : '保存并运行') : (running ? '重启' : '保存并运行')) : (dirty ? (running ? 'Save and Restart' : 'Save and Run') : (running ? 'Restart' : 'Save and Run'));
   const runPrimary = async (): Promise<void> => {
     if (!graph || readOnly || busy || stopping || selectorBlocked || edgeInputInvalid) return;
+    if (newEmptyDraft) { await apply(); return; }
     setBusy(true);
     const generation = editGeneration.current;
     const stopAtStart = deploymentStopEpoch();
-    const cameraGates = entries.filter((entry) => entry.node.node_type === 'eos.interface.camera_gate@v0.1' || entry.node.node_type === 'isos.eos_interface.camera_gate@v0.2');
-    const needsVisionApply = !dirty && cameraGates.length === 1 && !processStatus?.vision_evidence;
     try {
-      let nextRevision = revision;
-      if (dirty || needsVisionApply) {
-        const savedRevision = await saveSnapshot(graph, revision);
-        if (!savedRevision) return;
-        nextRevision = savedRevision;
-      } else {
-        const checked = await validateNodeGraph(graph);
-        if (!validationResponseIsCurrent(generation, editGeneration.current)) return;
-        setDiagnostics(checked.diagnostics);
-        setValidatedEdges(checked.valid && Array.isArray(checked.edges) ? checked.edges : []);
-        setValidationStamp(draftValidationStamp(graph, generation));
-        if (!checked.valid) { setMessage(checked.diagnostics.map((item) => item.message).join('; ') || copy.invalid, true); setSideCollapsed(false); setDiagnosticsOpen(true); return; }
-      }
-      if (!dirty && !needsVisionApply) {
-        const snapshot = await getGraphCatalogSnapshot();
-        const selectedReason = graphCatalogReadOnlyReason(snapshot);
-        if (snapshot.graph.revision !== nextRevision || selectedReason) {
-          setReadOnlyReason(selectedReason || 'Saved graph revision changed; refresh before running.');
-          setMessage(selectedReason || 'Saved graph revision changed; refresh before running.', true);
-          return;
-        }
-        const catalog = combineNodeTypeCatalogs(snapshot.selected, snapshot.global);
-        setTypes(catalog.types); setDataTypes(catalog.data_types || []);
-      }
+      const nextRevision = await saveSnapshot(graph);
+      if (!nextRevision) return;
       if (generation !== editGeneration.current || stopAtStart !== deploymentStopEpoch()) { setMessage(lang === 'cn' ? '运行前节点图或停止状态已更改，请再次检查。' : 'Graph or Stop state changed before run. Check again.', true); return; }
       const latestStatus = await getProcessStatus();
       if (generation !== editGeneration.current || stopAtStart !== deploymentStopEpoch()) { setMessage(lang === 'cn' ? '运行前节点图或停止状态已更改，请再次检查。' : 'Graph or Stop state changed before run. Check again.', true); return; }
@@ -587,6 +790,9 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       const status = await runDeployment(operation, nextRevision);
       if (stopAtStart !== deploymentStopEpoch()) return;
       setProcessStatus(status);
+      const readinessRequestId = ++readinessRequest.current;
+      void getCoreReadiness().then((cores) => { if (readinessRequestId === readinessRequest.current) setReadiness(cores); })
+        .catch((error: unknown) => browserLog('warn', `Core readiness refresh after ${operation} failed: ${error instanceof Error ? error.message : String(error)}`));
       setMessage(processRunFeedback(status, operation, lang));
     } catch (error) { if (stopAtStart === deploymentStopEpoch()) setMessage(error instanceof Error ? error.message : String(error), true); }
     finally { setBusy(false); }
@@ -603,26 +809,29 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       const feedback = stopReplyFeedback(reply, before, lang, after);
       setMessage(feedback.text, feedback.alert); onStopOutcome?.(feedback, reply.terminal?.run_id || null);
       if (after) setProcessStatus(after);
+      const readinessRequestId = ++readinessRequest.current;
+      void getCoreReadiness().then((cores) => { if (readinessRequestId === readinessRequest.current) setReadiness(cores); })
+        .catch((error: unknown) => browserLog('warn', `Core readiness refresh after Stop failed: ${error instanceof Error ? error.message : String(error)}`));
     } catch (error) { const feedback = stopFailureFeedback(error, lang); setMessage(feedback.text, feedback.alert); onStopOutcome?.(feedback); }
     finally { setStopping(false); }
   };
   const validationCurrent = !!graph && validationDisplayIsCurrent(validationStamp, graph, editGeneration.current);
-  const nodes = useMemo<Node<FlowData>[]>(() => entries.map((entry, index) => ({ id: entry.path, type: 'profile', position: positions[entry.path] || { x: 50 + (index % 3) * 330, y: 50 + Math.floor(index / 3) * 220 }, zIndex: frontNode === entry.path ? 20 : selected.includes(entry.path) ? 1 : 0, data: { entry, error: diagnostics.some((item) => item.path.includes(entry.path)), mirrored: !!mirrors[entry.path], lang, dataTypes, liveRunId: processStatus?.run_id || null, liveAllowed: !dirty && !readOnly && processStatus?.run_id_state === 'known' && !!processStatus.run_id && processStatus.state === 'running' && processStatus.active_revision === revision && processStatus.saved_revision === revision }, selected: selected.includes(entry.path) })), [entries, positions, selected, frontNode, diagnostics, mirrors, lang, dataTypes, dirty, readOnly, processStatus, revision]);
+  const demoLayout = useMemo(() => asyncDemoLayout(entries.map((entry) => entry.path)), [entries]);
+  const nodes = useMemo<Node<FlowData>[]>(() => entries.map((entry, index) => ({ id: entry.path, type: 'profile', position: positions[entry.path] || demoLayout?.positions[entry.path] || { x: 50 + (index % 3) * 330, y: 50 + Math.floor(index / 3) * 220 }, zIndex: frontNode === entry.path ? 20 : selected.includes(entry.path) ? 1 : 0, data: { entry, error: diagnostics.some((item) => item.path.includes(entry.path)), mirrored: mirrors[entry.path] ?? demoLayout?.mirrors[entry.path] ?? false, lane: demoLayout?.lanes[entry.path], lang, dataTypes, options: nodeOptions, readOnly, currentRun: !dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision, runId: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.run_id || null : null, activeRevision: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.active_revision || null : null, monitorReading, onSettingsChange: (path, settings) => edit((current) => updateNode(current, path, { settings })), onNodeChange: (path, change) => edit((current) => updateNode(current, path, change)) }, selected: selected.includes(entry.path) })), [entries, positions, selected, frontNode, diagnostics, mirrors, demoLayout, lang, dataTypes, dirty, readOnly, processStatus, revision, nodeOptions, monitorReading]);
   const edges = useMemo<Edge[]>(() => entries.flatMap((entry) => Object.entries(entry.node.inputs || {}).flatMap(([input, sources]) => {
     const sourceList = inputSources(sources);
     return sourceList.map((source, inputIndex) => {
     const port = entries.find((candidate) => sameNodePath(candidate.path, source.node))?.definition?.outputs.find((item) => item.name === source.output);
-    const visual = interfaceVisual(port, source.frequency_hz);
+    const admitted = validationCurrent ? validatedEdges.find((candidate) => candidate.source === canonicalNodePath(source.node) && candidate.output === source.output && candidate.target === entry.path && candidate.input === input) : undefined;
+    const visual = interfaceVisual(port, admitted ? admitted.frequency_hz : source.frequency_hz, admitted ? admitted.priority : source.priority ?? 0);
     const id = `${entry.path}:${input}:${inputIndex}:${canonicalNodePath(source.node)}:${source.output}`;
-    const authority = validatedSource(validatedEdges, entry.path, input, inputIndex, Array.isArray(sources));
-    const routeLabel = authority?.routed === false ? (lang === 'cn' ? '仅设计用途' : 'design only') : '';
-    const label = `${port?.data_type || source.output} · ${visual.label} · nice ${source.priority ?? 0}${routeLabel ? ` · ${routeLabel}` : ''}`;
+    const label = port?.data_type || source.output;
     const edge = { source: canonicalNodePath(source.node), sourceHandle: `out:${source.output}`, target: entry.path, targetHandle: `in:${input}`, data: { inputIndex, inputCount: sourceList.length } };
     const destinationType = entry.definition?.inputs.find((item) => item.name === input)?.data_type;
     const mismatch = !!port?.data_type && !!destinationType && port.data_type !== destinationType;
-    const rejected = validationCurrent && edgeInputDiagnostics({ ...edge, inputIndex, inputCount: edge.data.inputCount }, diagnostics).length > 0;
-    const reason = mismatch ? (lang === 'cn' ? '端口类型不匹配' : 'Port type mismatch') : rejected ? (lang === 'cn' ? 'IsOS 拒绝了此输入端口' : 'IsOS rejected this input port') : '';
-    return { id, ...edge, label: reason ? `${label} · ${reason}` : label, ariaLabel: reason ? `${label} · ${reason}` : label, interactionWidth: 24, focusable: true, selected: selectedEdge === id, className: `${visual.className} node-graph-edge-priority--${(source.priority ?? 0) < 0 ? 'high' : (source.priority ?? 0) > 0 ? 'low' : 'normal'}${reason ? ' node-graph-edge--invalid' : ''}`, style: visual.style as React.CSSProperties, animated: false };
+    const issue = validationCurrent ? edgeInputDiagnostics({ ...edge, inputIndex, inputCount: edge.data.inputCount }, diagnostics)[0] : undefined;
+    const reason = mismatch ? (lang === 'cn' ? '端口类型不匹配' : 'Port type mismatch') : issue?.message || '';
+    return { id, ...edge, label: reason ? `${label} · ${reason}` : label, ariaLabel: `${visual.label}${reason ? ` · ${reason}` : ''}`, interactionWidth: 24, focusable: true, selected: selectedEdge === id, className: `${visual.className}${reason ? ' node-graph-edge--invalid' : ''}`, style: visual.style as React.CSSProperties, animated: false };
     });
   })), [entries, selectedEdge, diagnostics, validatedEdges, validationCurrent, lang]);
   const edgeDetail = selectedEdge ? edges.find((edge) => edge.id === selectedEdge) : undefined;
@@ -641,34 +850,42 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     <header><h1>{copy.title}</h1><div role="toolbar" aria-label={copy.title}>
       <button className="node-graph-icon-button" type="button" onClick={undo} disabled={readOnly || !undoStack.length || busy} title={`${copy.undo} (Ctrl+Z)`} aria-label={copy.undo}><span className="node-graph-history-arrow" aria-hidden="true" /></button>
       <button className="node-graph-icon-button" type="button" onClick={redo} disabled={readOnly || !redoStack.length || busy} title={`${copy.redo} (Ctrl+Shift+Z)`} aria-label={copy.redo}><span className="node-graph-history-arrow node-graph-history-arrow--redo" aria-hidden="true" /></button>
-      <div className="node-graph-view"><button type="button" aria-expanded={viewOpen} onClick={() => setViewOpen((value) => !value)}>{lang === 'cn' ? '视图' : 'View'} ▾</button>{viewOpen && <div className="node-graph-view__menu" role="menu"><button type="button" role="menuitemcheckbox" aria-checked={!libraryCollapsed} onClick={() => setLibraryCollapsed((value) => !value)}>{copy.catalog}</button><button type="button" role="menuitemcheckbox" aria-checked={!sideCollapsed} onClick={() => setSideCollapsed((value) => !value)}>{copy.inspector}</button><button type="button" role="menuitemcheckbox" aria-checked={diagnosticsOpen && !sideCollapsed} onClick={() => { if (diagnosticsOpen && !sideCollapsed) setDiagnosticsOpen(false); else { setSideCollapsed(false); setDiagnosticsOpen(true); } }}>{copy.diagnostics}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '日志' : 'Logs'}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('control')}>EOS</button><button type="button" role="menuitemcheckbox" aria-checked={coreWindows.egia.open} onClick={() => updateCoreWindow('egia', { open: !coreWindows.egia.open })}>EI</button></div>}</div>
+      <div className="node-graph-view"><button type="button" aria-expanded={viewOpen} onClick={() => setViewOpen((value) => !value)}>{lang === 'cn' ? '视图' : 'View'} ▾</button>{viewOpen && <div className="node-graph-view__menu" role="menu"><button type="button" role="menuitemcheckbox" aria-checked={!libraryCollapsed} onClick={() => setLibraryCollapsed((value) => !value)}>{copy.catalog}</button><button type="button" role="menuitemcheckbox" aria-checked={!sideCollapsed} onClick={() => setSideCollapsed((value) => !value)}>{copy.inspector}</button><button type="button" role="menuitemcheckbox" aria-checked={diagnosticsOpen && !sideCollapsed} onClick={() => { if (diagnosticsOpen && !sideCollapsed) setDiagnosticsOpen(false); else { setSideCollapsed(false); setDiagnosticsOpen(true); } }}>{copy.diagnostics}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '日志' : 'Logs'}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('control')}>EOS</button><button type="button" role="menuitemcheckbox" aria-checked={coreWindows.ei.open} onClick={() => updateCoreWindow('ei', { open: !coreWindows.ei.open })}>EI</button></div>}</div>
       <button type="button" onClick={() => { browserLog('info', `Fit graph requested; ${entries.length} nodes; viewport ${JSON.stringify(flowInstance?.getViewport())}`); setViewLost(false); void flowInstance?.fitView({ padding: 0.15, duration: 200 }); }}>{lang === 'cn' ? '显示全图' : 'Fit graph'}</button>
-      <button type="button" className="node-graph-primary-action" onClick={() => void runPrimary()} disabled={readOnly || busy || !graph || selectorBlocked || edgeInputInvalid} title={lang === 'cn' ? '保存更改（如有）并启动；运行中则重启' : 'Save changes if needed, then start or restart the deployment'}>{primaryLabel}</button>
+      <button type="button" className="node-graph-primary-action" onClick={() => void runPrimary()} disabled={readOnly || busy || !graph || selectorBlocked || edgeInputInvalid} title={lang === 'cn' ? '保存更改（如有）并启动；运行中则重启' : 'Save changes if needed, then start or restart the deployment'}>{newEmptyDraft ? copy.apply : primaryLabel}</button>
       {(running || busy) && <button type="button" onClick={() => void stop()} disabled={stopping}>{lang === 'cn' ? '停止' : 'Stop'}</button>}
       <details className="node-graph-advanced" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>{lang === 'cn' ? '高级操作' : 'Advanced'} ▾</summary><div>
         <button type="button" onClick={() => void validate()} disabled={readOnly || busy || !graph}>{copy.validate}</button><small>{lang === 'cn' ? '检查草稿，不保存' : 'Check draft without saving'}</small>
-        <button type="button" onClick={() => void apply()} disabled={readOnly || busy || !graph || !dirty || selectorBlocked || edgeInputInvalid}>{copy.apply}</button><small>{lang === 'cn' ? '检查并保存草稿，同时生成核心配置' : 'Check and save draft; generate core configuration'}</small>
-        <button type="button" onClick={() => void refresh(true)} disabled={busy}>{lang === 'cn' ? '重新载入已保存节点图' : 'Reload saved graph'}</button><small>{lang === 'cn' ? '丢弃草稿并载入 IsOS 中已保存的节点图' : 'Discard draft and load the saved graph from IsOS'}</small>
+        <button type="button" onClick={() => void apply()} disabled={readOnly || busy || !graph || selectorBlocked || edgeInputInvalid}>{copy.apply}</button><small>{lang === 'cn' ? '检查并应用图库文件，同时生成核心配置' : 'Check and Apply the graph file; generate core configuration'}</small>
+        <button type="button" onClick={() => void (poolName ? loadPoolGraph(poolName) : refresh(true))} disabled={busy}>{lang === 'cn' ? '重新载入当前文件' : 'Reload current file'}</button><small>{lang === 'cn' ? '丢弃修改并重新读取当前图库文件' : 'Discard edits and reread the current graph file'}</small>
+        <button type="button" onClick={() => void newDemoGraph()} disabled={busy}>{lang === 'cn' ? '载入当前节点演示' : 'Load current node demo'}</button><small>{lang === 'cn' ? '载入当前演示草稿；保存后才会替换当前节点图' : 'Load the current demo as a draft; the saved graph changes only when you save it'}</small>
+        <label>{lang === 'cn' ? '图库文件' : 'Graph file'}<select value={poolSelected} onChange={(event) => { setPoolSelected(event.target.value); }}><option value="">—</option>{poolEntries.map((entry) => <option key={entry.name} value={entry.name}>{entry.name}</option>)}</select></label>
+        <small>{poolName ? (lang === 'cn' ? `当前编辑：${poolName}${poolFileExists ? '。保存将替换同名文件。' : '。原文件不存在；保存时需要新文件名。'}` : `Editing: ${poolName}${poolFileExists ? '. Save will replace the file with the same name.' : '. The file is missing; Save will ask for a new name.'}`) : (lang === 'cn' ? '尚未绑定图库文件；保存时需要文件名。' : 'No graph file is bound; Save will ask for a name.')}</small>
+        <button type="button" onClick={() => void refreshPool()} disabled={busy}>{lang === 'cn' ? '刷新图库' : 'Refresh pool'}</button>
+        <button type="button" onClick={() => void loadPoolGraph()} disabled={busy || !poolSelected}>{lang === 'cn' ? '打开文件' : 'Open file'}</button>
+        <button type="button" onClick={() => void savePoolGraph()} disabled={busy || !graph}>{lang === 'cn' ? '保存文件' : 'Save file'}</button><small>{lang === 'cn' ? '保存文件后，应用时才更新部署配置' : 'Save the file, then Apply to update deployment configuration'}</small>
       </div></details>
       <span role="status">{dirty ? copy.dirty : copy.clean} · {copy.savedRevision}: {revision.slice(0, 8) || '—'} · {copy.activeRevision}: {processStatus?.active_revision?.slice(0, 8) || '—'}</span>
     </div></header>
     {selectorBlocked && <p className="node-graph-error" role="status">{lang === 'cn' ? '当前草稿的目录选项尚未就绪，或已保存选项不可用。检查图仍可使用；修复后才能保存或运行。' : 'Catalog options for this draft are pending or a saved choice is unavailable. Check graph remains available; repair the choice before saving or running.'}</p>}
+    {fallbackNotice && <p className="node-graph-note" role="status">{fallbackNotice}</p>}
     {readOnlyReason && <p className="node-graph-error" role="alert">{lang === 'cn' ? '只读节点图：' : 'Read-only graph: '}{readOnlyReason}</p>}
+    {graphLoadError && <p className="node-graph-error" role="alert">{lang === 'cn' ? '无法打开已保存的节点图。' : 'The saved graph cannot be opened.'} <button type="button" onClick={() => void newDemoGraph()} disabled={busy}>{lang === 'cn' ? '载入当前节点演示' : 'Load current node demo'}</button></p>}
     {readiness?.cores.map((core) => {
       const disabled = core.enabled === false;
       const alert = !disabled && !core.ready;
       return <p key={core.core} className={alert ? 'node-graph-error' : 'node-graph-note'} role={alert ? 'alert' : 'status'}>
         <strong>{core.core.toUpperCase()}</strong>: {core.configured ? `${core.version || '—'} · ${core.path || '—'}` : (lang === 'cn' ? '未配置程序路径' : 'Binary path not configured')}
         {' · '}{disabled ? (lang === 'cn' ? '保存的节点图中未启用' : 'Not enabled in the saved graph') : (core.running ? (lang === 'cn' ? '运行中' : 'Running') : (lang === 'cn' ? '已停止' : 'Stopped'))}
-        {!disabled && core.reason ? ` · ${core.reason}` : ''}{!disabled && core.action ? ` · ${core.action}` : ''}
+        {!disabled && core.reason ? ` · ${core.reason === 'pending_apply' ? (lang === 'cn' ? '图库文件已保存，等待应用以更新部署配置' : 'Graph file saved; Apply to update deployment configuration') : core.reason}` : ''}{!disabled && core.action && core.reason !== 'pending_apply' ? ` · ${core.action}` : ''}
       </p>;
     })}
     {viewLost && <p className="node-graph-note" role="status">{lang === 'cn' ? '节点可能在视野之外。使用“显示全图”恢复。' : 'Nodes may be outside the view. Use Fit graph to recover.'}</p>}{processStatus?.last_error && <p className="node-graph-error" role="alert">{processStatus.last_error}</p>}
-    <div className={`node-graph-body${libraryCollapsed ? ' node-graph-body--library-collapsed' : ''}${sideCollapsed ? ' node-graph-body--side-collapsed' : ''}`}><aside className="node-graph-library" hidden={libraryCollapsed}><h2>{copy.catalog}</h2><CatalogBrowser types={types} value={typeId} lang={lang} onChange={setTypeId} /><label>{copy.id}<input value={newId} placeholder={graph && types.find((type) => catalogTypeKey(type) === typeId) ? nextNodeId(graph, types.find((type) => catalogTypeKey(type) === typeId)!) : ''} onChange={(event) => setNewId(event.target.value.toLowerCase())} /></label><button type="button" onClick={() => add()} disabled={readOnly || !graph || !typeId}>{copy.add}</button><p>{copy.port}</p><p>{copy.hint}</p><div className="node-graph-legend" aria-label={lang === 'cn' ? '端口颜色' : 'Port colors'}><h3>{lang === 'cn' ? '端口颜色：准确数据类型' : 'Port color: exact data type'}</h3>{(dataTypes.length ? dataTypes.slice(0, 5).map((item) => item.id) : ['camera_frame', 'vision_frame', 'base_observation']).map((id) => <span key={id} style={{ '--port': dataTypeColor(id) } as React.CSSProperties}><i aria-hidden="true" />{id}</span>)}</div><div className="node-graph-interface-legend" aria-label={lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}><strong>{lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}</strong><span>{lang === 'cn' ? '锚点形状：进程内圆形 / Unix 方形 / HTTP 盾形 / WebSocket 菱形 / ROS 2 六边形' : 'Anchor shape: in-process circle / Unix square / HTTP shield / WebSocket diamond / ROS 2 hexagon'}</span><span>{lang === 'cn' ? '连线图案表示连线上限：<1 Hz 稀疏点；1–<10 Hz 点线；10–<30 Hz 长划线；≥30 Hz 实线；无限制为实线' : 'Line pattern shows edge cap: <1 Hz sparse dots; 1–<10 Hz dotted; 10–<30 Hz long dashes; ≥30 Hz solid; unlimited solid'}</span><span>{lang === 'cn' ? '连线颜色：中性灰；优先级线宽：高优先级更粗，低优先级更细' : 'Line color: neutral gray; higher priority is thicker, lower priority thinner'}</span></div><section className="node-graph-set-library"><h2>{copy.nodeSets}</h2>{nodeSets.length ? <><label>{copy.chooseSet}<select value={setKey} onChange={(event) => { const key = event.target.value; const chosenSet = nodeSets.find((set) => `${set.package.id}@${set.package.version}/${set.id}` === key); setSetKey(key); setSetValues(Object.fromEntries(Object.entries(chosenSet?.parameters || {}).map(([name, parameter]) => [name, parameter.default || '']))); setSetPreview(null); }}><option value="">—</option>{nodeSets.map((set) => { const key = `${set.package.id}@${set.package.version}/${set.id}`; return <option key={key} value={key}>{set.package.id}@{set.package.version} / {set.id}</option>; })}</select></label>{selectedSet && <><p>{selectedSet.nodes.length} {copy.previewCount}</p>{Object.entries(selectedSet.parameters).map(([name, parameter]) => <label key={name}>{name}<input type="text" value={setValues[name] ?? parameter.default ?? ''} onChange={(event) => { setSetValues((current) => ({ ...current, [name]: event.target.value })); setSetPreview(null); }} /></label>)}<button type="button" disabled={readOnly || !graph || busy} onClick={() => void previewPackageSet()}>{copy.previewSet}</button>{setPreview && <div className="node-graph-set-preview" role="status"><strong>{setPreview.result.added_paths.length} {copy.previewCount}</strong><ul>{setPreview.result.added_paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul><button type="button" onClick={addPreviewedSet} disabled={readOnly || busy || setPreview.source !== JSON.stringify(graph)}>{copy.addSet}</button></div>}</>}</> : <p>{copy.noNodeSets}</p>}</section>{graph && <><h2>{copy.robot}</h2><label>{copy.id}<input value={graph.robot.id} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, id: event.target.value } }))} /></label><label>{copy.name}<input value={graph.robot.name} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, name: event.target.value } }))} /></label></>}</aside>
+    <div className={`node-graph-body${libraryCollapsed ? ' node-graph-body--library-collapsed' : ''}${sideCollapsed ? ' node-graph-body--side-collapsed' : ''}`}><aside className="node-graph-library" hidden={libraryCollapsed}><h2>{copy.catalog}</h2><CatalogBrowser types={availableTypes} value={typeId} lang={lang} onChange={setTypeId} /><label>{copy.id}<input value={newId} placeholder={graph && availableTypes.find((type) => catalogTypeKey(type) === typeId) ? nextNodeId(graph, availableTypes.find((type) => catalogTypeKey(type) === typeId)!) : ''} onChange={(event) => setNewId(event.target.value.toLowerCase())} /></label><button type="button" onClick={() => add()} disabled={readOnly || !graph || !availableTypes.some((type) => catalogTypeKey(type) === typeId)}>{copy.add}</button><p>{copy.port}</p><p>{copy.hint}</p><div className="node-graph-legend" aria-label={lang === 'cn' ? '端口颜色' : 'Port colors'}><h3>{lang === 'cn' ? '端口颜色：准确数据类型' : 'Port color: exact data type'}</h3>{(dataTypes.length ? dataTypes.slice(0, 5).map((item) => item.id) : ['camera_frame', 'vision_frame', 'base_observation']).map((id) => <span key={id} style={{ '--port': dataTypeColor(id) } as React.CSSProperties}><i aria-hidden="true" />{id}</span>)}</div><div className="node-graph-interface-legend" aria-label={lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}><strong>{lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}</strong><span>{lang === 'cn' ? '端口形状表示通道：进程内圆形 / Unix 方形 / HTTP 盾形 / WebSocket 菱形 / ROS 2 六边形' : 'Port shape shows channel: in-process circle / Unix square / HTTP shield / WebSocket diamond / ROS 2 hexagon'}</span><span>{lang === 'cn' ? '连线图案表示连线上限：<1 Hz 稀疏点；1–<10 Hz 点线；10–<30 Hz 长划线；≥30 Hz 实线；无限制为长短交替线' : 'Line pattern shows edge cap: <1 Hz sparse dots; 1–<10 Hz dotted; 10–<30 Hz long dashes; ≥30 Hz solid; unlimited alternating dash'}</span><span>{lang === 'cn' ? '连线颜色表示优先级：红色较高，蓝色较低；具体 nice 值见连线详情' : 'Line color shows priority: red is higher, blue is lower; inspect the line for its exact nice value'}</span></div><section className="node-graph-set-library"><h2>{copy.nodeSets}</h2>{nodeSets.length ? <><label>{copy.chooseSet}<select value={setKey} onChange={(event) => { const key = event.target.value; const chosenSet = nodeSets.find((set) => `${set.package.id}@${set.package.version}/${set.id}` === key); setSetKey(key); setSetValues(Object.fromEntries(Object.entries(chosenSet?.parameters || {}).map(([name, parameter]) => [name, parameter.default || '']))); setSetPreview(null); }}><option value="">—</option>{nodeSets.map((set) => { const key = `${set.package.id}@${set.package.version}/${set.id}`; return <option key={key} value={key}>{set.package.id}@{set.package.version} / {set.id}</option>; })}</select></label>{selectedSet && <><p>{selectedSet.nodes.length} {copy.previewCount}</p>{Object.entries(selectedSet.parameters).map(([name, parameter]) => <label key={name}>{name}<input type="text" value={setValues[name] ?? parameter.default ?? ''} onChange={(event) => { setSetValues((current) => ({ ...current, [name]: event.target.value })); setSetPreview(null); }} /></label>)}<button type="button" disabled={readOnly || !graph || busy} onClick={() => void previewPackageSet()}>{copy.previewSet}</button>{setPreview && <div className="node-graph-set-preview" role="status"><strong>{setPreview.result.added_paths.length} {copy.previewCount}</strong><ul>{setPreview.result.added_paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul><button type="button" onClick={addPreviewedSet} disabled={readOnly || busy || setPreview.source !== JSON.stringify(graph)}>{copy.addSet}</button></div>}</>}</> : <p>{copy.noNodeSets}</p>}</section>{graph && <><h2>{copy.robot}</h2><label>{copy.id}<input value={graph.robot.id} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, id: event.target.value } }))} /></label><label>{copy.name}<input value={graph.robot.name} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, name: event.target.value } }))} /></label></>}</aside>
       <div className="node-graph-canvas" ref={canvasRef} onContextMenu={openQuickAdd} onPointerDownCapture={(event) => { if (event.button === 0 && !(event.target as HTMLElement).closest('.node-graph-edge-menu, .node-graph-quick-add')) { setQuickAdd(null); setEdgeMenu(null); } activeGesture.current = true; }} onPointerUpCapture={() => { activeGesture.current = false; }} onPointerCancelCapture={() => { activeGesture.current = false; }} onMouseMove={revealOverview} onTouchMove={revealOverview}>{graph ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} nodesConnectable={!readOnly} onInit={(instance) => { setFlowInstance(instance); browserLog('debug', 'Graph canvas initialized'); }} onEdgeContextMenu={openEdgeMenu} onEdgeClick={(_, edge) => { setEdgeInputInvalid(false); setSelectedEdge(edge.id); setSideCollapsed(false); setQuickAdd(null); }} onMove={revealOverview} onNodesChange={onNodesChange} onConnect={connect} onNodeClick={(_, node) => { setFrontNode(node.id); setQuickAdd(null); setSelectedEdge(''); setEdgeInputInvalid(false); }} onNodeDragStart={(_, node) => setFrontNode(node.id)} onSelectionStart={() => { activeGesture.current = true; }} onSelectionEnd={() => { activeGesture.current = false; }} selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1]} deleteKeyCode={null} onPaneClick={() => { setSelected([]); setQuickAdd(null); setEdgeMenu(null); setSelectedEdge(''); setEdgeInputInvalid(false); }} onDoubleClick={(event) => { if ((event.target as HTMLElement).classList.contains('react-flow__pane')) add(true); }} minZoom={0.2} maxZoom={2}><Background color="var(--border)" /><MiniMap className={showOverview ? 'node-graph-minimap--visible' : 'node-graph-minimap--hidden'} pannable zoomable /></ReactFlow> : rawGraph ? <pre className="node-graph-raw" aria-label={lang === 'cn' ? '原始节点图' : 'Raw node graph'}>{JSON.stringify(rawGraph, null, 2)}</pre> : <div className="node-graph-empty"><p>{copy.disconnected}</p><button type="button" onClick={() => void refresh()}>{copy.connect}</button></div>}{graph && !entries.length && <p className="node-graph-empty">{copy.noNodes}</p>}{edgeMenu && <div className="node-graph-edge-menu" role="menu" style={{ left: edgeMenu.left, top: edgeMenu.top }}><button type="button" role="menuitem" onClick={() => { const edge = edges.find((item) => item.id === edgeMenu.id); if (edge) edit((current) => disconnectInput(current, edge.target, String(edge.targetHandle).replace(/^in:/, ''), edge.source, String(edge.sourceHandle).replace(/^out:/, ''))); setEdgeMenu(null); }}>{copy.disconnect}</button></div>}{quickAdd && <div className="node-graph-quick-add" role="dialog" aria-label={copy.add} style={{ left: quickAdd.left, top: quickAdd.top }} onContextMenu={(event) => event.stopPropagation()}><input ref={quickSearchRef} type="search" aria-label={copy.search} placeholder={copy.search} value={quickSearch} onChange={(event) => setQuickSearch(event.target.value)} /><div className="node-graph-quick-add__list">{quickTypes.map((type) => <button type="button" key={type.id} onMouseEnter={() => setQuickDetail(type.id)} onFocus={() => setQuickDetail(type.id)} onClick={() => addAtCursor(type)}><strong>{type.group}</strong><small>{type.core} / {type.layer} · {type.id}</small></button>)}</div>{quickDetail && <div className="node-graph-quick-add__detail" role="note">{(() => { const type = quickTypes.find((item) => item.id === quickDetail); return type ? <><strong>{type.id}</strong><p>{type.core} / {type.layer} / {type.group} · {type.lifecycle}</p><p>{type.capabilities.join(', ') || '—'}</p><small>{type.inputs.length} {lang === 'cn' ? '输入' : 'inputs'} · {type.outputs.length} {lang === 'cn' ? '输出' : 'outputs'} · {type.settings.length} {lang === 'cn' ? '设置' : 'settings'}</small></> : null; })()}</div>}</div>}
-        {visible && <><GraphCoreWindow title="EI" state={coreWindows.egia} onChange={(patch) => updateCoreWindow('egia', patch)} lang={lang}><EgiaWorkbench lang={lang} onOpenGraph={() => updateCoreWindow('egia', { open: false })} /></GraphCoreWindow></>}
+        {visible && <><GraphCoreWindow title="EI" state={coreWindows.ei} onChange={(patch) => updateCoreWindow('ei', patch)} lang={lang}><EiWorkbench lang={lang} onOpenGraph={() => updateCoreWindow('ei', { open: false })} /></GraphCoreWindow></>}
       </div>
-      <aside className="node-graph-side" hidden={sideCollapsed}>{edgeDetail ? <EdgeIdlPanel key={edgeDetail.id} edge={edgeDetail} entries={entries} dataTypes={dataTypes} diagnostics={diagnostics} validated={validationCurrent} processStatus={processStatus} onOpenMonitor={() => onOpenPanel?.('control')} lang={lang} graph={graph!} validatedEdges={validatedEdges} readOnly={readOnly} onInvalidChange={setEdgeInputInvalid} onQosChange={(change) => { const input = String(edgeDetail.targetHandle).replace(/^in:/, ''); edit((current) => updateEdgeQos(current, edgeDetail.target, input, edgeDetail.data?.inputIndex ?? 0, change)); }} /> : chosen ? <><fieldset disabled={readOnly} className="node-graph-readonly-fieldset"><NodeInspector key={chosen.path} entry={chosen} entries={entries} lang={lang} options={nodeOptions} runId={processStatus?.run_id || null} activeRevision={processStatus?.active_revision || null} currentRun={!dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision} onBind={(target) => { try { edit((current) => bindPrimitiveTarget(current, types, chosen.path, target)); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } }} onChange={(change) => edit((current) => updateNode(current, chosen.path, change))} onRename={(id) => { try { edit((current) => renameNode(current, chosen.path, id)); setSelected([`${chosen.path.slice(0, chosen.path.lastIndexOf('/') + 1)}${id}`]); setMessage(''); } catch { setMessage(copy.duplicate, true); } }} onRemove={() => { edit((current) => removeNode(current, chosen.path)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => path !== chosen.path))); setSelected([]); }} /></fieldset><h3>{copy.target}</h3><ul>{Object.entries(chosen.node.inputs || {}).flatMap(([input, sources]) => inputSources(sources).map((source) => <li key={`${input}:${source.node}:${source.output}`}>{input} ← {canonicalNodePath(source.node)}.{source.output}<button type="button" aria-label={`${copy.remove} ${input}`} disabled={readOnly} onClick={() => edit((current) => disconnectInput(current, chosen.path, input, source.node, source.output))}>×</button></li>))}</ul></> : selected.length > 1 ? <div className="node-graph-multi-selection"><p><strong>{selected.length}</strong> {copy.selectedCount}</p><button type="button" disabled={readOnly} onClick={() => { edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); }}>{copy.remove}</button></div> : <p>{copy.noSelection}</p>}
+      <aside className="node-graph-side" hidden={sideCollapsed}>{edgeDetail ? <EdgeIdlPanel key={edgeDetail.id} edge={edgeDetail} entries={entries} dataTypes={dataTypes} diagnostics={diagnostics} validated={validationCurrent} processStatus={processStatus} lang={lang} /> : chosen ? <><fieldset disabled={readOnly} className="node-graph-readonly-fieldset"><NodeInspector key={chosen.path} entry={chosen} entries={entries} lang={lang} options={nodeOptions} runId={processStatus?.run_id || null} activeRevision={processStatus?.active_revision || null} currentRun={!dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision} onBind={(target) => { try { edit((current) => bindPrimitiveTarget(current, types, chosen.path, target)); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } }} onChange={(change) => edit((current) => updateNode(current, chosen.path, change))} onRename={(id) => { try { edit((current) => renameNode(current, chosen.path, id)); setSelected([`${chosen.path.slice(0, chosen.path.lastIndexOf('/') + 1)}${id}`]); setMessage(''); } catch { setMessage(copy.duplicate, true); } }} onRemove={() => { edit((current) => removeNode(current, chosen.path)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => path !== chosen.path))); setSelected([]); }} /></fieldset><h3>{copy.target}</h3><ul>{Object.entries(chosen.node.inputs || {}).flatMap(([input, sources]) => inputSources(sources).map((source) => <li key={`${input}:${source.node}:${source.output}`}>{input} ← {canonicalNodePath(source.node)}.{source.output}<button type="button" aria-label={`${copy.remove} ${input}`} disabled={readOnly} onClick={() => edit((current) => disconnectInput(current, chosen.path, input, source.node, source.output))}>×</button></li>))}</ul></> : selected.length > 1 ? <div className="node-graph-multi-selection"><p><strong>{selected.length}</strong> {copy.selectedCount}</p><button type="button" disabled={readOnly} onClick={() => { edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); }}>{copy.remove}</button></div> : <p>{copy.noSelection}</p>}
         <details className="node-graph-panel" open={diagnosticsOpen} onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}>
           <summary><strong>{copy.diagnostics}</strong><span>{diagnostics.length || '✓'}</span></summary>
           {validationCurrent ? diagnostics.length ? <ul>{diagnostics.map((item, index) => <li key={index}><button className="node-graph-diagnostic" type="button" onClick={() => { setSelected([entries.find((entry) => item.path.includes(entry.path))?.path || ''].filter(Boolean)); setSideCollapsed(false); }}><code>{item.path}</code><span>{item.message}</span></button></li>)}</ul> : <p>{copy.valid}</p> : <p>{lang === 'cn' ? '当前草稿尚未检查。' : 'Current draft has not been checked.'}</p>}

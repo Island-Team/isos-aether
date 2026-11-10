@@ -1,17 +1,24 @@
 # 向 EOS 移交软件包进程
 
+> 历史契约：当前按钮到模拟机械臂图未实现此接口。当前数据及命令路径参见[机械臂控制](arm-control_cn.md)；设置、Run、Status 和 Stop 参见[所有者生命周期](owner-health_cn.md)。
+
+
 [English](../../../docs/eos/interfaces/package-process.md) · [接口目录](README_cn.md) · [MuJoCo 适配器](mujoco_cn.md) · [JSONL 事件](events_cn.md)
 
-IsOS 负责软件包验证、图准入和运行协调，通过 `--package-process <absolute-json-file>` 向 `aether-runtime` 移交已验证的软件包进程。EOS 负责子进程、就绪检查、停止证明、回收和适配器分派。v1 移交只接受一个进程。旧版受管理图仍可使用 `--backend-*` 参数，但不能与新参数同时使用。
 
 ```json
 {
   "schema_version": 1,
-  "node_path": "eos/process/backend/simulator",
-  "node_type": "eos.process.backend@v1.0",
-  "package": {"id": "island/mujoco-sim", "version": "0.1.1"},
-  "entrypoint": "/var/lib/isos/packages/island/mujoco-sim/0.1.1/bin/simulator",
-  "resources": {"scene": "/var/lib/isos/packages/island/mujoco-sim/0.1.1/assets/scene.xml"},
+  "node_path": "isos/eos_process/mujoco/simulator",
+  "node_type": "isos.eos_process.mujoco@v0.2",
+  "package": {
+    "id": "island/mujoco-sim",
+    "version": "0.1.1"
+  },
+  "entrypoint": "/var/lib/island/isos/state/packages/island/mujoco-sim/0.1.1/bin/simulator",
+  "resources": {
+    "scene": "/var/lib/island/isos/state/packages/island/mujoco-sim/0.1.1/assets/scene.xml"
+  },
   "lifecycle_adapter": "mujoco-v2",
   "release_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "payload_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -1,5 +1,5 @@
 {
-  "schema": "q01-egia-vision-evidence-v1",
+  "schema": "q01-ei-vision-evidence-v1",
   "status": "target_not_implemented",
   "cases": [
     {
@@ -482,7 +482,7 @@
         },
         "last_accepted_generation": 6,
         "inspection_path": true,
-        "inspection_grant_role": "egia-vision"
+        "inspection_grant_role": "ei-vision"
       },
       "expect": {
         "outcome": "reject",

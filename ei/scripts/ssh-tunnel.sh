@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [[ ! -f "$ROOT/.env" ]]; then
   echo "ssh-tunnel: missing $ROOT/.env" >&2

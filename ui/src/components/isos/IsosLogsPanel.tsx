@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  getCurrentLogPage, getProcessStatus, isCurrentLogPage,
-  type LogLevel, type LogLine, type LogPage, type ProcessStatus,
+  getCurrentLogPage, getProcessStatus,
+  type LogLevel, type LogLine, type ProcessStatus,
 } from '../../services/isos/node-graph';
 import { IsosApiError } from '../../services/isos/api-client';
 import type { Language } from '@/types';
@@ -12,12 +12,12 @@ import {
 } from './log-cursor-state';
 import './isos-logs-panel.scss';
 
-const SOURCES = ['all', 'isos', 'packages', 'graph', 'browser', 'ui', 'services', 'eos', 'egia', 'mujoco', 'bridge', 'config'];
+const SOURCES = ['all', 'isos', 'packages', 'graph', 'browser', 'ui', 'services', 'eos', 'ei', 'mujoco', 'bridge', 'config'];
 export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error'] as const;
 const POLL_MS = 1200;
 const RETRY_MS = 30_000;
 
-/** Browser logs are separate local diagnostics and may use legacy level names. */
+/** Browser logs are separate local diagnostics. */
 export function visibleLogLines(lines: LogLine[], threshold: LogLevel): LogLine[] {
   const minimum = LOG_LEVELS.indexOf(threshold);
   return lines.filter((line) => {
@@ -25,11 +25,6 @@ export function visibleLogLines(lines: LogLine[], threshold: LogLevel): LogLine[
     const rank = LOG_LEVELS.indexOf(level as LogLevel);
     return (rank < 0 ? LOG_LEVELS.indexOf('warn') : rank) >= minimum;
   });
-}
-
-/** A retained rotation is not a loss; only the current-view scope changes rows. */
-export function appendLogPage(current: LogLine[], page: LogPage): LogLine[] {
-  return [...current, ...page.lines].slice(-1000);
 }
 
 function displayLine(line: LogLine): string {
@@ -44,8 +39,6 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
   const [nodePath, setNodePath] = useState('');
   const [correlationId, setCorrelationId] = useState('');
   const [current, setCurrent] = useState(emptyCurrentLogState);
-  const [legacyLines, setLegacyLines] = useState<LogLine[]>([]);
-  const [compatibility, setCompatibility] = useState(false);
   const [stale, setStale] = useState(false);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState(false);
   const [status, setStatus] = useState<ProcessStatus | null>(null);
@@ -60,7 +53,6 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
   useEffect(() => {
     cursor.current = undefined;
     setCurrent(resetCurrentLogDetails);
-    setLegacyLines([]);
     setError('');
   }, [source, level, nodePath, correlationId]);
   useEffect(() => {
@@ -93,7 +85,7 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
         }
         const page = await getCurrentLogPage({ source, level, ...(nodePath ? { node_path: nodePath } : {}), ...(correlationId ? { correlation_id: correlationId } : {}), cursor: cursor.current, limit: 200 }, requestController.signal);
         if (stopped || requestGeneration !== generation) return;
-        if (isCurrentLogPage(page)) {
+        {
           const anchorKey = `${page.scope.kind}:${page.scope.run_id}`;
           if (observedAnchor.current?.key !== anchorKey) setAnchorAnnouncement(false);
           if (observedAnchor.current?.key === anchorKey && observedAnchor.current.state === 'pending' && page.anchor.state === 'found' && announcedAnchor.current !== anchorKey) {
@@ -105,9 +97,7 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
           cursor.current = page.next_cursor;
           currentScope.current = `${page.scope.kind}:${page.scope.run_id}`;
           setCurrent((state) => acceptCurrentLogPage(state, page));
-          setLegacyLines([]);
-          setCompatibility(false);
-          setStale(statusIdentityUnavailable);
+                setStale(statusIdentityUnavailable);
           if (oldScope && oldScope !== currentScope.current) {
             const fresh = await getProcessStatus(requestController.signal);
             if (stopped || requestGeneration !== generation) return;
@@ -115,15 +105,6 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
             statusIdentityUnavailable = fresh.run_id_state === 'unavailable';
             setStale(statusIdentityUnavailable);
           }
-        } else {
-          observedAnchor.current = null;
-          setAnchorAnnouncement(false);
-          cursor.current = page.next_cursor ?? cursor.current;
-          currentScope.current = null;
-          setCurrent(emptyCurrentLogState);
-          setLegacyLines((rows) => appendLogPage(rows, page));
-          setCompatibility(true);
-          setStale(statusIdentityUnavailable);
         }
         retryAt = 0;
         setError('');
@@ -178,12 +159,12 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
   const currentScope = useRef<string | null>(null);
 
   const copy = lang === 'cn'
-    ? { title: 'IsOS 与浏览器日志', source: '来源', all: '所有来源', level: '最低级别', follow: '实时跟踪', close: '关闭', empty: '没有匹配的日志', pendingRun: '等待本次运行的首条就绪或故障事件', pendingManager: '等待管理器会话的首条软件包或 Apply 故障', unavailable: '首条事件不可用；已检测到日志缺口', identityUnavailable: 'IsOS 无法确认当前运行身份；旧日志已标为过期。', anchor: '本次首条事件', anchorAvailable: '本次首条事件已可查看', details: '后续日志', browser: '浏览器本地日志', status: '实时状态', unknown: '未知', legacy: '旧版 IsOS 仅提供未固定首条事件的日志', stale: '上次范围（已过期，非当前运行）', node: '节点路径', correlation: '关联 ID', invalidNode: '节点路径格式无效', invalidCorrelation: '关联 ID 格式无效', jump: '跳转到首条事件', copyRun: '复制运行 ID', copyCorrelation: '复制关联 ID', boundary: '新的运行范围', gap: '日志缺口', acknowledge: '已知悉缺口', trace: '跟踪及以上', debug: '调试及以上', info: '信息及以上', warn: '警告及以上', error: '仅错误' }
-    : { title: 'IsOS and browser logs', source: 'Source', all: 'All sources', level: 'Minimum level', follow: 'Follow', close: 'Close', empty: 'No matching entries', pendingRun: 'Waiting for the first ready or failure event in this run', pendingManager: 'Waiting for the first package or Apply failure in this manager session', unavailable: 'First event unavailable; a log gap was detected', identityUnavailable: 'IsOS cannot confirm the current run identity; previous logs are stale.', anchor: 'First event in this scope', anchorAvailable: 'First event is available in this scope', details: 'Subsequent logs', browser: 'Local browser logs', status: 'Live status', unknown: 'unknown', legacy: 'Older IsOS provides logs without a pinned first event', stale: 'Previous scope (stale, not current)', node: 'Node path', correlation: 'Correlation ID', invalidNode: 'Invalid node path format', invalidCorrelation: 'Invalid correlation ID format', jump: 'Jump to first event', copyRun: 'Copy run ID', copyCorrelation: 'Copy correlation ID', boundary: 'New run scope', gap: 'Log gap', acknowledge: 'Acknowledge gap', trace: 'Trace and above', debug: 'Debug and above', info: 'Info and above', warn: 'Warnings and errors', error: 'Errors only' };
+    ? { title: 'IsOS 与浏览器日志', source: '来源', all: '所有来源', level: '最低级别', follow: '实时跟踪', close: '关闭', empty: '没有匹配的日志', pendingRun: '等待本次运行的首条就绪或故障事件', pendingManager: '等待管理器会话的首条软件包或 Apply 故障', unavailable: '首条事件不可用；已检测到日志缺口', identityUnavailable: 'IsOS 无法确认当前运行身份；旧日志已标为过期。', anchor: '本次首条事件', anchorAvailable: '本次首条事件已可查看', details: '后续日志', browser: '浏览器本地日志', status: '实时状态', unknown: '未知', stale: '上次范围（已过期，非当前运行）', node: '节点路径', correlation: '关联 ID', invalidNode: '节点路径格式无效', invalidCorrelation: '关联 ID 格式无效', jump: '跳转到首条事件', copyRun: '复制运行 ID', copyCorrelation: '复制关联 ID', boundary: '新的运行范围', gap: '日志缺口', acknowledge: '已知悉缺口', trace: '跟踪及以上', debug: '调试及以上', info: '信息及以上', warn: '警告及以上', error: '仅错误' }
+    : { title: 'IsOS and browser logs', source: 'Source', all: 'All sources', level: 'Minimum level', follow: 'Follow', close: 'Close', empty: 'No matching entries', pendingRun: 'Waiting for the first ready or failure event in this run', pendingManager: 'Waiting for the first package or Apply failure in this manager session', unavailable: 'First event unavailable; a log gap was detected', identityUnavailable: 'IsOS cannot confirm the current run identity; previous logs are stale.', anchor: 'First event in this scope', anchorAvailable: 'First event is available in this scope', details: 'Subsequent logs', browser: 'Local browser logs', status: 'Live status', unknown: 'unknown', stale: 'Previous scope (stale, not current)', node: 'Node path', correlation: 'Correlation ID', invalidNode: 'Invalid node path format', invalidCorrelation: 'Invalid correlation ID format', jump: 'Jump to first event', copyRun: 'Copy run ID', copyCorrelation: 'Copy correlation ID', boundary: 'New run scope', gap: 'Log gap', acknowledge: 'Acknowledge gap', trace: 'Trace and above', debug: 'Debug and above', info: 'Info and above', warn: 'Warnings and errors', error: 'Errors only' };
   const invalidNode = nodePath !== '' && !validNodeFilter(nodePath);
   const invalidCorrelation = correlationId !== '' && !validCorrelationFilter(correlationId);
   const browserVisible = visibleLogLines(browserLines, level);
-  const serverLines = compatibility ? legacyLines : current.lines;
+  const serverLines = current.lines;
   const pendingText = current.scope?.kind === 'manager_session' ? copy.pendingManager : copy.pendingRun;
   const diagText = current.diagnostics.filter((item) => item.code !== 'log_run_changed').map((item) => `${item.code}${item.count === null ? '' : ` (${item.count})`}`).join(', ');
   const copySafeId = (value: string): void => { if (navigator.clipboard) void navigator.clipboard.writeText(value); };
@@ -206,13 +187,12 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
     {invalidNode && <p role="alert">{copy.invalidNode}</p>}
     {invalidCorrelation && <p role="alert">{copy.invalidCorrelation}</p>}
     {error && <p role="alert">{error}</p>}
-    {compatibility && <p role="status">{copy.legacy}</p>}
-    {current.boundary && !compatibility && <p aria-live="polite">{copy.boundary}: {current.boundary.previous} → {current.boundary.current}</p>}
-    {diagText && !compatibility && <p role="alert">{copy.gap}: {diagText} <button type="button" onClick={() => setCurrent(acknowledgeCurrentLogDiagnostics)}>{copy.acknowledge}</button></p>}
-    {anchorAnnouncement && !compatibility && <p role="status" aria-live="polite">{copy.anchorAvailable}</p>}
-    {source !== 'browser' && !compatibility && current.anchor?.state === 'found' && current.anchor.event && <div className="node-graph-logs__anchor"><strong>{copy.anchor}</strong>{current.anchor.event.correlation_id && <button type="button" onClick={() => copySafeId(current.anchor!.event!.correlation_id!)}>{copy.copyCorrelation}</button>}<pre ref={anchorRef}>{displayLine(current.anchor.event)}</pre></div>}
-    {source !== 'browser' && !compatibility && current.anchor?.state === 'pending' && <p role="status">{pendingText}</p>}
-    {source !== 'browser' && !compatibility && current.anchor?.state === 'unavailable' && <p role="alert">{copy.unavailable}</p>}
+    {current.boundary && <p aria-live="polite">{copy.boundary}: {current.boundary.previous} → {current.boundary.current}</p>}
+    {diagText && <p role="alert">{copy.gap}: {diagText} <button type="button" onClick={() => setCurrent(acknowledgeCurrentLogDiagnostics)}>{copy.acknowledge}</button></p>}
+    {anchorAnnouncement && <p role="status" aria-live="polite">{copy.anchorAvailable}</p>}
+    {source !== 'browser' && current.anchor?.state === 'found' && current.anchor.event && <div className="node-graph-logs__anchor"><strong>{copy.anchor}</strong>{current.anchor.event.correlation_id && <button type="button" onClick={() => copySafeId(current.anchor!.event!.correlation_id!)}>{copy.copyCorrelation}</button>}<pre ref={anchorRef}>{displayLine(current.anchor.event)}</pre></div>}
+    {source !== 'browser' && current.anchor?.state === 'pending' && serverLines.length === 0 && <p role="status">{pendingText}</p>}
+    {source !== 'browser' && current.anchor?.state === 'unavailable' && <p role="alert">{copy.unavailable}</p>}
     {source !== 'browser' && <div className="node-graph-logs__stream"><strong>{copy.details}</strong><pre role="log" aria-live="off">{serverLines.length ? serverLines.map(displayLine).join('\n') : current.anchor?.state === 'pending' ? pendingText : copy.empty}</pre></div>}
     {(source === 'all' || source === 'browser') && <div className="node-graph-logs__stream node-graph-logs__browser"><strong>{copy.browser}</strong><pre role="log" aria-live="off">{browserVisible.length ? browserVisible.map(displayLine).join('\n') : copy.empty}</pre></div>}
   </section>;

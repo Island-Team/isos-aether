@@ -5,8 +5,8 @@ import type { GraphNode } from './node-graph-edits';
 
 const descriptors: DataTypeDefinition[] = ['camera_frame', 'vision_frame'].map((id) => ({ id, version: '2.0.0', purpose: id, media_type: 'application/json', codec: 'json', schema: { type: 'object' }, max_payload_bytes: 1000 }));
 const entries: GraphNode[] = [
-  { path: 'source', node: { id: 'source', node_type: 'camera', label: '', description: '' }, definition: { id: 'camera', core: 'eos', layer: 'hardware', group: 'mujoco', kind: 'camera', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [{ name: 'frame', data_type: 'camera_frame', required: true }] } },
-  { path: 'target', node: { id: 'target', node_type: 'gate', label: '', description: '' }, definition: { id: 'gate', core: 'eos', layer: 'interface', group: 'gate', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [{ name: 'frame', data_type: 'vision_frame', required: true }], outputs: [] } },
+  { path: 'source', node: { id: 'source', node_type: 'isos.eos_hardware.camera@v0.2', label: '', description: '' }, definition: { id: 'isos.eos_hardware.camera@v0.2', core: 'isos', layer: 'eos_hardware', group: 'mujoco', kind: 'camera', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [{ name: 'frame', data_type: 'camera_frame', required: true }] } },
+  { path: 'target', node: { id: 'target', node_type: 'isos.eos_interface.gate@v0.2', label: '', description: '' }, definition: { id: 'isos.eos_interface.gate@v0.2', core: 'isos', layer: 'eos_interface', group: 'gate', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [{ name: 'frame', data_type: 'vision_frame', required: true }], outputs: [] } },
 ];
 
 describe('edge IDL resolution', () => {
@@ -20,18 +20,18 @@ describe('edge IDL resolution', () => {
 
 describe('edge input diagnostics', () => {
   it('selects only diagnostics for the destination input, including slash and dot paths', () => {
-    const target = 'cores/eos/layers/interface/groups/gate/nodes/front';
+    const target = 'cores/isos/layers/eos_interface/groups/gate/nodes/front';
     const diagnostics = [
       { path: `${target}/inputs/frame`, code: 'type_mismatch', message: 'Frame type mismatch' },
-      { path: 'cores.eos.layers.interface.groups.gate.nodes.front.inputs.other', message: 'Other input' },
-      { path: 'cores.eos.layers.interface.groups.gate.nodes.other.inputs.frame', message: 'Other node' },
+      { path: 'cores.isos.layers.eos_interface.groups.gate.nodes.front.inputs.other', message: 'Other input' },
+      { path: 'cores.isos.layers.eos_interface.groups.gate.nodes.other.inputs.frame', message: 'Other node' },
     ];
     expect(edgeInputDiagnostics({ source: 'camera', target, targetHandle: 'in:frame' }, diagnostics)).toEqual([diagnostics[0]]);
     expect(edgeInputDiagnostics({ source: 'camera', target, targetHandle: null }, diagnostics)).toEqual([]);
   });
   it('keeps two source indices and similarly named ports distinct', () => {
-    const target = 'eos/interface/gate/front';
-    const pointer = '/cores/eos/layers/interface/groups/gate/nodes/front';
+    const target = 'isos/eos_interface/gate/front';
+    const pointer = '/cores/isos/layers/eos_interface/groups/gate/nodes/front';
     const diagnostics = [
       { path: `${pointer}/inputs/frame/0`, message: 'First source rejected' },
       { path: `${pointer}/inputs/frame/1`, message: 'Second source rejected' },

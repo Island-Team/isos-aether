@@ -19,6 +19,116 @@ pub struct Manifest {
   pub build_target: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiSettings {
+  pub default_interface: String,
+  pub locale: String,
+  #[serde(skip)]
+  pub connection: ConnectionSettings,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionSettings {
+  pub startup_timeout_ms: u64,
+  pub poll_interval_ms: u64,
+}
+
+impl Default for ConnectionSettings {
+  fn default() -> Self {
+    Self {
+      startup_timeout_ms: 30_000,
+      poll_interval_ms: 2_000,
+    }
+  }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiDocument {
+  ui: UiSettings,
+  #[serde(default)]
+  connection: ConnectionSettings,
+}
+
+pub fn ui_settings() -> Result<UiSettings> {
+  let selected = if let Some(value) = std::env::var_os("ISOSUI_CONFIG") {
+    let path = PathBuf::from(value);
+    ensure!(path.is_absolute(), "ISOSUI_CONFIG must be absolute");
+    path
+  } else if let Some(home) = std::env::var_os("ISOS_HOME") {
+    let path = PathBuf::from(home).join("config/isosui.toml");
+    if path.is_file() {
+      path
+    } else {
+      ui_default_path()?
+    }
+  } else {
+    ui_default_path()?
+  };
+  let mut document: UiDocument = toml::from_str(&fs::read_to_string(&selected)?)
+    .with_context(|| format!("parse {}", selected.display()))?;
+  apply_environment(&mut document, |name| std::env::var(name).ok())?;
+  validate_settings(&mut document)?;
+  Ok(document.ui)
+}
+
+fn apply_environment(
+  document: &mut UiDocument,
+  get: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
+  if let Some(value) = get("ISOSUI_DEFAULT_INTERFACE") {
+    document.ui.default_interface = value;
+  }
+  if let Some(value) = get("ISOSUI_LOCALE") {
+    document.ui.locale = value;
+  }
+  if let Some(value) = get("ISOSUI_STARTUP_TIMEOUT_MS") {
+    document.connection.startup_timeout_ms = value
+      .parse()
+      .context("ISOSUI_STARTUP_TIMEOUT_MS must be an integer")?;
+  }
+  if let Some(value) = get("ISOSUI_POLL_INTERVAL_MS") {
+    document.connection.poll_interval_ms = value
+      .parse()
+      .context("ISOSUI_POLL_INTERVAL_MS must be an integer")?;
+  }
+  Ok(())
+}
+
+fn validate_settings(document: &mut UiDocument) -> Result<()> {
+  ensure!(
+    matches!(document.ui.default_interface.as_str(), "web" | "tui"),
+    "ui.default_interface must be web or tui"
+  );
+  ensure!(
+    matches!(document.ui.locale.as_str(), "en" | "cn"),
+    "ui.locale must be en or cn"
+  );
+  ensure!(
+    (1_000..=60_000).contains(&document.connection.startup_timeout_ms),
+    "connection.startup_timeout_ms must be 1000–60000"
+  );
+  ensure!(
+    (500..=10_000).contains(&document.connection.poll_interval_ms),
+    "connection.poll_interval_ms must be 500–10000"
+  );
+  document.ui.connection = document.connection.clone();
+  Ok(())
+}
+
+fn ui_default_path() -> Result<PathBuf> {
+  let binary = std::env::current_exe()?;
+  if let Some(prefix) = binary.parent().and_then(Path::parent) {
+    let installed = prefix.join("share/isos/config/isosui.toml");
+    if installed.is_file() {
+      return Ok(installed);
+    }
+  }
+  Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/isosui.toml"))
+}
+
 fn manifest(dir: &Path) -> Result<Manifest> {
   let value: Manifest = serde_json::from_slice(&fs::read(dir.join("manifest.json"))?)?;
   ensure!(value.schema_version == 1, "unknown IsosUI manifest schema");
@@ -128,6 +238,54 @@ mod tests {
   use super::*;
 
   #[test]
+  fn connection_settings_reject_out_of_range_values() {
+    let mut valid: UiDocument = toml::from_str("[ui]\ndefault_interface='tui'\nlocale='cn'\n[connection]\nstartup_timeout_ms=30000\npoll_interval_ms=500\n").unwrap();
+    validate_settings(&mut valid).unwrap();
+    assert_eq!(valid.ui.connection.poll_interval_ms, 500);
+    let mut invalid: UiDocument = toml::from_str("[ui]\ndefault_interface='web'\nlocale='en'\n[connection]\nstartup_timeout_ms=999\npoll_interval_ms=2000\n").unwrap();
+    assert!(validate_settings(&mut invalid).is_err());
+    invalid.connection.startup_timeout_ms = 30000;
+    invalid.connection.poll_interval_ms = 10_001;
+    assert!(validate_settings(&mut invalid).is_err());
+  }
+
+  #[test]
+  fn environment_overrides_toml_and_rejects_invalid_values() {
+    let source = include_str!("../../../../config/isosui.toml");
+    let mut document: UiDocument = toml::from_str(source).unwrap();
+    apply_environment(&mut document, |name| {
+      match name {
+        "ISOSUI_DEFAULT_INTERFACE" => Some("tui"),
+        "ISOSUI_LOCALE" => Some("cn"),
+        "ISOSUI_STARTUP_TIMEOUT_MS" => Some("45000"),
+        "ISOSUI_POLL_INTERVAL_MS" => Some("750"),
+        _ => None,
+      }
+      .map(str::to_owned)
+    })
+    .unwrap();
+    validate_settings(&mut document).unwrap();
+    assert_eq!(document.ui.default_interface, "tui");
+    assert_eq!(document.ui.locale, "cn");
+    assert_eq!(document.ui.connection.startup_timeout_ms, 45_000);
+    assert_eq!(document.ui.connection.poll_interval_ms, 750);
+
+    let mut invalid: UiDocument = toml::from_str(source).unwrap();
+    assert!(
+      apply_environment(&mut invalid, |name| {
+        (name == "ISOSUI_POLL_INTERVAL_MS").then(|| "not-a-number".to_owned())
+      })
+      .is_err()
+    );
+    let mut invalid: UiDocument = toml::from_str(source).unwrap();
+    apply_environment(&mut invalid, |name| {
+      (name == "ISOSUI_LOCALE").then(|| "de".to_owned())
+    })
+    .unwrap();
+    assert!(validate_settings(&mut invalid).is_err());
+  }
+
+  #[test]
   fn source_root_uses_sibling_and_validates_override() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("IsosUI");
@@ -158,11 +316,11 @@ mod tests {
     )
     .unwrap();
     assert_eq!(manifest(&bundle).unwrap(), identity);
-    let mut legacy = identity.clone();
-    legacy.api_schema_version = serde_json::json!(2);
+    let mut incompatible = identity.clone();
+    incompatible.api_schema_version = serde_json::json!(2);
     fs::write(
       bundle.join("manifest.json"),
-      serde_json::to_vec(&legacy).unwrap(),
+      serde_json::to_vec(&incompatible).unwrap(),
     )
     .unwrap();
     assert!(manifest(&bundle).is_err());

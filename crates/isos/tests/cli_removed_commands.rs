@@ -8,12 +8,13 @@ fn obsolete_commands_are_not_exposed_or_executed() {
     vec!["build"],
     vec!["version", "select", "eos", "abc"],
     vec!["eos", "start"],
-    vec!["egia", "start"],
+    vec!["ei", "start"],
     vec!["v2", "run"],
   ] {
     let output = Command::new(env!("CARGO_BIN_EXE_isos"))
       .args(&command)
       .env("ISOS_HOME", &home)
+      .env("XDG_CONFIG_HOME", temporary.path().join("config"))
       .env_remove("ISOS_CONFIG")
       .output()
       .expect("run IsOS CLI");

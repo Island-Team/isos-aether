@@ -1,0 +1,12 @@
+# Inspect EOS evidence routes
+
+[中文](../../../../docs_cn/eos/design/runtime/routed-edges_cn.md) · [Quick start](../../start/quick-start.md) · [Owner contract](../../interfaces/hardware.md) · [Architecture](../architecture.md)
+
+**R01 implemented in this topic branch.** IsOS owns graph admission and Apply. EOS delivers admitted local camera evidence through per-gate routes. The owner socket exposes `route_status` for the current runtime generation.
+
+First install and verify the required package, select the camera and gate in the IsOS graph, then Validate and Apply the graph as described in [first use](../../start/README.md). The [G06 evidence fixture](../../../../tests/fixtures/edge_contract/valid_evidence.json) shows the exact `@v0.2` camera frame connected to the gate frame with `priority:-20` and `frequency_hz:15.0`. IsOS rejects QoS on fixed actuator, safety, result, health and stop paths before Apply. A successful Apply only admits the declaration; it does not prove that a camera is healthy or a frame was delivered.
+
+
+To inspect an overload, compare `delivered_count`, `cap_wait_count`, `replaced_count`, `overflow_count`, `consumer_error_count`, `cancelled_count`, and `gap_count` within one runtime generation. A rate cap can increase waiting without loss. A new image replacing a retained image increases replacement and gap counts. Stop closes evidence admission, invokes Dispatcher emergency stop before waiting on evidence workers, and cancels pending evidence with a gap. The owner socket no longer serves `route_status` during or after shutdown; inspect counters before stopping and use IsOS status and run events afterward. Command results, health, and stop come from their existing owners and remain outside these queues. Use IsOS run-bound logs to find the first ready or failure event, then correlate with owner status; do not infer health from a route row. A restarted runtime resets counters; use IsOS run and process identity to distinguish generations even if the projection digest is unchanged.
+
+If the route is `not_routed`, check the exact source and target type IDs, ports, data type and transport against the [contract](../../interfaces/hardware.md). Similar or contributed identities do not gain delivery. If startup rejects a missing compiled endpoint or too many live routes, use IsOS's owner-reported failure and keep the saved graph unchanged while correcting it. [Scheduler design](scheduler.md) explains the bounded queue and fairness rules.

@@ -27,6 +27,17 @@ use uuid::Uuid;
 pub const MAX_METADATA_BYTES: usize = 64 * 1024;
 pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
+/// Device IDs exposed by the published MuJoCo 0.1.1 simulator contract.
+/// The setup selector and runtime admission use this same map.
+pub fn published_device_id(kind: NodeKind) -> Option<&'static str> {
+  match kind {
+    NodeKind::Camera => Some("cam-0"),
+    NodeKind::Base => Some("base-0"),
+    NodeKind::Manipulator => Some("arm-0"),
+    NodeKind::Software => None,
+  }
+}
+
 #[derive(Default)]
 struct SessionState {
   generation_id: Option<String>,

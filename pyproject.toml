@@ -15,3 +15,6 @@ tab_size = 2
 separate_ctrl_name_with_space = false
 separate_fn_name_with_space = false
 dangle_parens = true
+
+[tool.ruff]
+cache-dir = "data/cache/tools/ruff-root"

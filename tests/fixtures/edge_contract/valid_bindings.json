@@ -1,19 +1,19 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "robot": {
     "id": "demo-0",
     "name": "EOS v2 demo"
   },
   "cores": {
-    "eos": {
+    "isos": {
       "layers": {
-        "hardware": {
+        "eos_hardware": {
           "groups": {
             "camera": {
               "nodes": {
                 "front": {
                   "id": "front",
-                  "node_type": "eos.hardware.camera@v0.1",
+                  "node_type": "isos.eos_hardware.camera@v0.2",
                   "label": "Front RGB-D camera",
                   "description": "Loopback aligned RGB and depth frames",
                   "frame_id": "front_camera_optical",
@@ -40,7 +40,7 @@
               "nodes": {
                 "drive": {
                   "id": "drive",
-                  "node_type": "eos.hardware.base@v0.1",
+                  "node_type": "isos.eos_hardware.base@v0.2",
                   "label": "Planar base",
                   "description": "Loopback differential drive controller",
                   "frame_id": "base_link",
@@ -73,7 +73,7 @@
                   "inputs": {
                     "command": [
                       {
-                        "node": "eos/dispatcher/base/velocity",
+                        "node": "isos/eos_dispatcher/base/velocity",
                         "output": "command"
                       }
                     ]
@@ -86,7 +86,7 @@
               "nodes": {
                 "arm": {
                   "id": "arm",
-                  "node_type": "eos.hardware.manipulator@v0.1",
+                  "node_type": "isos.eos_hardware.manipulator@v0.2",
                   "label": "Six axis arm",
                   "description": "Loopback joint and Cartesian command receiver",
                   "frame_id": "arm_base",
@@ -128,7 +128,7 @@
                   "inputs": {
                     "command": [
                       {
-                        "node": "eos/dispatcher/manipulator/movej",
+                        "node": "isos/eos_dispatcher/manipulator/movej",
                         "output": "command"
                       }
                     ]
@@ -139,13 +139,13 @@
             }
           }
         },
-        "dispatcher": {
+        "eos_dispatcher": {
           "groups": {
             "control": {
               "nodes": {
                 "command": {
                   "id": "command",
-                  "node_type": "eos.dispatcher.control@v0.1",
+                  "node_type": "isos.eos_dispatcher.control@v0.2",
                   "label": "EOS command dispatcher",
                   "description": "Software node that admits movement through configured hardware nodes",
                   "capabilities": [
@@ -153,8 +153,8 @@
                     "status"
                   ],
                   "references": [
-                    "eos/hardware/base/drive",
-                    "eos/hardware/manipulator/arm"
+                    "isos/eos_hardware/base/drive",
+                    "isos/eos_hardware/manipulator/arm"
                   ],
                   "inputs": {}
                 }
@@ -164,7 +164,7 @@
               "nodes": {
                 "velocity": {
                   "id": "velocity",
-                  "node_type": "eos.dispatcher.primitive_base@v0.1",
+                  "node_type": "isos.eos_dispatcher.primitive_base@v0.2",
                   "label": "Base velocity",
                   "description": "Governed base primitive binding",
                   "settings": {
@@ -179,7 +179,7 @@
               "nodes": {
                 "movej": {
                   "id": "movej",
-                  "node_type": "eos.dispatcher.primitive_manipulator@v0.1",
+                  "node_type": "isos.eos_dispatcher.primitive_manipulator@v0.2",
                   "label": "Arm movej",
                   "description": "Governed arm primitive binding",
                   "settings": {

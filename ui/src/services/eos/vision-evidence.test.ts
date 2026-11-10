@@ -5,7 +5,7 @@ import { checkVisionAttestation, checkVisionEvidenceFrame, decodeVisionFrame, va
 const graph = '0'.repeat(64);
 const projection = 'a'.repeat(64);
 const stream = '8b4e9b70-5481-4d88-9bd6-4f07cb466ae4';
-const selection: VisionEvidenceSelection = { gate_path: 'eos/interface/gate/front', source_path: 'eos/hardware/camera/front', projection_revision: projection, render: { max_width_px: 1280, jpeg_quality: 80 }, target_fps: 30 };
+const selection: VisionEvidenceSelection = { gate_path: 'isos/eos_interface/gate/front', source_path: 'isos/eos_hardware/camera/front', projection_revision: projection, render: { max_width_px: 1280, jpeg_quality: 80 }, target_fps: 30 };
 const attestation = { type: 'subscribed', graph_revision: graph, projection_revision: projection, gate_path: selection.gate_path, source_path: selection.source_path, runtime_stream_id: stream, gate_generation: 0 };
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 function packet(patch: Record<string, unknown> = {}, metadataPadding = ''): ArrayBuffer {
@@ -24,7 +24,7 @@ describe('selected Vision evidence', () => {
     expect(validVisionSelection({ ...selection, render: { max_width_px: 640, jpeg_quality: 80 } })).toBe(false);
     expect(validVisionSelection(null)).toBe(false);
     expect(checkVisionAttestation(attestation, selection, graph).gate_generation).toBe(0);
-    expect(() => checkVisionAttestation({ ...attestation, source_path: 'eos/hardware/camera/rear' }, selection, graph)).toThrow('source_mismatch');
+    expect(() => checkVisionAttestation({ ...attestation, source_path: 'isos/eos_hardware/camera/rear' }, selection, graph)).toThrow('source_mismatch');
     expect(() => checkVisionAttestation({ ...attestation, graph_revision: 'f'.repeat(64) }, selection, graph)).toThrow('revision_mismatch');
   });
   it('accepts only the exact JPEG digest and monotonic selected delivery', async () => {
@@ -34,8 +34,8 @@ describe('selected Vision evidence', () => {
     expect(await checkVisionEvidenceFrame(good, selection, subscribed, 6)).toBe(7);
     await expect(checkVisionEvidenceFrame(good, selection, subscribed, 7)).rejects.toThrow('generation_stale');
     await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ jpeg_sha256: 'f'.repeat(64) })), selection, subscribed, 6)).rejects.toThrow('digest_mismatch');
-    await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ source_path: 'eos/hardware/camera/rear', jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('source_mismatch');
-    await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ gate_path: 'eos/interface/gate/rear', jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('gate_mismatch');
+    await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ source_path: 'isos/eos_hardware/camera/rear', jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('source_mismatch');
+    await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ gate_path: 'isos/eos_interface/gate/rear', jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('gate_mismatch');
     await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ runtime_stream_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('stream_mismatch');
     await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ projection_revision: 'f'.repeat(64), jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('revision_mismatch');
     await expect(checkVisionEvidenceFrame(decodeVisionFrame(packet({ render: { max_width_px: 640, jpeg_quality: 80 }, jpeg_sha256: actual })), selection, subscribed, 6)).rejects.toThrow('render_mismatch');

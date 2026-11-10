@@ -1,4 +1,5 @@
 use std::{
+  fs,
   io::{Read, Write},
   net::{TcpListener, TcpStream},
   os::unix::net::UnixStream,
@@ -39,7 +40,7 @@ fn incompatible_ui_keeps_v1_api_and_manager_available() {
     if child.try_wait().unwrap().is_some() {
       break;
     }
-    if UnixStream::connect(home.path().join("run/manager.sock")).is_ok()
+    if UnixStream::connect(home.path().join("data/isos/run/manager.sock")).is_ok()
       && let Ok(mut connection) = TcpStream::connect(("127.0.0.1", api_port))
     {
       connection
@@ -57,6 +58,22 @@ fn incompatible_ui_keeps_v1_api_and_manager_available() {
     }
     std::thread::sleep(Duration::from_millis(50));
   }
+  let log = home
+    .path()
+    .join("data/isos/log/deployments/default/isos.jsonl");
+  let mut ready = false;
+  while Instant::now() < deadline {
+    if fs::read_to_string(&log)
+      .is_ok_and(|events| events.contains("\"event_code\":\"workbench_ready\""))
+    {
+      ready = true;
+      break;
+    }
+    if child.try_wait().unwrap().is_some() {
+      break;
+    }
+    std::thread::sleep(Duration::from_millis(50));
+  }
   unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
   let output = child.wait_with_output().unwrap();
   assert!(
@@ -65,5 +82,6 @@ fn incompatible_ui_keeps_v1_api_and_manager_available() {
     String::from_utf8_lossy(&output.stdout),
     String::from_utf8_lossy(&output.stderr)
   );
+  assert!(ready, "workbench did not reach ready: {output:?}");
   assert!(output.status.success(), "{output:?}");
 }

@@ -17,7 +17,14 @@
 未知 ID、重复 `(kind,id)`、字节变化、越界路径及符号链接以有界软件包诊断失败。错误保留规范图指针。过期修订在更改前失败。Apply、Run 和 Restart 前执行同样检查。
 
 ```json
-{"kind":"configuration","id":"balanced","label":"Balanced","description":"General profile","path":"profiles/balanced.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+{
+  "kind": "configuration",
+  "id": "balanced",
+  "label": "Balanced",
+  "description": "General profile",
+  "path": "profiles/balanced.json",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}
 ```
 
 摘要仅展示格式，发布者必须使用真实文件摘要。

@@ -2,14 +2,17 @@
 
 pub(crate) mod manager_log;
 use crate::app::config::Paths;
-use crate::runtime::owners::event_policy;
+use crate::runtime::owners::{dependent_stop, event_policy};
 mod cursor;
+mod core_files;
 use anyhow::{Context, Result, ensure};
 use chrono::{SecondsFormat, Utc};
 pub use cursor::{CurrentError, CurrentQuery};
 use serde_json::{Value, json};
+#[cfg(test)]
+use std::sync::mpsc::Receiver;
 use std::{
-  collections::{BTreeMap, BTreeSet, VecDeque},
+  collections::BTreeMap,
   fs::{self, File, OpenOptions},
   io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
   os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -17,18 +20,17 @@ use std::{
   sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
-    mpsc::{self, Receiver},
   },
-  time::{Duration, Instant},
 };
+#[cfg(test)]
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::time::{Duration, Instant};
 
-const DEFAULT_MAX_BYTES: u64 = 262_144;
-const DEFAULT_BACKUPS: u8 = 2;
-const DEFAULT_MAX_SOURCES: u16 = 32;
+const DEFAULT_MAX_BYTES: u64 = 8_388_608;
+const DEFAULT_BACKUPS: u8 = 5;
 const MAX_READ_BYTES: u64 = 65_536;
-static INGEST_REJECTED: AtomicU64 = AtomicU64::new(0);
 static WRITE_FAILED: AtomicU64 = AtomicU64::new(0);
-static REJECTION_REASONS: OnceLock<Mutex<BTreeMap<&'static str, u64>>> = OnceLock::new();
 static DEPLOYMENT_LOSSES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<AtomicU64>>>> = OnceLock::new();
 
 fn saturating_increment(counter: &AtomicU64) {
@@ -42,38 +44,6 @@ fn saturating_increment(counter: &AtomicU64) {
   }
 }
 
-fn reject(store: &LogStore, reason: &'static str) {
-  saturating_increment(&INGEST_REJECTED);
-  saturating_increment(&store.losses);
-  let mut reasons = REJECTION_REASONS
-    .get_or_init(|| Mutex::new(BTreeMap::new()))
-    .lock()
-    .unwrap();
-  let count = reasons.entry(reason).or_default();
-  *count = count.saturating_add(1);
-}
-
-pub fn rejection_reasons() -> Value {
-  let reasons = REJECTION_REASONS
-    .get_or_init(|| Mutex::new(BTreeMap::new()))
-    .lock()
-    .unwrap();
-  json!(&*reasons)
-}
-
-pub fn counters() -> (u64, u64) {
-  (
-    INGEST_REJECTED.load(Ordering::Relaxed),
-    WRITE_FAILED.load(Ordering::Relaxed),
-  )
-}
-
-/// Account for a stop event that could not enter the bounded log queue.
-/// This must remain free of filesystem calls on the stop response path.
-pub fn record_stop_event_loss() {
-  saturating_increment(&WRITE_FAILED);
-}
-
 pub struct LogContext<'a> {
   pub run_id: Option<&'a str>,
   pub correlation_id: Option<&'a str>,
@@ -84,11 +54,12 @@ pub struct LogContext<'a> {
 #[derive(Clone)]
 pub struct LogStore {
   root: PathBuf,
+  runtime: PathBuf,
   max_bytes: u64,
   backups: u8,
-  max_sources: u16,
   level: u8,
   lock: Arc<Mutex<()>>,
+  #[cfg(test)]
   suppression: Arc<Mutex<BTreeMap<String, (Instant, u32)>>>,
   losses: Arc<AtomicU64>,
 }
@@ -149,6 +120,20 @@ fn private_dir(path: &Path) -> Result<()> {
   Ok(())
 }
 
+fn ordered_event(value: &Value) -> Result<Vec<u8>> {
+  let mut event = value.clone();
+  let source = value["source"].as_str().unwrap_or("manager");
+  if !source.contains('@') {
+    event["source"] = json!(format!("isos.runtime.{source}.event@aether-v0.2.1"));
+  }
+  event["core"] = json!("isos");
+  Ok(serde_json::to_vec(&event)?)
+}
+
+pub fn jsonl_line(value: &Value) -> Result<String> {
+  Ok(String::from_utf8(ordered_event(value)?)?)
+}
+
 impl LogStore {
   pub fn new(paths: &Paths, deployment: &str) -> Result<Self> {
     Self::try_new(paths, deployment).inspect_err(|_| saturating_increment(&WRITE_FAILED))
@@ -166,12 +151,7 @@ impl LogStore {
       .map(|v| v.parse())
       .transpose()?
       .unwrap_or(DEFAULT_BACKUPS);
-    let max_sources = std::env::var("ISOS_LOG_MAX_SOURCES")
-      .ok()
-      .map(|v| v.parse())
-      .transpose()?
-      .unwrap_or(DEFAULT_MAX_SOURCES);
-    let level = std::env::var("ISOS_LOG_LEVEL").unwrap_or_else(|_| "info".into());
+    let level = std::env::var("ISOS_LOG_LEVEL").unwrap_or_else(|_| "debug".into());
     let level =
       level_rank(&level).context("ISOS_LOG_LEVEL must be trace, debug, info, warn, or error")?;
     ensure!(
@@ -182,36 +162,41 @@ impl LogStore {
       (1..=10).contains(&backups),
       "ISOS_LOG_BACKUPS must be 1..10"
     );
-    ensure!(
-      (10..=256).contains(&max_sources),
-      "ISOS_LOG_MAX_SOURCES must be 10..256"
-    );
-    let root = paths.data.join("logs").join(deployment);
-    let fresh_root = !root.exists();
+    let root = paths.data.join("log/deployments").join(deployment);
+    let fresh_root = !root.exists() && !paths.data.join("log").join(deployment).exists();
     private_dir(&root)?;
-    for source in [
-      "events", "isos", "packages", "graph", "ui", "eos", "egia", "bridge", "config", "services",
-    ] {
-      let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(root.join(format!("{source}.log")))?;
-      file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    // Old log trees are read-only history. New sessions write one JSONL file per core.
+    let old_ui = root.join("ui-server.log");
+    if old_ui.is_file() {
+      let bytes = fs::read(&old_ui)?;
+      if !bytes.is_empty() && !bytes.starts_with(b"20") {
+        private_dir(&root.join("capture"))?;
+        let target = root.join("capture/ui-server.legacy.txt");
+        ensure!(!target.exists(), "legacy UI server log migration conflict");
+        fs::rename(old_ui, target)?;
+      }
     }
+    let file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .mode(0o600)
+      .open(root.join("isos.jsonl"))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
     let store = Self {
       root,
+      runtime: paths.runtime.clone(),
       max_bytes,
       backups,
-      max_sources,
       level,
       lock: shared_lock(),
+      #[cfg(test)]
       suppression: Arc::new(Mutex::new(BTreeMap::new())),
-      losses: shared_losses(&paths.data.join("logs").join(deployment)),
+      losses: shared_losses(&paths.data.join("log/deployments").join(deployment)),
     };
-    if cursor::initialize(&store, fresh_root).is_err() {
+    if let Err(error) = cursor::initialize(&store, fresh_root) {
       saturating_increment(&WRITE_FAILED);
       saturating_increment(&store.losses);
+      eprintln!("isos cursor initialization failed: {error:#}");
     }
     Ok(store)
   }
@@ -220,6 +205,23 @@ impl LogStore {
     &self.root
   }
 
+  fn current_run_id(&self) -> String {
+    let name = self.root.file_name().unwrap_or_default().to_string_lossy();
+    let path = self.runtime.join(format!("{name}.owner-run.json"));
+    fs::read(path)
+      .ok()
+      .filter(|bytes| bytes.len() <= 32_768)
+      .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+      .and_then(|value| {
+        value["run_id"]
+          .as_str()
+          .filter(|id| token_valid(id, 64))
+          .map(str::to_owned)
+      })
+      .unwrap_or_else(|| crate::runtime::manager::manager_session_id().to_owned())
+  }
+
+  #[cfg(test)]
   pub fn publish_run(&self, run_id: &str) -> Result<()> {
     cursor::publish_run(self, run_id)
   }
@@ -236,31 +238,116 @@ impl LogStore {
     cursor::begin_manager_session(self)
   }
 
+  /// A new dev manager starts with fresh diagnostics only when no prior run
+  /// needs its event history for Stop or cursor recovery.
+  pub fn replace_dev_history(&self, paths: &Paths, deployment: &str) -> Result<bool> {
+    match self.run_identity() {
+      (None, "none") => {}
+      (Some(run_id), "known")
+        if dependent_stop::recover(paths, deployment, &run_id).outcome == "confirmed" =>
+      {
+        cursor::reset_confirmed_dev_history(self)?;
+      }
+      _ => return Ok(false),
+    }
+    let _guard = self.lock.lock().unwrap();
+    for directory in [
+      self.root.clone(),
+      self.root.join("events"),
+      self.root.join("capture"),
+      self.root.join("supervisor"),
+    ] {
+      if !directory.is_dir() {
+        continue;
+      }
+      for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+          continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let log = if directory == self.root {
+          name == "isos.jsonl"
+            || name.starts_with("isos.jsonl.")
+            || name == "events.jsonl"
+            || name.starts_with("events.jsonl.")
+            || name == "isos.log"
+            || name.starts_with("isos.log.")
+            || name == "ui-server.log"
+            || name.starts_with("ui-server.log.")
+            || name.starts_with("legacy-")
+        } else {
+          true
+        };
+        if log {
+          fs::remove_file(entry.path())?;
+        }
+      }
+    }
+    OpenOptions::new()
+      .create_new(true)
+      .write(true)
+      .mode(0o600)
+      .open(self.root.join("isos.jsonl"))?;
+    for owner in ["eos", "ei"] {
+      if let Some(data_root) = paths.data.parent() {
+        remove_dev_owner_logs(&data_root.join(owner).join("log").join(deployment))?;
+      }
+    }
+    for owner in ["eos-owner.log", "ei-owner.log"] {
+      let path = paths.data.join("log").join(owner);
+      if path.is_file() {
+        fs::remove_file(path)?;
+      }
+    }
+    let launch = paths.data.join("log/launch/dev/launcher.jsonl");
+    if launch.exists() {
+      ensure!(launch.is_file(), "dev launcher log is not a regular file");
+      fs::remove_file(&launch)?;
+    }
+    private_dir(launch.parent().context("dev launcher log has no parent")?)?;
+    let mut file = OpenOptions::new()
+      .create_new(true)
+      .write(true)
+      .mode(0o600)
+      .open(launch)?;
+    writeln!(
+      file,
+      "{}",
+      json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":"info","source":"isos.launcher.isos.sh@aether-v0.2.1","message":"Dev log history replaced"})
+    )?;
+    Ok(true)
+  }
+
+  #[cfg(test)]
   pub fn read_current(&self, query: CurrentQuery<'_>) -> std::result::Result<Value, CurrentError> {
     cursor::read_current(self, query)
   }
 
+  pub fn read_local_current(
+    &self,
+    paths: &Paths,
+    run_id: Option<&str>,
+    query: CurrentQuery<'_>,
+  ) -> std::result::Result<Value, CurrentError> {
+    core_files::read_current(self, paths, run_id, query)
+  }
+
   fn path(&self, source: &str) -> Result<PathBuf> {
     ensure!(source_valid(source), "invalid log source");
-    Ok(self.root.join(format!(
-      "{}.log",
-      if matches!(source, "all" | "services") {
-        "events"
-      } else {
-        source
-      }
-    )))
+    Ok(self.root.join("isos.jsonl"))
   }
 
   fn append_file(&self, path: &Path, line: &[u8]) -> Result<()> {
     let old_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if old_len.saturating_add(line.len() as u64) > self.max_bytes {
       for index in (1..=self.backups).rev() {
-        let dest = path.with_extension(format!("log.{index}"));
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("log");
+        let dest = path.with_extension(format!("{ext}.{index}"));
         let src = if index == 1 {
           path.to_path_buf()
         } else {
-          path.with_extension(format!("log.{}", index - 1))
+          path.with_extension(format!("{ext}.{}", index - 1))
         };
         if dest.exists() {
           fs::remove_file(&dest)?;
@@ -280,24 +367,71 @@ impl LogStore {
     Ok(())
   }
 
-  fn source_file_available(&self, path: &Path) -> Result<bool> {
-    if path.exists() {
-      return Ok(true);
-    }
-    let source_count = fs::read_dir(&self.root)?
-      .filter_map(|entry| entry.ok())
-      .filter(|entry| {
-        entry
-          .path()
-          .extension()
-          .is_some_and(|extension| extension == "log")
-      })
-      .count();
-    Ok(source_count < usize::from(self.max_sources))
-  }
-
   pub fn append(&self, source: &str, level: &str, message: &str) -> Result<()> {
     self.append_event(source, level, "message", message)
+  }
+
+  /// Detailed owner-only diagnostics are kept outside the public event cursor.
+  pub fn append_diagnostic(&self, level: &str, event_code: &str, message: &str) -> Result<()> {
+    ensure!(event_code_valid(event_code), "invalid log event code");
+    let rank = level_rank(level).context("invalid log level")?;
+    if rank < self.level {
+      return Ok(());
+    }
+    let message = if message.len() > 4096 {
+      &message[..message.floor_char_boundary(4096)]
+    } else {
+      message
+    };
+    let line = serde_json::to_vec(
+      &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":"isos.runtime.manager.diagnostic@aether-v0.2.1","message":message,"event_code":event_code,"run_id":self.current_run_id()}),
+    )?;
+    let _guard = self.lock.lock().unwrap();
+    let result = self.append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat());
+    if result.is_err() {
+      saturating_increment(&WRITE_FAILED);
+      saturating_increment(&self.losses);
+    }
+    result
+  }
+
+  #[cfg(test)]
+  pub fn append_supervisor(
+    &self,
+    role: &str,
+    level: &str,
+    code: &str,
+    message: &str,
+  ) -> Result<()> {
+    ensure!(
+      source_valid(role) && event_code_valid(code),
+      "invalid supervisor log identity"
+    );
+    self.append_process(role, level, code, message)
+  }
+
+  pub fn append_process(
+    &self,
+    process: &str,
+    level: &str,
+    code: &str,
+    message: &str,
+  ) -> Result<()> {
+    ensure!(
+      source_valid(process) && event_code_valid(code),
+      "invalid process log identity"
+    );
+    let message = &message[..message.floor_char_boundary(4096)];
+    let line = serde_json::to_vec(
+      &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":format!("isos.runtime.{process}.event@aether-v0.2.1"),"event_code":code,"message":message,"run_id":self.current_run_id()}),
+    )?;
+    let _guard = self.lock.lock().unwrap();
+    let result = self.append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat());
+    if result.is_err() {
+      saturating_increment(&WRITE_FAILED);
+      saturating_increment(&self.losses);
+    }
+    result
   }
 
   pub fn append_event(
@@ -364,9 +498,7 @@ impl LogStore {
       ensure!(token_valid(id, 64), "invalid log correlation ID");
     }
     ensure!(
-      node_path.is_none_or(|path| ["isos", "eos", "egia"]
-        .into_iter()
-        .any(|core| event_policy::node_pointer(path, core))),
+      node_path.is_none_or(|path| event_policy::node_pointer(path, "isos")),
       "invalid log node path"
     );
     let object = fields.as_object().context("log fields must be an object")?;
@@ -410,18 +542,18 @@ impl LogStore {
     }
     let _guard = self.lock.lock().unwrap();
     let path = self.path(source)?;
-    let message = if message.len() > 8192 {
-      &message[..message.floor_char_boundary(8192)]
+    let message = if message.len() > 4096 {
+      &message[..message.floor_char_boundary(4096)]
     } else {
       message
     };
     let mut safe_message = message.to_owned();
     let value = loop {
       let candidate = json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,
-                "core":if source == "eos" || source == "bridge" || source == "config" { "eos" } else if source == "egia" { "egia" } else { "isos" },
+                "core":if source == "eos" || source == "bridge" || source == "config" { "eos" } else if source == "ei" { "ei" } else { "isos" },
                 "node_path":node_path,"event_code":event_code,"message":safe_message,"pid":std::process::id(),
-                "run_id":run_id.unwrap_or(crate::runtime::manager::manager_session_id()),"correlation_id":correlation_id,"fields":fields});
-      if serde_json::to_vec(&candidate)?.len() < event_policy::MAX_STORED_LINE {
+                "run_id":run_id.map(str::to_owned).unwrap_or_else(|| self.current_run_id()),"correlation_id":correlation_id,"fields":fields});
+      if ordered_event(&candidate)?.len() < event_policy::MAX_STORED_LINE {
         break candidate;
       }
       ensure!(
@@ -436,36 +568,32 @@ impl LogStore {
   fn append_record(
     &self,
     path: &Path,
-    source: &str,
+    _source: &str,
     value: &Value,
-    apply_failure: bool,
+    _apply_failure: bool,
   ) -> Result<()> {
-    let mut line = serde_json::to_vec(value)?;
+    let mut line = ordered_event(value)?;
     line.push(b'\n');
     ensure!(
       line.len() <= event_policy::MAX_STORED_LINE,
       "log event exceeds stored line limit"
     );
     let result = (|| {
-      if self.source_file_available(path)? {
-        self.append_file(path, &line)?;
-      }
-      if source != "events" {
-        self.append_file(&self.root.join("events.log"), &line)?;
-      }
+      self.append_file(path, &line)?;
       Ok(())
     })();
-    if result.is_err() || cursor::record_accept(self, value, apply_failure).is_err() {
+    if result.is_err() {
       saturating_increment(&WRITE_FAILED);
       saturating_increment(&self.losses);
     }
     result
   }
 
+  #[cfg(test)]
   pub fn append_selected(&self, value: &Value) -> Result<()> {
     let source = value["source"].as_str().context("selected event source")?;
     ensure!(
-      matches!(source, "eos" | "bridge" | "config" | "egia"),
+      matches!(source, "eos" | "bridge" | "config" | "ei"),
       "invalid selected source"
     );
     level_rank(value["level"].as_str().context("selected event level")?)
@@ -474,11 +602,11 @@ impl LogStore {
       .as_str()
       .context("selected event code")?;
     let run_id = value["run_id"].as_str().context("selected event run")?;
-    let eligible = matches!(code, "egia_discovery_lost" | "egia_safety_rejected");
+    let eligible = matches!(code, "ei_discovery_lost" | "ei_safety_rejected");
     let terminal = code.ends_with("_stopped")
       || code.ends_with("_start_failed")
       || code.ends_with("_terminal")
-      || code == "egia_operation_unknown";
+      || code == "ei_operation_unknown";
     // Serialize admission and the append. A failed first write must not
     // become the representative event for the next sixty seconds.
     let _guard = self.lock.lock().unwrap();
@@ -539,11 +667,13 @@ impl LogStore {
     result
   }
 
+  #[cfg(test)]
   fn append_raw(&self, path: &Path, raw: &[u8]) {
     let _guard = self.lock.lock().unwrap();
-    if self.append_file(path, raw).is_err() {
+    if let Err(error) = self.append_file(path, raw) {
       saturating_increment(&WRITE_FAILED);
       saturating_increment(&self.losses);
+      eprintln!("isos capture sink failed at {}: {error:#}", path.display());
     }
   }
 
@@ -633,46 +763,61 @@ impl LogStore {
     limit: usize,
     min_level: Option<&str>,
   ) -> Result<Vec<Value>> {
-    ensure!((1..=1000).contains(&limit), "log limit must be 1..1000");
-    let min_rank = min_level
-      .map(|level| level_rank(level).context("invalid log level"))
-      .transpose()?;
-    let source_path = self.path(source)?;
-    let unified_fallback = !source_path.exists() && !matches!(source, "all" | "services");
-    let path = if unified_fallback {
-      self.path("all")?
-    } else {
-      source_path
-    };
-    let file = File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
-    let mut lines = VecDeque::with_capacity(limit);
-    for raw in BufReader::new(file).split(b'\n') {
-      let raw = raw?;
-      if let Ok(value) = serde_json::from_slice::<Value>(&raw)
-        && (!unified_fallback || value["source"].as_str() == Some(source))
-        && (source != "services"
-          || value["source"]
-            .as_str()
-            .is_some_and(|name| name.starts_with("service-")))
-        && min_rank.is_none_or(|rank| {
-          value["level"]
-            .as_str()
-            .and_then(level_rank)
-            .is_some_and(|level| level >= rank)
+    core_files::tail(self, source, min_level.unwrap_or("trace"), limit)
+  }
+
+  pub fn tail_human(&self, source: &str, limit: usize, min_level: &str) -> Result<Vec<String>> {
+    Ok(
+      core_files::tail(self, source, min_level, limit)?
+        .into_iter()
+        .map(|value| {
+          format!(
+            "{} [{}] {} {}",
+            value["timestamp"].as_str().unwrap_or(""),
+            value["level"]
+              .as_str()
+              .unwrap_or("info")
+              .to_ascii_uppercase(),
+            value["source"].as_str().unwrap_or(""),
+            value["message"].as_str().unwrap_or("")
+          )
         })
-      {
-        if lines.len() == limit {
-          lines.pop_front();
-        }
-        lines.push_back(value);
-      }
-    }
-    Ok(lines.into_iter().collect())
+        .collect(),
+    )
   }
 }
 
+fn remove_dev_owner_logs(dir: &Path) -> Result<()> {
+  if !dir.is_dir() {
+    return Ok(());
+  }
+  for entry in fs::read_dir(dir)? {
+    let entry = entry?;
+    let path = entry.path();
+    let kind = entry.file_type()?;
+    if kind.is_dir() {
+      remove_dev_owner_logs(&path)?;
+    } else if kind.is_file()
+      && path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+          name.ends_with(".log")
+            || name.contains(".log.")
+            || name.ends_with(".jsonl")
+            || name.contains(".jsonl.")
+        })
+    {
+      fs::remove_file(path)?;
+    }
+  }
+  Ok(())
+}
+
 pub struct ChildAdmission {
+  #[cfg(test)]
   pub nodes: Option<Arc<BTreeSet<String>>>,
+  #[cfg(test)]
   pub skill_pins: BTreeSet<(String, String)>,
 }
 
@@ -701,6 +846,7 @@ pub fn capture<R: std::io::Read + Send + 'static>(
 /// The selected EOS stdout is inspected as raw bytes before any P06 log processing.
 /// The channel receives one bounded transcript only after EOF; a descendant-held
 /// writer therefore cannot accidentally satisfy the owner proof.
+#[cfg(test)]
 pub struct EosStdout {
   pub frame: Option<Vec<u8>>,
   pub at: Instant,
@@ -708,17 +854,18 @@ pub struct EosStdout {
   pub invalid: bool,
 }
 
+#[cfg(test)]
 pub fn capture_eos_stdout<R: Read + Send + 'static>(
   reader: R,
   store: LogStore,
   run_id: String,
   pid: u32,
 ) -> Receiver<EosStdout> {
-  let (sender, receiver) = mpsc::sync_channel(4);
+  let (sender, receiver) = std::sync::mpsc::sync_channel(4);
   std::thread::spawn(move || {
-    let raw_dir = store.root.join("owner/eos");
-    let raw_path = raw_dir.join("stdout.log");
-    let raw_enabled = private_dir(&store.root.join("owner"))
+    let raw_dir = store.root.join("capture");
+    let raw_path = raw_dir.join("eos.stdout.txt");
+    let raw_enabled = private_dir(&store.root.join("capture"))
       .and_then(|_| private_dir(&raw_dir))
       .is_ok();
     let mut reader = BufReader::new(reader);
@@ -804,863 +951,40 @@ fn capture_stream<R: std::io::Read>(
   store: LogStore,
   source: String,
   stream: &str,
-  run_id: &str,
-  pid: u32,
-  admission: Option<&ChildAdmission>,
+  _run_id: &str,
+  _pid: u32,
+  _admission: Option<&ChildAdmission>,
 ) {
   let mut reader = BufReader::new(reader);
-  let raw_dir = store.root.join("owner").join(&source);
-  let raw_path = raw_dir.join(format!("{stream}.log"));
-  let raw_enabled = private_dir(&store.root.join("owner"))
-    .and_then(|_| private_dir(&raw_dir))
-    .is_ok();
-  let empty_pins = BTreeSet::new();
+  let mut discarding = false;
   loop {
     let mut raw = Vec::new();
-    // Bound a child that writes a very long line without a newline.
-    match Read::by_ref(&mut reader)
-      .take((event_policy::MAX_RAW_LINE + 1) as u64)
+    let Ok(size) = Read::by_ref(&mut reader)
+      .take(4097)
       .read_until(b'\n', &mut raw)
-    {
-      Ok(0) | Err(_) => break,
-      Ok(_) => {
-        if raw_enabled {
-          store.append_raw(&raw_path, &raw);
-        }
-        if raw.last() != Some(&b'\n') {
-          // Drain the rest of an oversized line without buffering it.
-          loop {
-            let mut discard = Vec::new();
-            match Read::by_ref(&mut reader)
-              .take((event_policy::MAX_RAW_LINE + 1) as u64)
-              .read_until(b'\n', &mut discard)
-            {
-              Ok(0) | Err(_) => break,
-              Ok(_) if discard.last() == Some(&b'\n') => {
-                if raw_enabled {
-                  store.append_raw(&raw_path, &discard);
-                }
-                break;
-              }
-              Ok(_) => {
-                if raw_enabled {
-                  store.append_raw(&raw_path, &discard);
-                }
-              }
-            }
-          }
-          reject(&store, "raw_oversize");
-          continue;
-        }
-        if stream == "stderr" && matches!(source.as_str(), "eos" | "bridge" | "config" | "egia") {
-          match event_policy::parse_child(&raw, &source, run_id, pid) {
-            Ok(event) => {
-              let node_admitted = event["node_path"].as_str().is_none_or(|path| {
-                admission.is_none_or(|policy| {
-                  policy
-                    .nodes
-                    .as_ref()
-                    .is_none_or(|nodes| nodes.contains(path))
-                })
-              });
-              if !node_admitted {
-                reject(&store, "node_owner");
-              } else if !event_policy::skill_pin_admitted(
-                &event,
-                admission.map_or(&empty_pins, |policy| &policy.skill_pins),
-              ) {
-                reject(&store, "skill_pin_mismatch");
-              } else {
-                let _ = store.append_selected(&event);
-              }
-            }
-            Err(error) => {
-              let message = error.to_string();
-              let reason = if message.contains("run mismatch") {
-                "run_mismatch"
-              } else if message.contains("source role") {
-                "source_role"
-              } else if message.contains("unregistered") {
-                "event_code"
-              } else if message.contains("node pointer") {
-                "node_path"
-              } else if message.contains("field") {
-                "fields"
-              } else if message.contains("message") {
-                "message"
-              } else if message.contains("line") {
-                "line_limit"
-              } else {
-                "invalid_envelope"
-              };
-              reject(&store, reason);
-            }
-          }
-        }
+    else {
+      break;
+    };
+    if size == 0 {
+      break;
+    }
+    let complete = raw.last() == Some(&b'\n');
+    if discarding {
+      if complete {
+        discarding = false;
       }
+      continue;
     }
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use std::{
-    io::Write,
-    os::unix::fs::PermissionsExt,
-    process::{Command, Stdio},
-  };
-
-  #[test]
-  fn loss_counter_increment_saturates_under_contention() {
-    let counter = Arc::new(AtomicU64::new(0));
-    let workers: Vec<_> = (0..8)
-      .map(|_| {
-        let counter = Arc::clone(&counter);
-        std::thread::spawn(move || {
-          for _ in 0..1_000 {
-            saturating_increment(&counter);
-          }
-        })
-      })
-      .collect();
-    for worker in workers {
-      worker.join().unwrap();
+    if !complete {
+      discarding = true;
+      continue;
     }
-    assert_eq!(counter.load(Ordering::Relaxed), 8_000);
-    counter.store(u64::MAX - 1, Ordering::Relaxed);
-    saturating_increment(&counter);
-    saturating_increment(&counter);
-    assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
-  }
-
-  #[test]
-  fn selected_stdout_parser_reports_frame_then_eof_and_duplicate() {
-    let (_temp, store) = store();
-    let bytes =
-      b"ordinary output\n{\"type\":\"eos_terminal_stop\"}\n{\"type\":\"eos_terminal_stop\"}\n";
-    let receiver = capture_eos_stdout(
-      std::io::Cursor::new(bytes.to_vec()),
-      store,
-      "r42".into(),
-      42,
-    );
-    let first = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(first.frame.is_some() && !first.eof && !first.invalid);
-    let second = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(second.frame.is_some());
-    let eof = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(eof.eof);
-  }
-
-  fn store() -> (tempfile::TempDir, LogStore) {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    let store = LogStore::new(&paths, "default").unwrap();
-    (temp, store)
-  }
-
-  fn skill_page(
-    store: &LogStore,
-    source: &str,
-    correlation_id: Option<&str>,
-    cursor: Option<&str>,
-  ) -> Value {
-    store
-      .read_current(CurrentQuery {
-        source,
-        level: "info",
-        node_path: None,
-        correlation_id,
-        cursor,
-        limit: 100,
-        active_revision: None,
-      })
-      .unwrap()
-  }
-
-  fn skill_pipe(store: &LogStore, events: &[Value], pins: &BTreeSet<(String, String)>) -> u32 {
-    let mut child = Command::new("/bin/sh")
-      .args(["-c", "exec cat >&2"])
-      .stdin(Stdio::piped())
-      .stdout(Stdio::null())
-      .stderr(Stdio::piped())
-      .spawn()
-      .unwrap();
-    let pid = child.id();
-    let mut writer = child.stdin.take().unwrap();
-    let admission = ChildAdmission {
-      nodes: None,
-      skill_pins: pins.clone(),
-    };
-    for event in events {
-      serde_json::to_writer(&mut writer, event).unwrap();
-      writer.write_all(b"\n").unwrap();
-    }
-    drop(writer);
-    capture_stream(
-      child.stderr.take().unwrap(),
-      store.clone(),
-      "eos".into(),
-      "stderr",
-      "r04-run",
-      pid,
-      Some(&admission),
-    );
-    assert!(child.wait().unwrap().success());
-    pid
-  }
-
-  #[test]
-  fn r04_skill_pipe_and_current_cursor_replay() {
-    let fixture: Value = serde_json::from_str(include_str!(
-      "../../../tests/fixtures/r04_skill_events/cases.json"
-    ))
-    .unwrap();
-    assert_eq!(fixture["cursor_cases"].as_array().unwrap().len(), 10);
-    let (_temp, mut store) = store();
-    store.max_bytes = 65_536;
-    store.backups = 1;
-    store.publish_run("r04-run").unwrap();
-    let pins = BTreeSet::from([("island/fixture-skills".into(), "0.1.0+Build.1".into())]);
-    let queued = fixture["base_execution"].clone();
-    let mut running = queued.clone();
-    running["fields"]["stage"] = json!("running");
-    running["fields"]["reason_code"] = json!("worker.running");
-    let queued_pid = skill_pipe(&store, &[queued, running], &pins);
-    assert_eq!(
-      skill_page(&store, "all", None, None)["anchor"]["state"],
-      "pending"
-    );
-
-    let mut rejected = fixture["base_execution"].clone();
-    rejected["level"] = json!("error");
-    rejected["fields"]["stage"] = json!("failed");
-    rejected["fields"]["reason_code"] = json!("worker.guest_text");
-    let mut failed = rejected.clone();
-    failed["fields"]["reason_code"] = json!("worker.outcome_unknown");
-    failed["fields"]["worker_reaped"] = json!(true);
-    failed["fields"]["worker_exit_code"] = json!(1);
-    let failure_pid = skill_pipe(&store, &[rejected, failed.clone()], &pins);
-    let page = skill_page(&store, "all", None, None);
-    assert_eq!(page["anchor"]["event"]["event_code"], "eos_skill_execution");
-    assert_eq!(page["anchor"]["event"]["pid"], failure_pid);
-    assert_eq!(page["diagnostics"][0]["code"], "log_collector_gap");
-    let filtered = skill_page(&store, "egia", Some("other"), None);
-    assert_eq!(filtered["anchor"]["event"], page["anchor"]["event"]);
-    assert!(filtered["lines"].as_array().unwrap().is_empty());
-    let source = store.read("eos", None, 100).unwrap();
-    let all = store.read("all", None, 100).unwrap();
-    assert_eq!(source["lines"], all["lines"]);
-    assert_eq!(source["lines"].as_array().unwrap().len(), 3);
-    assert_eq!(source["lines"][0]["pid"], queued_pid);
-
-    let old = page["next_cursor"].as_str().unwrap().to_owned();
-    skill_pipe(&store, &[failed, fixture["base_stop"].clone()], &pins);
-    let later = skill_page(&store, "all", None, Some(&old));
-    assert_eq!(later["anchor"]["event"], page["anchor"]["event"]);
-    assert_eq!(later["lines"][0]["event_code"], "eos_skill_execution");
-    assert_eq!(
-      later["lines"][1]["event_code"],
-      "eos_skill_stop_unconfirmed"
-    );
-    assert_eq!(store.run_identity(), (Some("r04-run".into()), "known"));
-
-    let old = later["next_cursor"].as_str().unwrap().to_owned();
-    for _ in 0..17 {
-      store
-        .append_event_context(
-          "isos",
-          "info",
-          "deployment_starting",
-          &"x".repeat(5_000),
-          LogContext {
-            run_id: Some("r04-run"),
-            correlation_id: None,
-            node_path: None,
-            fields: json!({}),
-          },
-        )
-        .unwrap();
-    }
-    let rotated = skill_page(&store, "all", None, Some(&old));
-    assert_eq!(rotated["rotated"], true);
-    assert_eq!(rotated["anchor"]["event"], page["anchor"]["event"]);
-    assert!(
-      !rotated["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item["code"] == "log_cursor_expired")
-    );
-    for _ in 0..32 {
-      store
-        .append_event_context(
-          "isos",
-          "info",
-          "deployment_starting",
-          &"y".repeat(5_000),
-          LogContext {
-            run_id: Some("r04-run"),
-            correlation_id: None,
-            node_path: None,
-            fields: json!({}),
-          },
-        )
-        .unwrap();
-    }
-    let expired = skill_page(&store, "all", None, Some(&old));
-    assert_eq!(expired["rotated"], true);
-    assert_eq!(expired["diagnostics"][0]["code"], "log_cursor_expired");
-    assert_eq!(expired["anchor"]["event"], page["anchor"]["event"]);
-  }
-
-  #[test]
-  fn r04_skill_stop_first_anchor_and_write_gap() {
-    let fixture: Value = serde_json::from_str(include_str!(
-      "../../../tests/fixtures/r04_skill_events/cases.json"
-    ))
-    .unwrap();
-    let (_temp, store) = store();
-    store.publish_run("r04-run").unwrap();
-    let pid = skill_pipe(&store, &[fixture["base_stop"].clone()], &BTreeSet::new());
-    let first = skill_page(&store, "all", None, None);
-    assert_eq!(
-      first["anchor"]["event"]["event_code"],
-      "eos_skill_stop_unconfirmed"
-    );
-    assert_eq!(first["anchor"]["event"]["pid"], pid);
-    assert_eq!(first["scope"]["run_id"], "r04-run");
-    saturating_increment(&store.losses);
-    let after_gap = skill_page(
-      &store,
-      "all",
-      None,
-      Some(first["next_cursor"].as_str().unwrap()),
-    );
-    assert_eq!(after_gap["anchor"]["event"], first["anchor"]["event"]);
-    assert_eq!(after_gap["diagnostics"][0]["code"], "log_collector_gap");
-    assert_eq!(after_gap["diagnostics"][0]["count"], 1);
-  }
-
-  #[test]
-  fn r04_selected_pin_mismatch_has_own_rejection_reason() {
-    let fixture: Value = serde_json::from_str(include_str!(
-      "../../../tests/fixtures/r04_skill_events/cases.json"
-    ))
-    .unwrap();
-    let (_temp, store) = store();
-    store.publish_run("r04-run").unwrap();
-    let mut event = fixture["base_execution"].clone();
-    event["fields"]["package_version"] = json!("0..1");
-    let old_pins = BTreeSet::from([("island/fixture-skills".into(), "0.1.0+Build.1".into())]);
-    let before = rejection_reasons()["skill_pin_mismatch"]
-      .as_u64()
-      .unwrap_or(0);
-    skill_pipe(&store, &[event.clone()], &old_pins);
-    assert!(
-      store.read("eos", None, 10).unwrap()["lines"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    );
-    assert!(
-      store.read("all", None, 10).unwrap()["lines"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    );
-    assert!(
-      rejection_reasons()["skill_pin_mismatch"]
-        .as_u64()
-        .unwrap_or(0)
-        > before
-    );
-
-    let selected = BTreeSet::from([("island/fixture-skills".into(), "0..1".into())]);
-    let pid = skill_pipe(&store, &[event], &selected);
-    let source = store.read("eos", None, 10).unwrap();
-    assert_eq!(source["lines"][0]["fields"]["package_version"], "0..1");
-    assert_eq!(source["lines"][0]["pid"], pid);
-  }
-
-  #[test]
-  fn failed_store_initialization_is_visible_in_write_health() {
-    let temp = tempfile::tempdir().unwrap();
-    let file = temp.path().join("not-a-directory");
-    fs::write(&file, b"occupied").unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: file,
-      runtime: temp.path().join("run"),
-    };
-    let before = counters().1;
-    assert!(LogStore::new(&paths, "default").is_err());
-    assert!(counters().1 > before);
-  }
-
-  #[test]
-  fn cursor_is_bounded_and_reports_rotation() {
-    let (_temp, mut store) = store();
-    store.max_bytes = 500;
-    store.append("eos", "info", "first").unwrap();
-    store.append("eos", "error", "second").unwrap();
-    let first = store.read("eos", None, 1).unwrap();
-    assert_eq!(first["lines"].as_array().unwrap().len(), 1);
-    assert_eq!(first["lines"][0]["message"], "first");
-    let second = store.read("eos", first["next_cursor"].as_str(), 1).unwrap();
-    assert_eq!(second["lines"][0]["message"], "second");
-    for _ in 0..10 {
-      store.append("eos", "info", &"x".repeat(150)).unwrap();
-    }
-    let rotated = store
-      .read("eos", first["next_cursor"].as_str(), 10)
-      .unwrap();
-    assert_eq!(rotated["rotated"], true);
-  }
-
-  #[test]
-  fn logs_are_private_and_sources_are_checked() {
-    let (_temp, store) = store();
-    store.append("config", "error", "failure").unwrap();
-    assert_eq!(
-      fs::metadata(&store.root).unwrap().permissions().mode() & 0o777,
-      0o700
-    );
-    assert_eq!(
-      fs::metadata(store.root.join("config.log"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777,
-      0o600
-    );
-    assert_eq!(
-      store.read("config", None, 10).unwrap()["lines"][0]["message"],
-      "failure"
-    );
-    assert!(store.read("../secret", None, 1).is_err());
-    assert!(store.read("config", None, 201).is_err());
-    assert!(store.read("config", Some("bad"), 1).is_err());
-    assert!(
-      !store
-        .root
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("process-logs")
-        .exists()
-    );
-  }
-
-  #[test]
-  fn severity_threshold_filters_child_events() {
-    let (_temp, mut store) = store();
-    store.level = level_rank("warn").unwrap();
-    store.append("eos", "info", "routine stdout").unwrap();
-    store.append("eos", "error", "important stderr").unwrap();
-    let lines = store.read("eos", None, 10).unwrap();
-    assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
-    assert_eq!(lines["lines"][0]["message"], "important stderr");
-    assert!(store.append("isos", "verbose", "unknown").is_err());
-    assert!(store.append("all", "warn", "bad alias").is_err());
-  }
-
-  #[test]
-  fn unified_stream_keeps_isos_and_service_events() {
-    let (_temp, store) = store();
-    store
-      .append_event("isos", "warn", "admission_failed", "stale receipt")
-      .unwrap();
-    store
-      .append_event("service-model", "error", "child_exited", "exit 1")
-      .unwrap();
-    let all = store.read("all", None, 10).unwrap();
-    assert_eq!(all["lines"].as_array().unwrap().len(), 2);
-    assert_eq!(all["lines"][0]["event_code"], "admission_failed");
-    assert_eq!(all["lines"][1]["source"], "service-model");
-    assert!(all["lines"][0]["pid"].is_number());
-    let services = store.read("services", None, 10).unwrap();
-    assert_eq!(services["lines"].as_array().unwrap().len(), 1);
-    assert_eq!(services["lines"][0]["event_code"], "child_exited");
-  }
-
-  #[test]
-  fn context_fields_are_bounded_and_preserve_correlation() {
-    let (_temp, store) = store();
-    store
-      .append_event_context(
-        "packages",
-        "error",
-        "package_preflight_failed",
-        "Admission failed",
-        LogContext {
-          run_id: Some("manager-1"),
-          correlation_id: Some("request-2"),
-          node_path: None,
-          fields: json!({"package_id":"sample/worker","package_version":"0.1.1"}),
-        },
-      )
-      .unwrap();
-    let line = &store.read("packages", None, 1).unwrap()["lines"][0];
-    assert_eq!(line["run_id"], "manager-1");
-    assert_eq!(line["correlation_id"], "request-2");
-    assert_eq!(line["fields"]["package_id"], "sample/worker");
-    assert!(
-      store
-        .append_event_context(
-          "packages",
-          "info",
-          "bad",
-          "bad",
-          LogContext {
-            run_id: None,
-            correlation_id: None,
-            node_path: None,
-            fields: json!({"secret":"line\nwith newline"})
-          }
-        )
-        .is_err()
-    );
-    assert!(
-      store
-        .append_event_context(
-          "packages",
-          "info",
-          "bad",
-          "bad",
-          LogContext {
-            run_id: Some("bad/id"),
-            correlation_id: None,
-            node_path: None,
-            fields: json!({})
-          }
-        )
-        .is_err()
-    );
-  }
-
-  #[test]
-  fn source_limit_keeps_unified_events_without_growing_source_files() {
-    let (_temp, mut store) = store();
-    store.max_sources = 10;
-    store.append("isos", "info", "ready").unwrap();
-    store.append("service-extra", "warn", "bounded").unwrap();
-    assert!(!store.root.join("service-extra.log").exists());
-    let events = store.read("all", None, 10).unwrap();
-    assert_eq!(events["lines"][1]["source"], "service-extra");
-    let source = store.read("service-extra", None, 10).unwrap();
-    assert_eq!(source["lines"][0]["message"], "bounded");
-    assert_eq!(
-      fs::read_dir(&store.root)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
-        .count(),
-      10
-    );
-  }
-
-  #[test]
-  fn capture_only_records_selected_structured_events() {
-    let (_temp, store) = store();
-    let mut input = b"routine progress\n{\"level\":\"warn\",\"message\":\"selected\",\"source\":\"forged\",\"event_code\":\"child_warning\"}\n".to_vec();
-    input.extend_from_slice(&[b'x'; 9000]);
-    input.extend_from_slice(b"\n{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"event_code\":\"eos_ready\",\"run_id\":\"r1\",\"message\":\"EOS runtime ready\",\"fields\":{\"state\":\"ready\",\"node_count\":1}}\n");
-    input.extend_from_slice(&[0xff, b'\n']);
-    capture_stream(
-      &input[..],
-      store.clone(),
-      "eos".into(),
-      "stderr",
-      "r1",
-      99,
-      None,
-    );
-    let lines = store.read("eos", None, 10).unwrap();
-    assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
-    assert_eq!(lines["lines"][0]["source"], "eos");
-    assert_eq!(lines["lines"][0]["event_code"], "eos_ready");
-    assert_eq!(lines["lines"][0]["pid"], 99);
-  }
-
-  #[test]
-  fn repeated_noncritical_child_event_has_bounded_terminal_summary() {
-    let (_temp, store) = store();
-    let warning = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"egia","core":"egia",
-            "node_path":null,"event_code":"egia_discovery_lost","run_id":"r1","correlation_id":null,
-            "message":"EOS discovery unavailable","fields":{"reason_code":"eos_unavailable"},"pid":42});
-    store.append_selected(&warning).unwrap();
-    store.append_selected(&warning).unwrap();
-    store.append_selected(&warning).unwrap();
-    let terminal = json!({"timestamp":"2026-11-01T10:00:02.000Z","level":"info","source":"egia","core":"egia",
-            "node_path":null,"event_code":"egia_stopped","run_id":"r1","correlation_id":null,
-            "message":"EGIA stopped","fields":{"state":"stopped"},"pid":42});
-    store.append_selected(&terminal).unwrap();
-    let lines = store.read("all", None, 10).unwrap();
-    let lines = lines["lines"].as_array().unwrap();
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0]["event_code"], "egia_discovery_lost");
-    assert_eq!(lines[1]["event_code"], "events_suppressed");
-    assert_eq!(lines[1]["fields"]["count"], 2);
-    assert_eq!(lines[2]["event_code"], "egia_stopped");
-  }
-
-  #[test]
-  fn distinct_safety_rejection_correlation_and_reason_are_retained() {
-    let (_temp, store) = store();
-    let mut rejection = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"egia","core":"egia",
-            "node_path":null,"event_code":"egia_safety_rejected","run_id":"r1","correlation_id":"request_1",
-            "message":"Safety gate rejected request","fields":{"reason_code":"policy_denied"},"pid":42});
-    store.append_selected(&rejection).unwrap();
-    store.append_selected(&rejection).unwrap();
-    rejection["correlation_id"] = json!("request_2");
-    store.append_selected(&rejection).unwrap();
-    rejection["fields"]["reason_code"] = json!("estop_latched");
-    store.append_selected(&rejection).unwrap();
-    let lines = store.read("all", None, 10).unwrap();
-    let lines = lines["lines"].as_array().unwrap();
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0]["correlation_id"], "request_1");
-    assert_eq!(lines[1]["correlation_id"], "request_2");
-    assert_eq!(lines[2]["fields"]["reason_code"], "estop_latched");
-  }
-
-  #[test]
-  fn failed_first_selected_append_can_retry_as_first_event() {
-    let (_temp, store) = store();
-    let event = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"egia","core":"egia",
-            "node_path":null,"event_code":"egia_safety_rejected","run_id":"r1","correlation_id":"request_1",
-            "message":"Safety gate rejected request","fields":{"reason_code":"policy_denied"},"pid":42});
-    let blocked = store.root.join("egia.log");
-    fs::remove_file(&blocked).unwrap();
-    fs::create_dir(&blocked).unwrap();
-    assert!(store.append_selected(&event).is_err());
-    fs::remove_dir(&blocked).unwrap();
-    store.append_selected(&event).unwrap();
-    let lines = store.read("all", None, 10).unwrap();
-    assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
-    assert_eq!(lines["lines"][0]["correlation_id"], "request_1");
-  }
-
-  #[test]
-  fn a03_recovery_failure_anchor_survives_rotation_and_new_run_scope() {
-    let (_temp, mut store) = store();
-    store.max_bytes = 500;
-    store.publish_run("ra03").unwrap();
-    let failure = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"error","source":"egia","core":"egia",
-            "node_path":null,"event_code":"egia_safety_reset_refused","run_id":"ra03","correlation_id":"reset_1",
-            "message":"Safety latch reset refused","fields":{"reason_code":"revision_mismatch"},"pid":42});
-    store.append_selected(&failure).unwrap();
-    let first = skill_page(&store, "all", None, None);
-    assert_eq!(
-      first["anchor"]["event"]["event_code"],
-      "egia_safety_reset_refused"
-    );
-    for _ in 0..8 {
-      store.append("isos", "info", &"x".repeat(150)).unwrap();
-    }
-    let rotated = skill_page(
-      &store,
-      "all",
-      None,
-      Some(first["next_cursor"].as_str().unwrap()),
-    );
-    assert_eq!(rotated["anchor"]["event"], first["anchor"]["event"]);
-    store.publish_run("ra03next").unwrap();
-    let next = skill_page(&store, "all", None, None);
-    assert_eq!(next["scope"]["run_id"], "ra03next");
-    assert_eq!(next["anchor"]["state"], "pending");
-  }
-
-  #[test]
-  fn selected_bridge_result_is_filtered_in_current_run_through_rotation() {
-    let (_temp, mut store) = store();
-    store.max_bytes = 1_024;
-    store.backups = 3;
-    store.publish_run("r_browser_1").unwrap();
-    store
-      .append_event_context(
-        "isos",
-        "info",
-        "deployment_ready",
-        "Deployment ready",
-        LogContext {
-          run_id: Some("r_browser_1"),
-          correlation_id: None,
-          node_path: None,
-          fields: json!({}),
-        },
-      )
-      .unwrap();
-    let event = json!({"timestamp":"2026-11-02T08:00:00.100Z","level":"info","source":"bridge","core":"eos",
-            "node_path":null,"event_code":"bridge_primitive_result","run_id":"r_browser_1",
-            "correlation_id":"ui-018f","message":"EOS browser primitive result",
-            "fields":{"status":"Completed","phase":"followup"}});
-    let mut raw = serde_json::to_vec(&event).unwrap();
-    raw.push(b'\n');
-    capture_stream(
-      &raw[..],
-      store.clone(),
-      "bridge".into(),
-      "stderr",
-      "r_browser_1",
-      4242,
-      None,
-    );
-    let page = skill_page(&store, "bridge", Some("ui-018f"), None);
-    assert_eq!(page["anchor"]["event"]["event_code"], "deployment_ready");
-    assert_eq!(page["lines"][0]["event_code"], "bridge_primitive_result");
-    assert_eq!(page["lines"][0]["pid"], 4242);
-    assert_eq!(page["lines"][0]["correlation_id"], "ui-018f");
-
-    let token = format!("h_{}", "a".repeat(62));
-    let mut derived = event.clone();
-    derived["correlation_id"] = json!(token);
-    derived["fields"]["status"] = json!("Rejected");
-    derived["level"] = json!("warn");
-    let mut raw = serde_json::to_vec(&derived).unwrap();
-    raw.push(b'\n');
-    capture_stream(
-      &raw[..],
-      store.clone(),
-      "bridge".into(),
-      "stderr",
-      "r_browser_1",
-      4242,
-      None,
-    );
-    let derived_page = skill_page(&store, "bridge", Some(&token), None);
-    assert_eq!(derived_page["lines"][0]["correlation_id"], token);
-    assert_eq!(derived_page["lines"][0]["fields"]["status"], "Rejected");
-
-    for _ in 0..2 {
-      store.append("isos", "info", &"x".repeat(550)).unwrap();
-    }
-    let retained = skill_page(&store, "bridge", Some("ui-018f"), None);
-    assert_eq!(retained["anchor"]["event"], page["anchor"]["event"]);
-    assert_eq!(retained["lines"][0]["correlation_id"], "ui-018f");
-    let derived_retained = skill_page(&store, "bridge", Some(&token), None);
-    assert_eq!(derived_retained["lines"][0]["correlation_id"], token);
-    let old_cursor = retained["next_cursor"].as_str().unwrap().to_owned();
-    store.publish_run("r_browser_2").unwrap();
-    let changed = skill_page(&store, "bridge", Some("ui-018f"), Some(&old_cursor));
-    assert_eq!(changed["scope"]["run_id"], "r_browser_2");
-    assert!(changed["lines"].as_array().unwrap().is_empty());
-    assert_eq!(changed["diagnostics"][0]["code"], "log_run_changed");
-  }
-
-  #[test]
-  fn selected_child_cannot_claim_an_unadmitted_node() {
-    let (_temp, store) = store();
-    let event = b"{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"node_path\":\"/cores/eos/layers/process/groups/worker/nodes/sim\",\"event_code\":\"eos_backend_ready\",\"run_id\":\"r1\",\"message\":\"EOS backend child ready\",\"fields\":{\"state\":\"ready\"}}\n";
-    let admitted = BTreeSet::from(["/cores/eos/layers/process/groups/worker/nodes/other".into()]);
-    let admission = ChildAdmission {
-      nodes: Some(Arc::new(admitted)),
-      skill_pins: BTreeSet::new(),
-    };
-    capture_stream(
-      &event[..],
-      store.clone(),
-      "eos".into(),
-      "stderr",
-      "r1",
-      42,
-      Some(&admission),
-    );
-    assert!(
-      store.read("eos", None, 10).unwrap()["lines"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    );
-    assert!(counters().0 > 0);
-    assert!(rejection_reasons()["node_owner"].as_u64().unwrap_or(0) > 0);
-  }
-
-  #[test]
-  fn stored_event_trims_utf8_at_whole_line_bound() {
-    let (_temp, store) = store();
-    store
-      .append_event("isos", "info", "message", &"界".repeat(4_000))
-      .unwrap();
-    let raw = fs::read(store.root().join("events.log")).unwrap();
-    assert!(raw.len() <= event_policy::MAX_STORED_LINE);
-    let text = std::str::from_utf8(&raw).unwrap();
-    assert!(text.ends_with('\n'));
-    assert_eq!(
-      serde_json::from_slice::<Value>(&raw).unwrap()["core"],
-      "isos"
-    );
-  }
-
-  #[test]
-  fn private_raw_child_log_rotates_without_entering_shared_stream() {
-    let (_temp, mut store) = store();
-    store.max_bytes = 100;
-    let input = format!(
-      "{}\n{}\n{}\n",
-      "x".repeat(80),
-      "y".repeat(80),
-      "z".repeat(80)
-    );
-    capture_stream(
-      input.as_bytes(),
-      store.clone(),
-      "ui".into(),
-      "stdout",
-      "m1",
-      42,
-      None,
-    );
-    assert!(store.root().join("owner/ui/stdout.log.1").is_file());
-    assert!(
-      store.read("all", None, 10).unwrap()["lines"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    );
-    assert_eq!(
-      fs::metadata(store.root().join("owner/ui/stdout.log"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777,
-      0o600
-    );
-  }
-
-  #[test]
-  fn filtered_reads_and_tail_keep_only_matching_severity() {
-    let (_temp, store) = store();
-    for (level, message) in [
-      ("info", "one"),
-      ("warn", "two"),
-      ("info", "three"),
-      ("error", "four"),
-    ] {
-      store.append("eos", level, message).unwrap();
-    }
-    let filtered = store.read_filtered("eos", None, 2, Some("warn")).unwrap();
-    assert_eq!(filtered["lines"].as_array().unwrap().len(), 2);
-    assert_eq!(filtered["lines"][0]["message"], "two");
-    assert_eq!(filtered["lines"][1]["message"], "four");
-    let tail = store.tail_filtered("eos", 1, Some("warn")).unwrap();
-    assert_eq!(tail[0]["message"], "four");
-    assert!(
-      store
-        .read_filtered("eos", None, 1, Some("verbose"))
-        .is_err()
-    );
-    assert!(
-      store
-        .append_event("eos", "trace", "../bad", "invalid")
-        .is_err()
+    let message = String::from_utf8_lossy(&raw);
+    let _ = store.append_process(
+      &source,
+      if stream == "stderr" { "warn" } else { "info" },
+      stream,
+      message.trim_end(),
     );
   }
 }

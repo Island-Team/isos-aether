@@ -75,7 +75,7 @@ def main():
         serve = subprocess.Popen([str(ISOS), "serve", "--ui-live"], env=env,
                                  stdout=log, stderr=subprocess.STDOUT, text=True)
         try:
-            ready(lambda: (home / "run/manager.sock").exists() or serve.poll() is not None)
+            ready(lambda: (home / "data/isos/run/manager.sock").exists() or serve.poll() is not None)
             assert serve.poll() is None, (root / "serve.log").read_text()
             started = json.loads(command(env, "services", "start", "stub").stdout)
             assert started["started"] == ["stub"]
@@ -89,7 +89,7 @@ def main():
             result = json.loads(command(env, "stop").stdout)
             assert "stub" in result["services"]
             assert serve.wait(timeout=10) == 0
-            assert not (home / "run/manager.sock").exists()
+            assert not (home / "data/isos/run/manager.sock").exists()
             print("PASS independent service start, idempotence, status, scoped and root stop")
         finally:
             if serve.poll() is None:

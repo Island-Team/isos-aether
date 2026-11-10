@@ -9,6 +9,7 @@ use std::fmt;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Deserialization validates the complete legacy stored envelope.
 pub(crate) struct RawEvent {
   pub(crate) timestamp: String,
   pub(crate) level: String,

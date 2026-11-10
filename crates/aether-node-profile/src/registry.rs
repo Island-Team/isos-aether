@@ -1,8 +1,19 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+  collections::{BTreeMap, BTreeSet},
+  sync::LazyLock,
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{valid_segment, NodeKind, NodeProfile, PackageRef, ProfileError};
+
+static TYPE_IDL: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
+  let source: serde_json::Value = serde_json::from_str(include_str!(
+    "../../../share/isos/contracts/node/node-type.schema.json"
+  ))
+  .expect("embedded node type IDL is JSON");
+  jsonschema::validator_for(&source).expect("embedded node type IDL is valid")
+});
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +96,7 @@ impl<'de> Deserialize<'de> for PortDataType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PortTransport {
+  None,
   InProcess,
   UnixSocket,
   Http,
@@ -95,6 +107,7 @@ pub enum PortTransport {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMode {
+  Declaration,
   #[default]
   Message,
   Event,
@@ -125,6 +138,8 @@ pub enum PortCardinality {
 pub struct Port {
   pub name: String,
   pub data_type: PortDataType,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub contract: Option<PortContractRef>,
   pub required: bool,
   #[serde(default)]
   pub cardinality: PortCardinality,
@@ -140,6 +155,14 @@ pub struct Port {
   pub delivery_mode: DeliveryMode,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub data_class: Option<DataClass>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortContractRef {
+  pub owner: String,
+  pub id: String,
+  pub version: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -171,6 +194,8 @@ pub struct Setting {
   pub name: String,
   pub data_type: SettingType,
   pub required: bool,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub default: Option<toml::Value>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub description: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,8 +245,7 @@ pub struct SettingSelector {
 #[serde(deny_unknown_fields)]
 pub struct NodeType {
   pub id: String,
-  /// Operator-facing type description. Old sidecars omit this field.
-  #[serde(default)]
+  /// Operator-facing type description.
   pub description: String,
   pub core: String,
   pub layer: String,
@@ -233,10 +257,38 @@ pub struct NodeType {
   pub inputs: Vec<Port>,
   pub outputs: Vec<Port>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub implementation: Option<ImplementationDescriptor>,
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub service_inputs: BTreeMap<String, ServiceDescriptor>,
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub service_outputs: BTreeMap<String, ServiceDescriptor>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub bridge: Option<BridgeDeclaration>,
   /// Required for registered actuator types beyond the built-in EOS base and arm.
   #[serde(default)]
   pub safety_adapter_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImplementationDescriptor {
+  pub kind: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub abi: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDescriptor {
+  pub owner: String,
+  pub service: String,
+  pub version: String,
+  pub protocol: String,
+  pub carrier: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub socket_protocol: Option<String>,
+  #[serde(default)]
+  pub required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -300,6 +352,13 @@ pub const PRIMITIVE_SPECS: &[PrimitiveSpec] = &[
     description: "Body-frame base velocity",
   },
   PrimitiveSpec {
+    name: "arm.delta",
+    version: "1.0.0",
+    device_class: "manipulator",
+    movement_type: "joint_positions",
+    description: "Six ordered relative joint angles in radians",
+  },
+  PrimitiveSpec {
     name: "arm.movej",
     version: "1.0.0",
     device_class: "manipulator",
@@ -355,61 +414,44 @@ impl NodeTypeRegistry {
   }
   pub fn builtin() -> Self {
     let mut registry = Self::default();
-    registry.adapter_families.insert(
-      "mock-cxx".into(),
-      AdapterFamilyDescriptor {
-        id: "mock-cxx".into(),
-        device_kinds: vec![NodeKind::Camera, NodeKind::Base, NodeKind::Manipulator],
-        transport: PortTransport::InProcess,
-        description: "Compiled CXX test adapter".into(),
-        settings_schema: None,
-        supported_primitives: vec!["base.velocity@1.0.0".into(), "arm.movej@1.0.0".into()],
-      },
-    );
-    registry
-      .codecs
-      .extend(["json_v1".into(), "vision_frame_jpeg_v1".into()]);
+    registry.codecs.insert("json_v1".into());
     for id in [
-      "camera_frame",
-      "base_observation",
-      "manipulator_observation",
-      "base_movement",
-      "manipulator_movement",
-      "control_request",
-      "command_outcome",
-      "skill_outcome",
-      "health",
-      "status",
-      "observation_ref",
-      "context_snapshot",
-      "plan_proposal",
-      "vision_frame",
+      "button_activation@v0.2",
+      "arm_joint_delta@v0.2",
+      "arm_monitor_state@v0.2",
     ] {
-      let (media_type, codec, maximum) = if id == "vision_frame" {
-        ("image/jpeg", "vision_frame_jpeg_v1", 8 * 1024 * 1024)
-      } else {
-        ("application/json", "json_v1", 8 * 1024 * 1024)
-      };
       registry
         .register_builtin_data_type(DataTypeDescriptor {
           id: id.into(),
-          version: "1.0".into(),
+          version: "0.2".into(),
           purpose: builtin_data_purpose(id).into(),
-          media_type: media_type.into(),
-          codec: codec.into(),
+          media_type: "application/json".into(),
+          codec: "json_v1".into(),
           schema: builtin_data_schema(id),
-          max_payload_bytes: maximum,
+          max_payload_bytes: 1024,
         })
         .expect("valid built-in data type");
     }
-    let legacy_types = builtin_types();
-    let target_types = target_types(&legacy_types);
-    let single_core_types = single_core_types(&target_types);
-    for definition in legacy_types
-      .into_iter()
-      .chain(target_types)
-      .chain(single_core_types)
-    {
+    registry
+      .register_safety_adapter(SafetyAdapterType {
+        id: "mock_arm".into(),
+        kind: NodeKind::Manipulator,
+        movement_modes: vec!["joint_positions".into()],
+        supports_stop: true,
+      })
+      .expect("valid built-in safety adapter");
+    registry.adapter_families.insert(
+      "mock-arm".into(),
+      AdapterFamilyDescriptor {
+        id: "mock-arm".into(),
+        device_kinds: vec![NodeKind::Manipulator],
+        transport: PortTransport::InProcess,
+        description: "Built-in six-joint mock arm".into(),
+        settings_schema: None,
+        supported_primitives: vec!["arm.delta@1.0.0".into()],
+      },
+    );
+    for definition in builtin_types() {
       registry
         .register_builtin(definition)
         .expect("valid built-in node type");
@@ -466,7 +508,9 @@ impl NodeTypeRegistry {
               .as_ref()
               .map(|p| (p.id.as_str(), p.version.as_str()))
           ),
-          ("mock-cxx", None) | ("mujoco-v2", Some(("island/mujoco-sim", "0.1.1")))
+          ("mock-cxx", None)
+            | ("mock-arm", None)
+            | ("mujoco-v2", Some(("island/mujoco-sim", "0.1.1")))
         );
         let loadable = !compiled
           && descriptor.transport == PortTransport::InProcess
@@ -545,53 +589,29 @@ impl NodeTypeRegistry {
       next.register_safety_adapter(adapter)?;
     }
     for definition in contribution.node_types {
-      if matches!(
-        definition.id.as_str(),
-        "eos.hardware.mujoco_camera@v0.1"
-          | "eos.hardware.mujoco_base@v0.1"
-          | "eos.hardware.mujoco_manipulator@v0.1"
-      ) {
+      if definition.id == "isos.eos_process.mujoco@v0.2"
+        && (contribution.package.id != "island/mujoco-sim"
+          || contribution.package.version != "0.1.1"
+          || definition.core != "isos"
+          || definition.layer != "eos_process"
+          || definition.group != "mujoco"
+          || definition.kind != NodeKind::Software
+          || definition.lifecycle != Lifecycle::Process)
+      {
         return Err(ProfileError(format!(
-          "MuJoCo hardware uses generic built-in types: {}",
+          "unsupported MuJoCo type definition: {}",
           definition.id
         )));
       }
-      if let Some((layer, kind, lifecycle)) = match definition.id.as_str() {
-        "eos.process.mujoco@v1.0" | "eos.process.mujoco@v0.1" => {
-          Some(("process", NodeKind::Software, Lifecycle::Process))
-        }
-        "eos.hardware.mujoco_camera@v1.0" => {
-          Some(("hardware", NodeKind::Camera, Lifecycle::Adapter))
-        }
-        "eos.hardware.mujoco_base@v1.0" => Some(("hardware", NodeKind::Base, Lifecycle::Adapter)),
-        "eos.hardware.mujoco_manipulator@v1.0" => {
-          Some(("hardware", NodeKind::Manipulator, Lifecycle::Adapter))
-        }
-        _ => None,
-      } {
-        if contribution.package.id != "island/mujoco-sim"
-          || contribution.package.version != "0.1.1"
-          || definition.core != "eos"
-          || definition.layer != layer
-          || definition.group != "mujoco"
-          || definition.kind != kind
-          || definition.lifecycle != lifecycle
-        {
-          return Err(ProfileError(format!(
-            "unsupported MuJoCo type definition: {}",
-            definition.id
-          )));
-        }
+      if !definition.id.starts_with("isos.") || !definition.id.ends_with("@v0.2") {
+        return Err(ProfileError(format!(
+          "package node type must use the current graph contract: {}",
+          definition.id
+        )));
       }
       let id = definition.id.clone();
-      let alias = single_core_alias(&definition);
       next.register(definition)?;
       next.packages.insert(id, contribution.package.clone());
-      if let Some(alias) = alias {
-        let id = alias.id.clone();
-        next.register(alias)?;
-        next.packages.insert(id, contribution.package.clone());
-      }
     }
     *self = next;
     Ok(())
@@ -599,6 +619,31 @@ impl NodeTypeRegistry {
 
   pub fn register(&mut self, definition: NodeType) -> Result<(), ProfileError> {
     for port in definition.inputs.iter().chain(&definition.outputs) {
+      if (port.delivery_mode == DeliveryMode::Declaration)
+        != (port.transport == Some(PortTransport::None))
+      {
+        return Err(ProfileError(format!(
+          "node type {} port {} has inconsistent static transport",
+          definition.id, port.name
+        )));
+      }
+      if port.delivery_mode == DeliveryMode::Declaration {
+        if port.contract.is_some() {
+          return Err(ProfileError(format!(
+            "node type {} static port {} has a live contract",
+            definition.id, port.name
+          )));
+        }
+      } else if !port.contract.as_ref().is_some_and(|contract| {
+        !contract.owner.trim().is_empty()
+          && !contract.id.trim().is_empty()
+          && !contract.version.trim().is_empty()
+      }) {
+        return Err(ProfileError(format!(
+          "node type {} live port {} requires a protocol contract",
+          definition.id, port.name
+        )));
+      }
       let descriptor = self.data_types.get(port.data_type.id()).ok_or_else(|| {
         ProfileError(format!(
           "node type {} uses unknown data type {}",
@@ -664,6 +709,7 @@ impl NodeTypeRegistry {
       || descriptor.codec.trim().is_empty()
       || descriptor.max_payload_bytes == 0
       || !descriptor.schema.is_object()
+      || jsonschema::validator_for(&descriptor.schema).is_err()
       || self.data_types.contains_key(&descriptor.id)
     {
       return Err(ProfileError(format!(
@@ -705,17 +751,38 @@ impl NodeTypeRegistry {
     Ok(())
   }
 
-  fn register_builtin(&mut self, mut definition: NodeType) -> Result<(), ProfileError> {
-    if definition.description.trim().is_empty() {
-      if definition.id.ends_with("@v0.1") || definition.id.ends_with("@v0.2") {
-        return Err(ProfileError(format!(
-          "node type {} requires a nonblank description",
-          definition.id
-        )));
-      }
-      definition.description = format!("Legacy {} node type", definition.id);
+  fn register_builtin(&mut self, definition: NodeType) -> Result<(), ProfileError> {
+    let value = serde_json::to_value(&definition)
+      .map_err(|error| ProfileError(format!("node type serialization failed: {error}")))?;
+    if let Err(error) = TYPE_IDL.validate(&value) {
+      return Err(ProfileError(format!(
+        "node type {} violates shared IDL: {error}",
+        definition.id
+      )));
     }
-    let expected_prefix = format!("{}.{}.", definition.core, definition.layer);
+    if !matches!(definition.core.as_str(), "isos" | "eos")
+      || !definition.id.starts_with(&format!("{}.", definition.core))
+      || !definition.id.ends_with("@v0.2")
+    {
+      return Err(ProfileError(format!(
+        "node type must use the current graph contract: {}",
+        definition.id
+      )));
+    }
+    if definition.description.trim().is_empty() {
+      return Err(ProfileError(format!(
+        "node type {} requires a nonblank description",
+        definition.id
+      )));
+    }
+    let expected_prefix = if definition.core == "isos" {
+      format!("{}.{}.", definition.core, definition.layer)
+    } else {
+      format!(
+        "{}.{}.{}.",
+        definition.core, definition.layer, definition.group
+      )
+    };
     let type_name = definition
       .id
       .strip_prefix(&expected_prefix)
@@ -736,8 +803,9 @@ impl NodeTypeRegistry {
               .is_some_and(|r| !r.is_finite() || r <= 0.0)
             || p.max_rate_hz.is_some_and(|r| !r.is_finite() || r <= 0.0)
             || !self.data_types.contains_key(p.data_type.id())
-            || ((definition.id.ends_with("@v0.1") || definition.id.ends_with("@v0.2"))
-              && (p.description.is_none() || p.transport.is_none() || p.data_class.is_none()))
+            || p.description.is_none()
+            || p.transport.is_none()
+            || p.data_class.is_none()
         })
       || definition.settings.iter().any(|s| !valid_segment(&s.name))
       || definition.capabilities.iter().any(|c| !valid_segment(c))
@@ -763,10 +831,10 @@ impl NodeTypeRegistry {
             definition.layer.as_str(),
             definition.lifecycle
           ),
-          ("eos", "hardware", Lifecycle::Adapter) | ("isos", "eos_hardware", Lifecycle::Adapter)
+          ("isos", "eos_hardware", Lifecycle::Adapter) | ("eos", "hardware", Lifecycle::Adapter)
         ))
-      || ((definition.core == "eos" && definition.layer == "hardware"
-        || definition.core == "isos" && definition.layer == "eos_hardware")
+      || (definition.core == "isos"
+        && definition.layer == "eos_hardware"
         && definition.kind == NodeKind::Software)
       || (definition.kind == NodeKind::Software && definition.lifecycle == Lifecycle::Adapter)
     {
@@ -796,18 +864,12 @@ impl NodeTypeRegistry {
         definition.id
       )));
     }
-    for setting in &mut definition.settings {
-      if !valid_setting_descriptor(
-        setting,
-        definition.id.ends_with("@v0.1") || definition.id.ends_with("@v0.2"),
-      ) {
+    for setting in &definition.settings {
+      if !valid_setting_descriptor(setting) {
         return Err(ProfileError(format!(
           "invalid setting {} on {}",
           setting.name, definition.id
         )));
-      }
-      if setting.description.is_none() {
-        setting.description = Some(setting.name.replace('_', " "));
       }
     }
     if self.types.contains_key(&definition.id) {
@@ -862,94 +924,38 @@ impl NodeTypeRegistry {
         node.id
       )));
     }
-    if matches!(
-      definition.id.as_str(),
-      "isos.process.component@v1.0" | "isos.process.component@v1.1"
-    ) || is_eos_backend_type(&definition.id)
-    {
-      if node.settings.contains_key("ready_tcp") && node.settings.contains_key("ready_unix") {
-        return Err(ProfileError(format!(
-          "node {} cannot combine ready_tcp and ready_unix",
-          node.id
-        )));
-      }
-      if let Some(path) = node
-        .settings
-        .get(if is_eos_backend_type(&definition.id) {
-          "socket"
-        } else {
-          "ready_unix"
-        })
-        .and_then(toml::Value::as_str)
-      {
+    if is_eos_backend_type(&definition.id) {
+      if let Some(path) = node.settings.get("socket").and_then(toml::Value::as_str) {
         if !path.starts_with('/') || path.len() >= 108 {
           return Err(ProfileError(format!(
-            "node {} has invalid ready_unix path",
-            node.id
-          )));
-        }
-      }
-      if let Some(restart) = node.settings.get("restart").and_then(toml::Value::as_str) {
-        if !["never", "on_failure", "always"].contains(&restart) {
-          return Err(ProfileError(format!(
-            "node {} has invalid restart policy",
+            "node {} has invalid socket path",
             node.id
           )));
         }
       }
     }
-    if definition.id == "isos.process.component@v1.1"
-      && !matches!(
-        node.settings.get("role").and_then(toml::Value::as_str),
-        Some("eos" | "egia" | "isosui")
-      )
-    {
-      return Err(ProfileError(format!(
-        "node {} has invalid process role",
-        node.id
-      )));
-    }
-    if definition.id == "eos.process.backend@v1.0" {
-      let package = node.settings.get("package").and_then(toml::Value::as_str);
-      let version = node.settings.get("version").and_then(toml::Value::as_str);
-      if package.is_none_or(|value| {
-        value
-          .split_once('/')
-          .is_none_or(|(owner, name)| !valid_segment(owner) || !valid_segment(name))
-      }) || version != Some("0.1.1")
-      {
-        return Err(ProfileError(format!(
-          "node {} requires a valid supported backend package identity",
-          node.id
-        )));
-      }
-    }
-    if matches!(
-      definition.id.as_str(),
-      "eos.process.mujoco@v1.0" | "eos.process.mujoco@v0.1" | "isos.eos_process.mujoco@v0.2"
-    ) && node
-      .package
-      .as_ref()
-      .is_none_or(|package| package.id != "island/mujoco-sim" || package.version != "0.1.1")
+    if matches!(definition.id.as_str(), "isos.eos_process.mujoco@v0.2")
+      && node
+        .package
+        .as_ref()
+        .is_none_or(|package| package.id != "island/mujoco-sim" || package.version != "0.1.1")
     {
       return Err(ProfileError(format!(
         "node {} requires island/mujoco-sim@0.1.1",
         node.id
       )));
     }
-    if matches!(
-      definition.id.as_str(),
-      "eos.process.mujoco@v1.0" | "eos.process.mujoco@v0.1" | "isos.eos_process.mujoco@v0.2"
-    ) && (node
-      .settings
-      .get("scene")
-      .and_then(toml::Value::as_str)
-      .is_none()
-      || node
+    if matches!(definition.id.as_str(), "isos.eos_process.mujoco@v0.2")
+      && (node
         .settings
-        .get("socket")
+        .get("scene")
         .and_then(toml::Value::as_str)
-        .is_none())
+        .is_none()
+        || node
+          .settings
+          .get("socket")
+          .and_then(toml::Value::as_str)
+          .is_none())
     {
       return Err(ProfileError(format!(
         "node {} requires scene and socket",
@@ -961,13 +967,7 @@ impl NodeTypeRegistry {
 }
 
 pub fn is_eos_backend_type(id: &str) -> bool {
-  matches!(
-    id,
-    "eos.process.backend@v1.0"
-      | "eos.process.mujoco@v1.0"
-      | "eos.process.mujoco@v0.1"
-      | "isos.eos_process.mujoco@v0.2"
-  )
+  id == "isos.eos_process.mujoco@v0.2"
 }
 
 fn valid_type_version(version: &str) -> bool {
@@ -1134,12 +1134,17 @@ fn item_matches_schema(value: &serde_json::Value, schema: &serde_json::Value) ->
   }
 }
 
-fn valid_setting_descriptor(setting: &Setting, current: bool) -> bool {
+fn valid_setting_descriptor(setting: &Setting) -> bool {
+  if setting.default.as_ref().is_some_and(|value| {
+    !valid_setting(value, setting.data_type) || !valid_setting_value(value, setting)
+  }) {
+    return false;
+  }
   if setting
     .description
     .as_ref()
     .is_some_and(|value| value.trim().is_empty())
-    || (current && setting.description.is_none())
+    || setting.description.is_none()
     || setting
       .unit
       .as_ref()
@@ -1244,6 +1249,7 @@ fn port(name: &str, data_type: PortDataType, required: bool) -> Port {
   Port {
     name: name.into(),
     data_type,
+    contract: None,
     required,
     cardinality: PortCardinality::One,
     description: None,
@@ -1260,6 +1266,7 @@ fn setting(name: &str, data_type: SettingType, required: bool) -> Setting {
     name: name.into(),
     data_type,
     required,
+    default: None,
     description: None,
     unit: None,
     min: None,
@@ -1285,26 +1292,15 @@ fn node_type(
   NodeType {
         id: id.into(),
         description: match id {
-            "eos.hardware.camera@v1.0" => "Captures camera frames and publishes health and status.",
-            "eos.hardware.base@v1.0" => "Receives admitted base commands and publishes pose, outcome, health, and status.",
-            "eos.hardware.manipulator@v1.0" => "Receives admitted arm commands and publishes joint observations, outcome, health, and status.",
-            "eos.dispatcher.control@v1.0" => "Admits control requests and emits typed base or arm commands and status.",
-            "eos.control.manual@v1.0" => "Accepts operator control with device status and emits a governed request and outcome.",
-            "eos.control.primitive@v1.0" => "Forms a typed primitive request from device state and publishes its outcome.",
-            "eos.dispatcher.primitive_base@v1.0" => "Binds a declared base primitive to a typed base command output.",
-            "eos.dispatcher.primitive_manipulator@v1.0" => "Binds a declared arm primitive to a typed arm command output.",
-            "eos.control.skill@v1.0" => "Describes a historical skill sequence and its declared outcome port.",
-            "egia.common.source@v1.0" => "Publishes a typed agent source observation for downstream stages.",
-            "egia.common.context@v1.0" => "Combines source evidence into a context snapshot for planning.",
-            "egia.common.planner@v1.0" => "Consumes context and emits an agent plan proposal.",
-            "egia.common.guard@v1.0" => "Checks a plan proposal before guarded agent output.",
-            "isos.process.component@v1.0" => "Describes a legacy managed component process and its readiness.",
-            "eos.process.backend@v1.0" => "Describes a legacy EOS backend child process and its readiness.",
-            "eos.interface.camera_gate@v1.0" => "Gates camera frames into a read-only vision stream.",
-            "isos.ui.vision@v1.0" | "isosui.system.vision@v1.0" => "Displays a read-only vision frame in the operator UI.",
+            "isos.eos_hardware.camera@v0.2" => "Captures camera frames and publishes health and status.",
+            "isos.eos_hardware.base@v0.2" => "Receives admitted base commands and publishes pose, outcome, health, and status.",
+            "isos.eos_hardware.manipulator@v0.2" => "Receives admitted arm commands and publishes joint observations, outcome, health, and status.",
+            "isos.eos_dispatcher.control@v0.2" => "Admits control requests and emits typed base or arm commands and status.",
+            "isos.eos_dispatcher.primitive_base@v0.2" => "Binds a declared base primitive to a typed base command output.",
+            "isos.eos_dispatcher.primitive_manipulator@v0.2" => "Binds a declared arm primitive to a typed arm command output.",
+            "isos.eos_interface.camera_gate@v0.2" => "Gates camera frames into a read-only vision stream.",
             _ => "",
-        }
-        .into(),
+        }.into(),
         core: core.into(),
         layer: layer.into(),
         group: group.into(),
@@ -1314,437 +1310,309 @@ fn node_type(
         settings: Vec::new(),
         inputs,
         outputs,
+        implementation: None,
+        service_inputs: BTreeMap::new(),
+        service_outputs: BTreeMap::new(),
         bridge: None,
         safety_adapter_type: None,
     }
 }
 
 fn builtin_types() -> Vec<NodeType> {
-  use PortDataType::*;
-  let camera = node_type(
-    "eos.hardware.camera@v1.0",
-    ("eos", "hardware", "camera"),
-    NodeKind::Camera,
-    Lifecycle::Adapter,
-    &["rgb8", "aligned_depth_u16"],
+  fn live(
+    name: &str,
+    data: &str,
+    transport: PortTransport,
+    owner: &str,
+    contract_id: &str,
+    class: DataClass,
+  ) -> Port {
+    let mut value = port(name, PortDataType::Custom(data.into()), true);
+    value.description = Some(format!("{data} delivery"));
+    value.transport = Some(transport);
+    value.delivery_mode = DeliveryMode::Event;
+    value.data_class = Some(class);
+    value.contract = Some(PortContractRef {
+      owner: owner.into(),
+      id: contract_id.into(),
+      version: "1".into(),
+    });
+    value
+  }
+  let activation = "button_activation@v0.2";
+  let delta = "arm_joint_delta@v0.2";
+  let monitor = "arm_monitor_state@v0.2";
+  let mut ingress = node_type(
+    "eos.interface.ingress.trigger@v0.2",
+    ("eos", "interface", "ingress"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &["bridge"],
     (
-      vec![],
-      vec![
-        port("frame", CameraFrame, false),
-        port("health", Health, false),
-        port("status", Status, false),
-      ],
+      vec![live(
+        "activation",
+        activation,
+        PortTransport::UnixSocket,
+        "ei",
+        "activation-to-eos",
+        DataClass::Event,
+      )],
+      vec![live(
+        "activation",
+        activation,
+        PortTransport::InProcess,
+        "eos",
+        "activation-local",
+        DataClass::Event,
+      )],
     ),
   );
-  let mut base = node_type(
-    "eos.hardware.base@v1.0",
-    ("eos", "hardware", "base"),
-    NodeKind::Base,
-    Lifecycle::Adapter,
-    &["body_velocity", "relative_pose"],
+  ingress.description = "Receives run-fenced EI activation events".into();
+  ingress.bridge = Some(BridgeDeclaration {
+    adapter: "unix_socket".into(),
+    inputs: vec!["activation".into()],
+    outputs: vec![],
+  });
+  let mut skill = node_type(
+    "eos.skill.demo.joint_delta@v0.2",
+    ("eos", "skill", "demo"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
     (
-      vec![port("command", BaseMovement, true)],
-      vec![
-        port("observation", BaseObservation, false),
-        port("outcome", CommandOutcome, false),
-        port("health", Health, false),
-        port("status", Status, false),
-      ],
+      vec![live(
+        "activation",
+        activation,
+        PortTransport::InProcess,
+        "eos",
+        "activation-local",
+        DataClass::Event,
+      )],
+      vec![live(
+        "delta",
+        delta,
+        PortTransport::InProcess,
+        "eos",
+        "arm-delta",
+        DataClass::Command,
+      )],
     ),
   );
-  base.inputs[0].cardinality = PortCardinality::Many;
-  let mut manipulator = node_type(
-    "eos.hardware.manipulator@v1.0",
-    ("eos", "hardware", "manipulator"),
+  skill.description = "Converts activation into the built-in six-joint demonstration delta".into();
+  let mut dispatcher = node_type(
+    "eos.dispatcher.arm.delta@v0.2",
+    ("eos", "dispatcher", "arm"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![live(
+        "delta",
+        delta,
+        PortTransport::InProcess,
+        "eos",
+        "arm-delta",
+        DataClass::Command,
+      )],
+      vec![live(
+        "delta",
+        delta,
+        PortTransport::InProcess,
+        "eos",
+        "arm-delta",
+        DataClass::Command,
+      )],
+    ),
+  );
+  dispatcher.description = "Admits six-joint deltas before mock hardware movement".into();
+  let mut hardware = node_type(
+    "eos.hardware.mock.arm@v0.2",
+    ("eos", "hardware", "mock"),
     NodeKind::Manipulator,
     Lifecycle::Adapter,
-    &["joint_positions", "end_effector_pose"],
+    &[],
     (
-      vec![port("command", ManipulatorMovement, true)],
-      vec![
-        port("observation", ManipulatorObservation, false),
-        port("outcome", CommandOutcome, false),
-        port("health", Health, false),
-        port("status", Status, false),
-      ],
+      vec![live(
+        "delta",
+        delta,
+        PortTransport::InProcess,
+        "eos",
+        "arm-delta",
+        DataClass::Command,
+      )],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
     ),
   );
-  manipulator.inputs[0].cardinality = PortCardinality::Many;
-  let dispatcher = node_type(
-    "eos.dispatcher.control@v1.0",
-    ("eos", "dispatcher", "control"),
+  hardware.description = "Holds six mock arm joint positions and applies admitted deltas".into();
+  hardware.capabilities = vec!["joint_positions".into()];
+  hardware.safety_adapter_type = Some("mock_arm".into());
+  let mut sample_interval = setting("sample_interval_ms", SettingType::PositiveInteger, false);
+  sample_interval.description = Some("Mock joint sampling period (10 ms = 100 Hz)".into());
+  sample_interval.unit = Some("ms".into());
+  sample_interval.min = Some(1);
+  sample_interval.max = Some(1000);
+  sample_interval.default = Some(toml::Value::Integer(10));
+  let mut freshness_timeout = setting("freshness_timeout_ms", SettingType::PositiveInteger, false);
+  freshness_timeout.description = Some("Maximum sample age before movement is blocked".into());
+  freshness_timeout.unit = Some("ms".into());
+  freshness_timeout.min = Some(2);
+  freshness_timeout.max = Some(5000);
+  freshness_timeout.default = Some(toml::Value::Integer(50));
+  hardware.settings = vec![sample_interval, freshness_timeout];
+  let mut output = node_type(
+    "eos.hardware.mock.arm_output@v0.2",
+    ("eos", "hardware", "mock"),
     NodeKind::Software,
     Lifecycle::Internal,
-    &["admission", "status"],
+    &[],
     (
-      vec![port("request", ControlRequest, false)],
-      vec![
-        port("base_command", BaseMovement, false),
-        port("manipulator_command", ManipulatorMovement, false),
-        port("status", Status, false),
-      ],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
     ),
   );
-  let mut manual = node_type(
-    "eos.control.manual@v1.0",
-    ("eos", "control", "manual"),
+  output.description = "Passes the mock arm observation to EOS monitoring".into();
+  let mut observer = node_type(
+    "eos.hardware.mock.arm_observer@v0.2",
+    ("eos", "hardware", "mock"),
     NodeKind::Software,
     Lifecycle::Internal,
-    &["manual_control"],
-    (
-      vec![
-        port("status", Status, true),
-        port("base_observation", BaseObservation, false),
-        port("manipulator_observation", ManipulatorObservation, false),
-      ],
-      vec![
-        port("request", ControlRequest, false),
-        port("outcome", CommandOutcome, false),
-      ],
-    ),
-  );
-  manual.settings = vec![setting("target", SettingType::String, true)];
-  let mut primitive = node_type(
-    "eos.control.primitive@v1.0",
-    ("eos", "control", "primitive"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["primitive_control"],
-    (
-      vec![
-        port("status", Status, true),
-        port("base_observation", BaseObservation, false),
-        port("manipulator_observation", ManipulatorObservation, false),
-      ],
-      vec![
-        port("request", ControlRequest, false),
-        port("outcome", CommandOutcome, false),
-      ],
-    ),
-  );
-  primitive.settings = vec![
-    setting("target", SettingType::String, true),
-    setting("movement_type", SettingType::String, true),
-  ];
-  let mut primitive_base = node_type(
-    "eos.dispatcher.primitive_base@v1.0",
-    ("eos", "dispatcher", "base"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["primitive_binding"],
-    (vec![], vec![port("command", BaseMovement, false)]),
-  );
-  primitive_base.settings = vec![
-    setting("primitive_name", SettingType::String, true),
-    setting("primitive_version", SettingType::String, true),
-    setting("movement_type", SettingType::String, true),
-  ];
-  let mut primitive_manipulator = node_type(
-    "eos.dispatcher.primitive_manipulator@v1.0",
-    ("eos", "dispatcher", "manipulator"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["primitive_binding"],
-    (vec![], vec![port("command", ManipulatorMovement, false)]),
-  );
-  primitive_manipulator.settings = primitive_base.settings.clone();
-  let mut skill = node_type(
-    "eos.control.skill@v1.0",
-    ("eos", "control", "skill"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["skill_sequence"],
-    (
-      vec![port("status", Status, true)],
-      vec![port("outcome", SkillOutcome, false)],
-    ),
-  );
-  skill.settings = vec![setting("steps", SettingType::StringArray, true)];
-  let source = node_type(
-    "egia.common.source@v1.0",
-    ("egia", "common", "data"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["observation_ref"],
-    (vec![], vec![port("observation", ObservationRef, false)]),
-  );
-  let context = node_type(
-    "egia.common.context@v1.0",
-    ("egia", "common", "data"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["context"],
-    (
-      vec![port("observation", ObservationRef, false)],
-      vec![port("context", ContextSnapshot, false)],
-    ),
-  );
-  let planner = node_type(
-    "egia.common.planner@v1.0",
-    ("egia", "common", "process"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["planning"],
-    (
-      vec![port("context", ContextSnapshot, false)],
-      vec![port("proposal", PlanProposal, false)],
-    ),
-  );
-  let guard = node_type(
-    "egia.common.guard@v1.0",
-    ("egia", "common", "process"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["request_guard"],
-    (
-      vec![port("proposal", PlanProposal, false)],
-      vec![port("request", ControlRequest, false)],
-    ),
-  );
-  let mut process = node_type(
-    "isos.process.component@v1.0",
-    ("isos", "process", "component"),
-    NodeKind::Software,
-    Lifecycle::Process,
-    &["process"],
+    &[],
     (
       vec![],
-      vec![port("status", Status, false), port("health", Health, false)],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
     ),
   );
-  process.settings = vec![
-    setting("command", SettingType::StringArray, true),
-    setting("cwd", SettingType::String, false),
-    setting("env", SettingType::StringTable, false),
-    setting("ready_tcp", SettingType::String, false),
-    setting("ready_unix", SettingType::String, false),
-    setting("start_timeout_ms", SettingType::PositiveInteger, false),
-    setting("restart", SettingType::String, false),
-    setting("max_restarts", SettingType::NonnegativeInteger, false),
-    setting("depends_on", SettingType::StringArray, false),
-  ];
-  let mut process_v1_1 = process.clone();
-  process_v1_1.id = "isos.process.component@v1.1".into();
-  process_v1_1.description =
-    "Declares a role-selected managed process and publishes readiness and health.".into();
-  process_v1_1
-    .settings
-    .retain(|setting| setting.name != "command");
-  process_v1_1
-    .settings
-    .push(setting("role", SettingType::String, true));
-  process_v1_1
-    .settings
-    .push(setting("args", SettingType::StringArray, false));
-  let mut backend = node_type(
-    "eos.process.backend@v1.0",
-    ("eos", "process", "backend"),
+  observer.description =
+    "Reads the sole mock arm sampler as an independent observation source".into();
+  let mut monitor_dispatcher = node_type(
+    "eos.dispatcher.arm.monitor@v0.2",
+    ("eos", "dispatcher", "arm"),
     NodeKind::Software,
-    Lifecycle::Process,
-    &["process"],
+    Lifecycle::Internal,
+    &[],
     (
-      vec![],
-      vec![port("status", Status, false), port("health", Health, false)],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
     ),
   );
-  backend.settings = vec![
-    setting("package", SettingType::String, true),
-    setting("version", SettingType::String, true),
-    setting("scene", SettingType::String, true),
-    setting("socket", SettingType::String, true),
-    setting("env", SettingType::StringTable, false),
-    setting("start_timeout_ms", SettingType::PositiveInteger, false),
-  ];
-  let mut gate = node_type(
-    "eos.interface.camera_gate@v1.0",
-    ("eos", "interface", "gate"),
+  monitor_dispatcher.description = "Checks mock arm observation freshness and validity".into();
+  let mut status_skill = node_type(
+    "eos.skill.demo.arm_status@v0.2",
+    ("eos", "skill", "demo"),
     NodeKind::Software,
     Lifecycle::Internal,
-    &["vision_preview"],
+    &[],
     (
-      vec![port("frame", CameraFrame, true)],
-      vec![port("preview", VisionFrame, false)],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
     ),
   );
-  gate.inputs[0].data_class = Some(DataClass::Image);
-  gate.inputs[0].transport = Some(PortTransport::InProcess);
-  gate.outputs[0].data_class = Some(DataClass::Image);
-  gate.outputs[0].transport = Some(PortTransport::Websocket);
-  let mut vision = node_type(
-    "isos.ui.vision@v1.0",
-    ("isos", "ui", "panel"),
+  status_skill.description = "Passes checked arm status toward EI".into();
+  let mut egress = node_type(
+    "eos.interface.egress.arm_status@v0.2",
+    ("eos", "interface", "egress"),
     NodeKind::Software,
     Lifecycle::Internal,
-    &["vision_display"],
-    (vec![port("preview", VisionFrame, false)], vec![]),
-  );
-  vision.settings = vec![
-    setting("target_fps", SettingType::PositiveInteger, false),
-    setting("max_width_px", SettingType::PositiveInteger, false),
-    setting("jpeg_quality", SettingType::PositiveInteger, false),
-  ];
-  vision.inputs[0].data_class = Some(DataClass::Image);
-  vision.inputs[0].transport = Some(PortTransport::Websocket);
-  let mut legacy_vision = node_type(
-    "isosui.system.vision@v1.0",
-    ("isosui", "system", "ui"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["vision_display"],
-    (vec![port("preview", VisionFrame, false)], vec![]),
-  );
-  legacy_vision.settings = vec![
-    setting("target_fps", SettingType::PositiveInteger, false),
-    setting("max_width_px", SettingType::PositiveInteger, false),
-    setting("jpeg_quality", SettingType::PositiveInteger, false),
-  ];
-  legacy_vision.inputs[0].data_class = Some(DataClass::Image);
-  legacy_vision.inputs[0].transport = Some(PortTransport::Websocket);
-  vec![
-    camera,
-    base,
-    manipulator,
-    dispatcher,
-    manual,
-    primitive,
-    primitive_base,
-    primitive_manipulator,
-    skill,
-    source,
-    context,
-    planner,
-    guard,
-    process,
-    process_v1_1,
-    backend,
-    gate,
-    vision,
-    legacy_vision,
-  ]
-}
-
-fn single_core_types(target_types: &[NodeType]) -> Vec<NodeType> {
-  target_types.iter().filter_map(single_core_alias).collect()
-}
-
-fn single_core_alias(definition: &NodeType) -> Option<NodeType> {
-  if definition.core != "eos" || !definition.id.ends_with("@v0.1") {
-    return None;
-  }
-  let prefix = format!("eos.{}.", definition.layer);
-  let name = definition.id.strip_prefix(&prefix)?.strip_suffix("@v0.1")?;
-  let mut target = definition.clone();
-  target.core = "isos".into();
-  target.layer = format!("eos_{}", definition.layer);
-  target.id = format!("isos.eos_{}.{name}@v0.2", definition.layer);
-  Some(target)
-}
-
-fn target_types(legacy_types: &[NodeType]) -> Vec<NodeType> {
-  let mut targets: Vec<NodeType> = legacy_types
-    .iter()
-    .filter_map(|legacy| {
-      let id = match legacy.id.as_str() {
-        "eos.hardware.camera@v1.0" => "eos.hardware.camera@v0.1",
-        "eos.hardware.base@v1.0" => "eos.hardware.base@v0.1",
-        "eos.hardware.manipulator@v1.0" => "eos.hardware.manipulator@v0.1",
-        "eos.dispatcher.control@v1.0" => "eos.dispatcher.control@v0.1",
-        "eos.dispatcher.primitive_base@v1.0" => "eos.dispatcher.primitive_base@v0.1",
-        "eos.dispatcher.primitive_manipulator@v1.0" => "eos.dispatcher.primitive_manipulator@v0.1",
-        "eos.interface.camera_gate@v1.0" => "eos.interface.camera_gate@v0.1",
-        _ => return None,
-      };
-      let mut target = legacy.clone();
-      target.id = id.into();
-      for setting in &mut target.settings {
-        setting.description = Some(
-          match setting.name.as_str() {
-            "primitive_name" => "Registered primitive operation name",
-            "primitive_version" => "Exact primitive operation version",
-            "movement_type" => "Movement mode supported by the selected device",
-            _ => unreachable!("target built-in setting"),
-          }
-          .into(),
-        );
-        setting.choices = vec![match (target.id.as_str(), setting.name.as_str()) {
-          ("eos.dispatcher.primitive_base@v0.1", "primitive_name") => "base.velocity",
-          ("eos.dispatcher.primitive_manipulator@v0.1", "primitive_name") => "arm.movej",
-          (_, "primitive_version") => "1.0.0",
-          ("eos.dispatcher.primitive_base@v0.1", "movement_type") => "body_velocity",
-          ("eos.dispatcher.primitive_manipulator@v0.1", "movement_type") => "joint_positions",
-          _ => unreachable!("target built-in choice"),
-        }
-        .into()];
-      }
-      for port in target.inputs.iter_mut().chain(&mut target.outputs) {
-        port.description = Some(builtin_data_purpose(port.data_type.id()).into());
-        port.transport = Some(
-          if target.id == "eos.interface.camera_gate@v0.1" && port.name == "preview" {
-            PortTransport::Websocket
-          } else {
-            PortTransport::InProcess
-          },
-        );
-        port.data_class = Some(match port.data_type {
-          PortDataType::CameraFrame | PortDataType::VisionFrame => DataClass::Image,
-          PortDataType::BaseObservation | PortDataType::ManipulatorObservation => {
-            DataClass::Observation
-          }
-          PortDataType::BaseMovement
-          | PortDataType::ManipulatorMovement
-          | PortDataType::ControlRequest => DataClass::Command,
-          PortDataType::CommandOutcome | PortDataType::SkillOutcome => DataClass::Event,
-          PortDataType::Health | PortDataType::Status => DataClass::State,
-          _ => DataClass::Opaque,
-        });
-      }
-      if target.id == "eos.dispatcher.primitive_base@v0.1" {
-        let mut request = port("request", PortDataType::BaseMovement, false);
-        request.description = Some("Typed base movement from a declared gateway".into());
-        request.transport = Some(PortTransport::InProcess);
-        request.data_class = Some(DataClass::Command);
-        request.delivery_mode = DeliveryMode::Stream;
-        request.max_rate_hz = Some(20.0);
-        target.inputs.push(request);
-      }
-      Some(target)
-    })
-    .collect();
-  let mut gateway = node_type(
-    "eos.interface.http_gateway@v0.1",
-    ("eos", "interface", "gateway"),
-    NodeKind::Software,
-    Lifecycle::Internal,
-    &["typed_movement_bridge"],
+    &["bridge"],
     (
-      vec![port("movement", PortDataType::BaseMovement, false)],
-      vec![port("movement", PortDataType::BaseMovement, false)],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::InProcess,
+        "eos",
+        "arm-monitor-local",
+        DataClass::Observation,
+      )],
+      vec![live(
+        "observation",
+        monitor,
+        PortTransport::UnixSocket,
+        "eos",
+        "arm-monitor-to-ei",
+        DataClass::Observation,
+      )],
     ),
   );
-  gateway.description =
-    "Admits run-fenced HTTP base movement into a declared primitive binding".into();
-  gateway.capabilities.push("bridge".into());
-  gateway.bridge = Some(BridgeDeclaration {
-    adapter: "http".into(),
-    inputs: vec!["movement".into()],
-    outputs: Vec::new(),
+  egress.description = "Publishes bounded, run-fenced arm status to EI".into();
+  egress.bridge = Some(BridgeDeclaration {
+    adapter: "unix_socket".into(),
+    inputs: vec![],
+    outputs: vec!["observation".into()],
   });
-  gateway.inputs[0].description = Some("Bounded HTTP base movement from IsOS".into());
-  gateway.inputs[0].transport = Some(PortTransport::Http);
-  gateway.inputs[0].data_class = Some(DataClass::Command);
-  gateway.inputs[0].delivery_mode = DeliveryMode::Stream;
-  gateway.inputs[0].max_rate_hz = Some(20.0);
-  gateway.outputs[0].description = Some("Verified base movement for Dispatcher".into());
-  gateway.outputs[0].transport = Some(PortTransport::InProcess);
-  gateway.outputs[0].data_class = Some(DataClass::Command);
-  gateway.outputs[0].delivery_mode = DeliveryMode::Stream;
-  gateway.outputs[0].max_rate_hz = Some(20.0);
-  targets.push(gateway);
-  targets
+  vec![
+    ingress,
+    skill,
+    dispatcher,
+    hardware,
+    output,
+    observer,
+    monitor_dispatcher,
+    status_skill,
+    egress,
+  ]
 }
 
 fn builtin_data_purpose(id: &str) -> &'static str {
   match id {
+    "button_activation@v0.2" => "General user activation event",
+    "arm_joint_delta@v0.2" => "Six ordered relative arm joint angles in radians",
+    "arm_monitor_state@v0.2" => "Run-fenced six-joint mock arm observation",
     "camera_frame" => "RGB-D camera sample with source provenance and calibration",
     "vision_frame" => "JPEG preview derived from a camera gate",
     "base_observation" => "Mobile base pose and velocity sample",
@@ -1757,8 +1625,8 @@ fn builtin_data_purpose(id: &str) -> &'static str {
     "health" => "Adapter health and last successful observation",
     "status" => "Live node lifecycle and active command",
     "observation_ref" => "Reference to a source observation",
-    "context_snapshot" => "Bounded EGIA context snapshot",
-    "plan_proposal" => "EGIA proposed plan requiring admission",
+    "context_snapshot" => "Bounded EI context snapshot",
+    "plan_proposal" => "EI proposed plan requiring admission",
     _ => unreachable!("built-in data type"),
   }
 }
@@ -1766,6 +1634,32 @@ fn builtin_data_purpose(id: &str) -> &'static str {
 fn builtin_data_schema(id: &str) -> serde_json::Value {
   use serde_json::json;
   let properties = match id {
+    "button_activation@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,"required":["event_id","kind"],"properties":{"event_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9_.-]+$"},"kind":{"const":"activate"}}})
+    }
+    "arm_monitor_state@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["run_id","revision","source_node","sequence","sampled_at_monotonic_ns","joint_names","joint_positions_rad","state","reason_code"],
+        "properties":{
+          "run_id":{"type":"string","minLength":1,"maxLength":128},
+          "revision":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+          "source_node":{"type":"string","pattern":"^eos/hardware/mock/[A-Za-z0-9_-]+$"},
+          "sequence":{"type":"integer","minimum":1},
+          "sampled_at_monotonic_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+          "joint_names":{"type":"array","minItems":6,"maxItems":6,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+          "joint_positions_rad":{"type":["array","null"],"minItems":6,"maxItems":6,"items":{"type":"number"},"x-unit":"rad"},
+          "state":{"type":"string","enum":["ready","degraded","stale","stopped"]},
+          "reason_code":{"type":["string","null"]}
+        },
+        "if":{"properties":{"state":{"const":"ready"}}},
+        "then":{"properties":{"joint_positions_rad":{"type":"array"}}},
+        "else":{"properties":{"joint_positions_rad":{"type":"null"}}}
+      })
+    }
+    "arm_joint_delta@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,"required":["joint_deltas_rad"],"properties":{"joint_deltas_rad":{"type":"array","minItems":6,"maxItems":6,"items":{"type":"number","minimum":-0.25,"maximum":0.25},"x-unit":"rad"}}})
+    }
     "camera_frame" => json!({
         "meta":{"type":"object","description":"Source timestamp, clock, receive time, sequence and frame ID"},
         "width_px":{"type":"integer","minimum":1,"x-unit":"px","description":"RGB width"},
@@ -1846,7 +1740,7 @@ mod object_array_tests {
 
   #[test]
   fn nested_items_are_checked_without_coercion_or_extra_fields() {
-    let mut setting = setting("skill_libraries", SettingType::ObjectArray, false);
+    let mut setting = setting("skill_executables", SettingType::ObjectArray, false);
     setting.description = Some("Exact package libraries".into());
     setting.items_schema = Some(serde_json::json!({
       "type":"object","additionalProperties":false,
@@ -1861,7 +1755,7 @@ mod object_array_tests {
     }));
     setting.min_items = Some(0);
     setting.max_items = Some(16);
-    assert!(valid_setting_descriptor(&setting, true));
+    assert!(valid_setting_descriptor(&setting));
     let good = toml::Value::try_from(serde_json::json!([{
       "package":{"id":"island/example","version":"0.1.0"},"library":"lib/a.so"
     }]))
@@ -1880,6 +1774,6 @@ mod object_array_tests {
     let seventeen = toml::Value::Array(vec![good.as_array().unwrap()[0].clone(); 17]);
     assert!(!valid_setting_value(&seventeen, &setting));
     setting.items_schema = Some(serde_json::json!({"type":"string"}));
-    assert!(!valid_setting_descriptor(&setting, true));
+    assert!(!valid_setting_descriptor(&setting));
   }
 }

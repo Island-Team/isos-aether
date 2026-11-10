@@ -5,29 +5,6 @@
     "name": "Aether deployment"
   },
   "cores": {
-    "eos": {
-      "layers": {
-        "dispatcher": {
-          "groups": {
-            "control": {
-              "nodes": {
-                "command": {
-                  "id": "command",
-                  "node_type": "eos.dispatcher.control@v1.0",
-                  "label": "EOS command dispatcher",
-                  "description": "Software node that admits movement through configured hardware nodes",
-                  "capabilities": [
-                    "admission",
-                    "status"
-                  ],
-                  "references": []
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "isos": {
       "layers": {
         "process": {
@@ -104,6 +81,25 @@
                     "restart": "on_failure",
                     "max_restarts": 3
                   }
+                }
+              }
+            }
+          }
+        },
+        "eos_dispatcher": {
+          "groups": {
+            "control": {
+              "nodes": {
+                "command": {
+                  "id": "command",
+                  "node_type": "isos.eos_dispatcher.control@v0.2",
+                  "label": "EOS command dispatcher",
+                  "description": "Software node that admits movement through configured hardware nodes",
+                  "capabilities": [
+                    "admission",
+                    "status"
+                  ],
+                  "references": []
                 }
               }
             }

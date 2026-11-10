@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/aether-common", "crates/aether-node-profile", "crates/aether-hal", "crates/aether-dispatcher", "crates/aether-mujoco", "crates/aether-control", "crates/aether-http-bridge", "crates/aether-config-server", "crates/aether-tui", "crates/aether-runtime", "crates/isos"]
+members = ["crates/aether-common", "crates/aether-node-profile", "crates/aether-hal", "crates/aether-control", "crates/aether-http-bridge", "crates/aether-config-server", "crates/aether-runtime", "crates/isos"]
 resolver = "2"
 
 [workspace.package]

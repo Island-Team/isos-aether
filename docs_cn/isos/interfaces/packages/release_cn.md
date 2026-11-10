@@ -19,7 +19,20 @@
 发行包可在有界的所有者扩展中包含不透明元数据。IsOS 不把这些元数据解释为场景、设备、运行库或适配器权限。所属核心在宣布就绪前验证其语义。[进程契约](process_cn.md)定义通用贡献字段。
 
 ```json
-{"contract":"isos.package@v1","schema_version":"0.1.0","id":"vendor/sample-a","kind":"component","version":"1.2.3","source_commit":"0000000000000000000000000000000000000000","node_contributions":{"node_types":[],"processes":[],"node_sets":[]},"assets":[]}
+{
+  "contract": "isos.package@v1",
+  "schema_version": "0.1.0",
+  "id": "vendor/sample-a",
+  "kind": "component",
+  "version": "1.2.3",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "node_contributions": {
+    "node_types": [],
+    "processes": [],
+    "node_sets": []
+  },
+  "assets": []
+}
 ```
 
-空列表示例只说明结构；准入还要求选中的注册类型和声明的所有者能力。[CLI 发布流程](../../maintenance/todo_cn.md)与软件包准入分开。
+空列表示例只说明结构；准入还要求选中的注册类型和声明的所有者能力。[CLI 发布流程](../../design/remaining-work_cn.md)与软件包准入分开。

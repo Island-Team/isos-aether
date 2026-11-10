@@ -108,7 +108,7 @@
     {
       "id": "filtered_details_keep_anchor",
       "boundary": "filter",
-      "given": "source=egia, level=error, node_path and correlation_id exclude eos_ready",
+      "given": "source=ei, level=error, node_path and correlation_id exclude eos_ready",
       "expected": {
         "anchor_event_code": "eos_ready",
         "anchor_visible": true,
@@ -221,16 +221,6 @@
       }
     },
     {
-      "id": "legacy_server_fallback",
-      "boundary": "compat",
-      "given": "server returns only lines,next_cursor,rotated",
-      "expected": {
-        "compat_notice": true,
-        "first_event_claim": false,
-        "cross_run_claim": false
-      }
-    },
-    {
       "id": "bounded_poll_and_accessibility",
       "boundary": "bounds",
       "given": "visible Follow then hidden tab, repeated error and new-run boundary",
@@ -278,7 +268,6 @@
       "expected": {
         "current_scope_kind": "deployment_run",
         "manager_event_not_relabelled": true,
-        "legacy_source_view_available": true,
         "status_authoritative": true
       }
     },

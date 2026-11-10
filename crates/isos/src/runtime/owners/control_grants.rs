@@ -13,31 +13,31 @@ use std::{
 };
 
 const GRANT_NAMES: [&str; 3] = [
-  "egia-control.grant",
+  "ei-control.grant",
   "operator-control.grant",
   "verifier.json",
 ];
 pub const RESERVED_ENVS: [&str; 8] = [
   "EOS_CONTROL_GRANTS_FILE",
-  "EGIA_EOS_CONTROL_GRANT_FILE",
+  "EI_EOS_CONTROL_GRANT_FILE",
   "AETHER_BRIDGE_CONTROL_GRANT_FILE",
   "AETHER_BRIDGE_VISION_VERIFIER_FILE",
-  "EGIA_VISION_BINDING_FILE",
-  "EGIA_EOS_VISION_GRANT_FILE",
-  "EGIA_VISION_INSPECTION_SOCKET",
-  "EGIA_VISION_INSPECTION_VERIFIER_FILE",
+  "EI_VISION_BINDING_FILE",
+  "EI_EOS_VISION_GRANT_FILE",
+  "EI_VISION_INSPECTION_SOCKET",
+  "EI_VISION_INSPECTION_VERIFIER_FILE",
 ];
 const VISION_FILES: [&str; 4] = [
-  "egia-vision.grant",
+  "ei-vision.grant",
   "vision-inspection.grant",
   "vision-verifier.json",
-  "egia-vision-inspection-verifier.json",
+  "ei-vision-inspection-verifier.json",
 ];
 const ENDPOINT_FILES: [&str; 4] = [
   "eos-vision-owner.sock",
-  "egia-vision-inspection.sock",
+  "ei-vision-inspection.sock",
   "vision-verifier.json",
-  "egia-vision-inspection-verifier.json",
+  "ei-vision-inspection-verifier.json",
 ];
 
 #[derive(Debug, Serialize)]
@@ -333,12 +333,12 @@ impl Bundle {
     let deployment_root = require_dir(&control_root, deployment)?;
     let root = create_dir(&deployment_root, run_id)?;
     let issue = (|| {
-      let egia = draw()?;
+      let ei = draw()?;
       let operator = draw()?;
-      ensure!(egia != operator, failure("control_grant_issue_failed"));
+      ensure!(ei != operator, failure("control_grant_issue_failed"));
       write_new(
         &root.join(GRANT_NAMES[0]),
-        format!("{}\n", hex::encode(egia)).as_bytes(),
+        format!("{}\n", hex::encode(ei)).as_bytes(),
       )?;
       write_new(
         &root.join(GRANT_NAMES[1]),
@@ -348,7 +348,7 @@ impl Bundle {
         schema_version: 1,
         run_id: run_id.to_owned(),
         active_revision: revision.to_owned(),
-        egia_control_sha256: hex::encode(Sha256::digest(egia)),
+        ei_control_sha256: hex::encode(Sha256::digest(ei)),
         operator_control_sha256: hex::encode(Sha256::digest(operator)),
       };
       let mut bytes =
@@ -427,10 +427,10 @@ impl Bundle {
           .map(std::ffi::OsStr::new)
           .map(std::ffi::OsStr::to_os_string),
       );
-      expected.insert(std::ffi::OsStr::new("egia").to_os_string());
+      expected.insert(std::ffi::OsStr::new("ei").to_os_string());
     }
     ensure!(actual == expected, failure("control_grant_unsafe_path"));
-    let egia = decoded_grant(&read_file(&run_dir.join(GRANT_NAMES[0]), 65)?)?;
+    let ei = decoded_grant(&read_file(&run_dir.join(GRANT_NAMES[0]), 65)?)?;
     let operator = decoded_grant(&read_file(&run_dir.join(GRANT_NAMES[1]), 65)?)?;
     let bytes = read_file(&run_dir.join(GRANT_NAMES[2]), 1024)?;
     let verifier: Verifier =
@@ -439,7 +439,7 @@ impl Bundle {
       verifier.schema_version == 1
         && verifier.run_id == self.run_id
         && verifier.active_revision == self.revision
-        && verifier.egia_control_sha256 == hex::encode(Sha256::digest(&egia))
+        && verifier.ei_control_sha256 == hex::encode(Sha256::digest(&ei))
         && verifier.operator_control_sha256 == hex::encode(Sha256::digest(&operator)),
       failure("control_grant_mismatch")
     );
@@ -462,15 +462,15 @@ impl Bundle {
         failure("vision_endpoint_unavailable")
       );
       verify_endpoint_dir(endpoint_root)?;
-      inspect_dir(&run_dir.join("egia"))?;
-      let egia_entries = fs::read_dir(run_dir.join("egia"))?
+      inspect_dir(&run_dir.join("ei"))?;
+      let ei_entries = fs::read_dir(run_dir.join("ei"))?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
       ensure!(
-        egia_entries == [std::ffi::OsStr::new("vision-binding.json").to_os_string()].into(),
+        ei_entries == [std::ffi::OsStr::new("vision-binding.json").to_os_string()].into(),
         failure("vision_grant_invalid")
       );
-      let binding_bytes = read_file(&run_dir.join("egia/vision-binding.json"), 4096)?;
+      let binding_bytes = read_file(&run_dir.join("ei/vision-binding.json"), 4096)?;
       let binding: serde_json::Value =
         serde_json::from_slice(&binding_bytes).map_err(|_| failure("vision_grant_invalid"))?;
       ensure!(
@@ -487,8 +487,8 @@ impl Bundle {
       let inspection = decoded_grant(&read_file(&run_dir.join(VISION_FILES[1]), 65)?)?;
       ensure!(
         vision != inspection
-          && vision != egia
-          && inspection != egia
+          && vision != ei
+          && inspection != ei
           && vision != operator
           && inspection != operator,
         failure("vision_grant_invalid")
@@ -501,7 +501,7 @@ impl Bundle {
           == serde_json::json!({"schema_version":1,"run_id":self.run_id,
                 "active_revision":self.revision,"projection_revision":template.projection_revision,
                 "source_path":template.source_path,"gate_path":template.gate_path,
-                "egia_vision_sha256":hex::encode(Sha256::digest(&vision))}),
+                "ei_vision_sha256":hex::encode(Sha256::digest(&vision))}),
         failure("vision_grant_invalid")
       );
       let inspect: serde_json::Value =
@@ -535,14 +535,14 @@ impl Bundle {
     let endpoints = require_dir(&self.runtime_root, "v")?;
     let endpoint_root = endpoints.join(endpoint_name(deployment, &self.run_id));
     socket_path(&endpoint_root, &template.endpoint_name)?;
-    socket_path(&endpoint_root, "egia-vision-inspection.sock")?;
+    socket_path(&endpoint_root, "ei-vision-inspection.sock")?;
     // Existing names are never reused, even if an orphan has valid-looking
     // verifier bytes. This also makes a truncated digest collision closed.
     let vision = random_grant()?;
     let inspection = random_grant()?;
     ensure!(vision != inspection, failure("vision_grant_invalid"));
     let endpoint_root = create_dir(&endpoints, &endpoint_name(deployment, &self.run_id))?;
-    let egia_dir = match create_dir(&self.root, "egia") {
+    let ei_dir = match create_dir(&self.root, "ei") {
       Ok(dir) => dir,
       Err(error) => {
         let _ = fs::remove_dir(&endpoint_root);
@@ -561,7 +561,7 @@ impl Bundle {
       let bridge = serde_json::json!({"schema_version":1,"run_id":self.run_id,
                 "active_revision":self.revision,"projection_revision":template.projection_revision,
                 "source_path":template.source_path,"gate_path":template.gate_path,
-                "egia_vision_sha256":hex::encode(Sha256::digest(vision))});
+                "ei_vision_sha256":hex::encode(Sha256::digest(vision))});
       write_new(
         &endpoint_root.join(VISION_FILES[2]),
         &serde_json::to_vec(&bridge)?,
@@ -573,7 +573,7 @@ impl Bundle {
         &serde_json::to_vec(&inspect)?,
       )?;
       write_new(
-        &egia_dir.join("vision-binding.json"),
+        &ei_dir.join("vision-binding.json"),
         &serde_json::to_vec(&crate::runtime::process::vision_binding::binding(
           &template,
           &self.run_id,
@@ -592,8 +592,8 @@ impl Bundle {
       for name in &VISION_FILES[2..] {
         let _ = fs::remove_file(endpoint_root.join(name));
       }
-      let _ = fs::remove_file(egia_dir.join("vision-binding.json"));
-      let _ = fs::remove_dir(egia_dir);
+      let _ = fs::remove_file(ei_dir.join("vision-binding.json"));
+      let _ = fs::remove_dir(ei_dir);
       let _ = fs::remove_dir(&endpoint_root);
       return issue;
     }
@@ -611,25 +611,22 @@ impl Bundle {
         "AETHER_BRIDGE_VISION_VERIFIER_FILE",
         self.endpoint_root.as_ref().unwrap().join(VISION_FILES[2]),
       )],
-      "egia" => vec![
+      "ei" => vec![
         (
-          "EGIA_VISION_BINDING_FILE",
-          self.root.join("egia/vision-binding.json"),
+          "EI_VISION_BINDING_FILE",
+          self.root.join("ei/vision-binding.json"),
         ),
+        ("EI_EOS_VISION_GRANT_FILE", self.root.join(VISION_FILES[0])),
         (
-          "EGIA_EOS_VISION_GRANT_FILE",
-          self.root.join(VISION_FILES[0]),
-        ),
-        (
-          "EGIA_VISION_INSPECTION_SOCKET",
+          "EI_VISION_INSPECTION_SOCKET",
           self
             .endpoint_root
             .as_ref()
             .unwrap()
-            .join("egia-vision-inspection.sock"),
+            .join("ei-vision-inspection.sock"),
         ),
         (
-          "EGIA_VISION_INSPECTION_VERIFIER_FILE",
+          "EI_VISION_INSPECTION_VERIFIER_FILE",
           self.endpoint_root.as_ref().unwrap().join(VISION_FILES[3]),
         ),
       ],
@@ -652,7 +649,7 @@ impl Bundle {
   pub fn launch_env(&self, id: &str) -> Option<(&'static str, PathBuf)> {
     match id {
       "eos" => Some((RESERVED_ENVS[0], self.root.join(GRANT_NAMES[2]))),
-      "egia" => Some((RESERVED_ENVS[1], self.root.join(GRANT_NAMES[0]))),
+      "ei" => Some((RESERVED_ENVS[1], self.root.join(GRANT_NAMES[0]))),
       "bridge" => Some((RESERVED_ENVS[2], self.root.join(GRANT_NAMES[1]))),
       _ => None,
     }
@@ -716,8 +713,8 @@ impl Bundle {
     for name in &VISION_FILES[2..] {
       fs::remove_file(endpoint_root.join(name))?;
     }
-    fs::remove_file(self.root.join("egia/vision-binding.json"))?;
-    fs::remove_dir(self.root.join("egia"))?;
+    fs::remove_file(self.root.join("ei/vision-binding.json"))?;
+    fs::remove_dir(self.root.join("ei"))?;
     Ok(())
   }
 
@@ -783,12 +780,12 @@ impl Bundle {
         Err(_) => removed = false,
       }
     }
-    match fs::remove_file(self.root.join("egia/vision-binding.json")) {
+    match fs::remove_file(self.root.join("ei/vision-binding.json")) {
       Ok(()) => {}
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
       Err(_) => removed = false,
     }
-    match fs::remove_dir(self.root.join("egia")) {
+    match fs::remove_dir(self.root.join("ei")) {
       Ok(()) => {}
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
       Err(_) => removed = false,
@@ -817,8 +814,8 @@ pub fn validate_plan(specs: &[process::ProcessSpec]) -> Result<()> {
     );
   }
   for spec in specs {
-    if matches!(spec.id.as_str(), "egia" | "bridge") {
-      let role = if spec.id == "egia" { "egia" } else { "eos" };
+    if matches!(spec.id.as_str(), "ei" | "bridge") {
+      let role = if spec.id == "ei" { "ei" } else { "eos" };
       ensure!(
         spec.settings.role.as_deref() == Some(role),
         failure("control_grant_delivery_failed")
@@ -837,8 +834,7 @@ pub fn validate_plan(specs: &[process::ProcessSpec]) -> Result<()> {
       for (index, arg) in spec.settings.args.iter().enumerate() {
         if [
           "--run-id",
-          "--backend-release-sha256",
-          "--backend-payload-sha256",
+          "--package-process",
           "--log-dir",
           "--owner-vision-socket",
         ]
@@ -892,7 +888,7 @@ mod tests {
       projection_revision: "b".repeat(64),
       source_path: "eos/hardware/camera/front".into(),
       gate_path: "eos/interface/gate/front".into(),
-      ingress_type: "egia.vision.ingress@v0.1.frame".into(),
+      ingress_type: "ei.vision.ingress@v0.1.frame".into(),
       render: crate::runtime::process::vision_binding::Render {
         max_width_px: 1280,
         jpeg_quality: 80,
@@ -910,16 +906,16 @@ mod tests {
     bundle.attach_vision(vision_template()).unwrap();
     bundle.verify().unwrap();
     let root = bundle.root.clone();
-    let binding = root.join("egia/vision-binding.json");
+    let binding = root.join("ei/vision-binding.json");
     assert_eq!(
       fs::symlink_metadata(&binding).unwrap().permissions().mode() & 0o7777,
       0o600
     );
-    let vision = fs::read(root.join("egia-vision.grant")).unwrap();
+    let vision = fs::read(root.join("ei-vision.grant")).unwrap();
     let inspection = fs::read(root.join("vision-inspection.grant")).unwrap();
     assert_ne!(vision, inspection);
     let endpoint_root = bundle.endpoint_root.clone().unwrap();
-    let inspection_verifier = endpoint_root.join("egia-vision-inspection-verifier.json");
+    let inspection_verifier = endpoint_root.join("ei-vision-inspection-verifier.json");
     assert!(inspection_verifier.is_file());
     assert_eq!(
       bundle.vision_env("bridge"),
@@ -928,9 +924,13 @@ mod tests {
         endpoint_root.join("vision-verifier.json")
       )]
     );
-    assert!(bundle.vision_env("egia").iter().any(|(name, path)| *name
-      == "EGIA_VISION_INSPECTION_VERIFIER_FILE"
-      && path == &inspection_verifier));
+    assert!(
+      bundle
+        .vision_env("ei")
+        .iter()
+        .any(|(name, path)| *name == "EI_VISION_INSPECTION_VERIFIER_FILE"
+          && path == &inspection_verifier)
+    );
     assert!(
       !fs::read(&binding)
         .unwrap()
@@ -960,7 +960,7 @@ mod tests {
     let (_temp, paths) = paths();
     let mut bundle = Bundle::issue(&paths, "default", "r-two", &revision()).unwrap();
     bundle.attach_vision(vision_template()).unwrap();
-    let grant = bundle.root.join("egia-vision.grant");
+    let grant = bundle.root.join("ei-vision.grant");
     fs::set_permissions(&grant, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(bundle.verify().is_err());
     fs::set_permissions(&grant, fs::Permissions::from_mode(0o600)).unwrap();
@@ -983,7 +983,7 @@ mod tests {
       let mut bundle = Bundle::issue(&paths, "default", "r-stop", &revision()).unwrap();
       bundle.attach_vision(vision_template()).unwrap();
       let endpoint_root = bundle.endpoint_root.as_ref().unwrap();
-      let damaged = endpoint_root.join("egia-vision-inspection-verifier.json");
+      let damaged = endpoint_root.join("ei-vision-inspection-verifier.json");
       if missing {
         fs::remove_file(&damaged).unwrap();
       } else {
@@ -998,9 +998,9 @@ mod tests {
       );
       assert!(!surviving.exists());
       assert!(!damaged.exists());
-      assert!(!bundle.root.join("egia-vision.grant").exists());
+      assert!(!bundle.root.join("ei-vision.grant").exists());
       assert!(!bundle.root.join("vision-inspection.grant").exists());
-      assert!(!bundle.root.join("egia/vision-binding.json").exists());
+      assert!(!bundle.root.join("ei/vision-binding.json").exists());
       bundle.retire().unwrap();
     }
   }
@@ -1010,14 +1010,14 @@ mod tests {
     let (_temp, paths) = paths();
     let mut bundle = Bundle::issue(&paths, "default", "r-stop", &revision()).unwrap();
     bundle.attach_vision(vision_template()).unwrap();
-    fs::remove_file(bundle.root.join("egia-vision.grant")).unwrap();
+    fs::remove_file(bundle.root.join("ei-vision.grant")).unwrap();
     assert!(bundle.revoke_vision_for_stop().is_err());
     assert!(
       !bundle
         .endpoint_root
         .as_ref()
         .unwrap()
-        .join("egia-vision-inspection-verifier.json")
+        .join("ei-vision-inspection-verifier.json")
         .exists()
     );
     bundle.retire().unwrap();
@@ -1038,7 +1038,7 @@ mod tests {
     assert!(
       first
         .root
-        .join("egia-vision-inspection.sock")
+        .join("ei-vision-inspection.sock")
         .as_os_str()
         .as_encoded_bytes()
         .len()
@@ -1068,7 +1068,7 @@ mod tests {
     assert!(check_endpoint_orphans(&paths, [("default", run, "b".repeat(64).as_str())]).is_err());
     assert!(check_endpoint_orphans(&paths, []).is_err());
     let binding: serde_json::Value =
-      serde_json::from_slice(&fs::read(first.root.join("egia/vision-binding.json")).unwrap())
+      serde_json::from_slice(&fs::read(first.root.join("ei/vision-binding.json")).unwrap())
         .unwrap();
     assert_eq!(
       binding["eos_endpoint"]["path"],
@@ -1131,7 +1131,7 @@ mod tests {
     assert!(
       bundle
         .root
-        .join("egia-vision-inspection.sock")
+        .join("ei-vision-inspection.sock")
         .as_os_str()
         .as_encoded_bytes()
         .len()
@@ -1140,9 +1140,9 @@ mod tests {
     bundle.attach_vision(vision_template()).unwrap();
     assert!(
       bundle
-        .vision_env("egia")
+        .vision_env("ei")
         .iter()
-        .find(|(name, _)| *name == "EGIA_VISION_INSPECTION_SOCKET")
+        .find(|(name, _)| *name == "EI_VISION_INSPECTION_SOCKET")
         .unwrap()
         .1
         .as_os_str()
@@ -1224,17 +1224,17 @@ mod tests {
         0o600
       );
     }
-    let egia = fs::read(bundle.root.join(GRANT_NAMES[0])).unwrap();
+    let ei = fs::read(bundle.root.join(GRANT_NAMES[0])).unwrap();
     let operator = fs::read(bundle.root.join(GRANT_NAMES[1])).unwrap();
-    assert_eq!(egia.len(), 65);
+    assert_eq!(ei.len(), 65);
     assert_eq!(operator.len(), 65);
-    assert_ne!(egia, operator);
+    assert_ne!(ei, operator);
     let verifier: Verifier =
       serde_json::from_slice(&fs::read(bundle.root.join(GRANT_NAMES[2])).unwrap()).unwrap();
     assert_eq!(verifier.run_id, "r-test-1");
     assert_eq!(verifier.active_revision, revision());
     assert_eq!(
-      verifier.egia_control_sha256,
+      verifier.ei_control_sha256,
       hex::encode(Sha256::digest([0x11; 32]))
     );
     assert_eq!(
@@ -1314,7 +1314,7 @@ mod tests {
   fn plan_requires_eos_and_config_and_rejects_reserved_author_args() {
     let mut specs = two_specs();
     validate_plan(&specs).unwrap();
-    validate_plan(&[specs.clone(), vec![spec("egia", "egia", vec![])]].concat()).unwrap();
+    validate_plan(&[specs.clone(), vec![spec("ei", "ei", vec![])]].concat()).unwrap();
     specs.remove(0);
     assert_eq!(
       code(&validate_plan(&specs).unwrap_err()),

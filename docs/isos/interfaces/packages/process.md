@@ -1,6 +1,6 @@
 # Generic process contribution
 
-[中文](../../../../docs_cn/isos/interfaces/packages/process_cn.md) · [Resources](resources.md) · [Owner handoff](../cores/handoff.md)
+[中文](../../../../docs_cn/isos/interfaces/packages/process_cn.md) · [Resources](resources.md) · [Owner handoff](../core/handoff.md)
 
 A `node_contributions.processes[]` entry describes a package process without granting launch authority. IsOS resolves the exact verified pin, matches the registered node type and placement, checks declared resource IDs and digests, and selects the owning core. The owner verifies its lifecycle adapter. IsOS supervises only IsOS-owned direct children; another core supervises its own children.
 
@@ -12,7 +12,7 @@ A `node_contributions.processes[]` entry describes a package process without gra
 | `resources` | array / setting references | Each setting names a registered resource family and descriptor; selected ID is resolved against verified release. | Empty if none. |
 | `host_inputs` | array / declared host requirements | Named inputs verified by the owner; values never enter release or saved graph. | Empty if none. |
 
-The bound `isos.package-process@v1` handoff carries the verified executable and resources, owning core, lifecycle adapter, run ID, and saved revision. Dependency order and readiness/stop conditions remain in the IsOS runtime plan and owner policy; they are not fields in this handoff. Owner rejection, failed readiness, or uncertain stop never becomes a successful replacement. The [handoff contract](../cores/handoff.md) defines wire fields.
+The bound `isos.package-process@v1` handoff carries the verified executable and resources, owning core, lifecycle adapter, run ID, and saved revision. Dependency order and readiness/stop conditions remain in the IsOS runtime plan and owner policy; they are not fields in this handoff. Owner rejection, failed readiness, or uncertain stop never becomes a successful replacement. The [handoff contract](../core/handoff.md) defines wire fields.
 
 ## Generic skill selection
 

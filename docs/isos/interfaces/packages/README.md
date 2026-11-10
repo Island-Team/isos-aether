@@ -7,6 +7,6 @@ This folder is for package publishers and core authors. IsOS currently treats ev
 - [Process](process.md) defines entrypoint, lifecycle adapter, host inputs, and resource references for an owner-run process.
 - [Verification](verification.md) explains exact-pin, file, catalog, and owner capability checks applied before graph publication or launch.
 
-The [registered node contract](../nodes/README.md) defines the same type and port rules for package and built-in nodes. The [core handoff](../cores/handoff.md) binds a verified process to one run and revision.
+The [registered node contract](../node/README.md) defines the same type and port rules for package and built-in nodes. The [core handoff](../core/handoff.md) binds a verified process to one run and revision.
 
 [中文](../../../../docs_cn/isos/interfaces/packages/README_cn.md)

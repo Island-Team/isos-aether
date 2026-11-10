@@ -20,13 +20,17 @@ libc = "0.2"
 tar = "0.4"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-axum = "0.8"
+semver = "1"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
 tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tempfile = "3"
+jsonschema = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

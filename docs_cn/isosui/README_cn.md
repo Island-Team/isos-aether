@@ -1,12 +1,20 @@
 # IsosUI 文档
 
-> **0.2.1 集成目标（尚未发布）：** 单个 `isos` 图核心使用图格式 `0.2.0`；EOS、EI 和浏览器节点分别位于 `eos_*`、`ei_*` 和 `ui` 层。旧图在 IsOS 显式迁移前保持只读。下文的 v0.1.0 验证记录属于历史证据。
+[English](../../docs/isosui/README.md) · [文档](../README_cn.md)
 
+IsosUI 是 IsOS 部署的浏览器工作台。它编辑包含 `isos`、`ei`、`eos` 三个核心的 `0.2.0` 格式图，并呈现各核心声明层中的已注册节点。IsOS 负责图持久化、软件包准入和进程状态。EOS 负责实时控制与观测。工作台呈现这些所有者接口，不定义另一种图格式。
 
-[English](../../docs/isosui/README.md)
+## 阅读地图
 
-IsosUI 源码位于统一 IsOS 仓库的 `ui/`，尚未发布的源码版本为 `0.2.1`。它编辑唯一 `isos` 核心下的 `0.2.0` 图并读取绑定修订的已选类型；旧图在 IsOS 迁移前只读。下文公开 IsosUI `v0.1.0` 发布与资格记录属于历史证据。首次使用请按[使用指南](usage_cn.md)的操作顺序阅读，再看[core → layer → group → node 目录呈现](catalog/README_cn.md)、[设计](design_cn.md)中的工作区与算法、[P07 日志导航](interfaces/log-cursors_cn.md)、[U03 工作区面板](interfaces/workspace-panels_cn.md)，最后看[实现 TODO](todo_cn.md)。IsOS 拥有图和本地 API 契约，EOS 拥有控制与观察负载契约。界面呈现、编辑这些契约，不再定义第二种图格式。
+- [首次使用](usage_cn.md)介绍如何打开和操作工作台。
+- [架构](architecture_cn.md)区分当前客户端边界与未来 UI 目标。
+- [目录投影](design_cn.md)解释注册类型如何出现在选择器中。
+- [工作区设计](design_cn.md)说明客户端状态和所有者边界；[浏览器结果](design_cn.md#r07-浏览器结果状态)、[日志游标](design_cn.md#p07-日志游标设计)和[原语控制](design_cn.md#u04-原语控制验证)介绍具体流程。
+- [接口概览](interfaces/README_cn.md)汇总节点图加载、控制、日志与面板契约。
+- [交付记录](todo_cn.md)记录已完成的 UI 阶段与证据。
 
-**状态：** IsosUI [`v0.1.0`](interfaces/releases_cn.md) 已发布，Island-web 已部署固定的托管归档。跨所有者发布回放与真实公网 HTTPS 浏览器首次使用仍需分别验证。仓库根目录 README 描述已实现的编辑器；设计页也可能描述后续目标。
+源码位于 [`ui/`](../../ui/)。本地与托管构建均由同一 TypeScript 项目生成。
 
-[Island 共享规范](../island/conventions.v1.3.1_cn.md).
+## 客户端配置
+
+IsOS 从 [`config/isosui.toml`](../../config/isosui.toml) 读取 Web 和终端客户端默认值。`ISOSUI_CONFIG` 可指定另一个绝对路径的 TOML 文件。进程环境变量覆盖 TOML：`ISOSUI_DEFAULT_INTERFACE`（`web` 或 `tui`）、`ISOSUI_LOCALE`（`en` 或 `cn`）、`ISOSUI_STARTUP_TIMEOUT_MS`（1000–60000）及 `ISOSUI_POLL_INTERVAL_MS`（500–10000）。IsOS 校验解析后的设置，并向两个客户端提供非秘密值。持久偏好写入 TOML；临时覆盖使用环境变量。

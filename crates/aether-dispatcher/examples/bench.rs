@@ -55,59 +55,23 @@ impl BaseNode for CompletedMockBase {
 }
 
 fn profile() -> Profile {
-  Profile::from_toml(
-    r#"
-version = "1.0.0"
-[robot]
-id = "bench-robot"
-name = "Benchmark robot"
-[cores.eos.layers.hardware.groups.base.nodes.base0]
-id = "base0"
-node_type = "eos.hardware.base@v1.0"
-label = "Base"
-description = "Benchmark mock"
-frame_id = "base_link"
-capabilities = ["body_velocity"]
-[cores.eos.layers.hardware.groups.base.nodes.base0.adapter]
-type = "mock"
-[cores.eos.layers.hardware.groups.base.nodes.base0.health_timing]
-poll_interval_ms = 10
-stale_after_ms = 100
-[cores.eos.layers.hardware.groups.base.nodes.base0.observation]
-max_rate_hz = 50.0
-max_payload_bytes = 4096
-[cores.eos.layers.hardware.groups.base.nodes.base0.movement]
-modes = ["body_velocity"]
-[cores.eos.layers.hardware.groups.base.nodes.base0.movement.limits]
-max_linear_m_s = 1.0
-max_angular_rad_s = 1.0
-max_velocity_lease_ms = 500
-[cores.eos.layers.hardware.groups.camera.nodes.camera0]
-id = "camera0"
-node_type = "eos.hardware.camera@v1.0"
-label = "Camera"
-description = "Benchmark mock"
-frame_id = "camera_link"
-capabilities = ["rgb8", "aligned_depth_u16"]
-[cores.eos.layers.hardware.groups.camera.nodes.camera0.adapter]
-type = "mock"
-[cores.eos.layers.hardware.groups.camera.nodes.camera0.health_timing]
-poll_interval_ms = 10
-stale_after_ms = 100
-[cores.eos.layers.hardware.groups.camera.nodes.camera0.observation]
-max_rate_hz = 30.0
-max_payload_bytes = 2000000
-[cores.eos.layers.dispatcher.groups.control.nodes.command]
-id = "command"
-node_type = "eos.dispatcher.control@v1.0"
-label = "Dispatcher"
-description = "Benchmark command route"
-[cores.eos.layers.hardware.groups.base.nodes.base0.inputs.command]
-node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
-output = "base_command"
-"#,
-  )
-  .unwrap()
+  let source = include_str!("../../../etc/eos/backends/mock-cxx.toml");
+  let mut selected = String::new();
+  let mut keep = true;
+  for line in source.lines() {
+    if line.starts_with('[') {
+      keep = !line.contains(".groups.manipulator.");
+    }
+    if keep {
+      selected.push_str(line);
+      selected.push('\n');
+    }
+  }
+  let selected = selected.replace("mock-cxx", "mock").replace(
+    ", \"cores/isos/layers/eos_hardware/groups/manipulator/nodes/arm\"",
+    "",
+  );
+  Profile::from_toml(&selected).unwrap()
 }
 
 fn sample(frame_id: &str) -> SampleMeta {
@@ -281,7 +245,7 @@ fn aggregate(runs: &[Repetition]) -> Vec<Workload> {
 fn run(index: usize, timeout: Option<Duration>) -> Repetition {
   let mut workloads = Vec::new();
   workloads.push(measure(
-    "legacy_profile_safe_read",
+    "current_profile_safe_read",
     |_| {
       black_box(profile());
       CallOutcome::Success
@@ -302,7 +266,7 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
   let width = 640_u32;
   let height = 480_u32;
   let camera = Arc::new(MockCamera::new(CameraFrame {
-    meta: sample("camera_link"),
+    meta: sample("front_camera_optical"),
     width_px: width,
     height_px: height,
     stride_bytes: width * 3,
@@ -325,11 +289,11 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
     &profile(),
     vec![
       AdapterRegistration::Base {
-        node_id: "base0".into(),
+        node_id: "drive".into(),
         adapter: base.clone(),
       },
       AdapterRegistration::Camera {
-        node_id: "camera0".into(),
+        node_id: "front".into(),
         adapter: camera.clone(),
       },
     ],
@@ -340,7 +304,7 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
     "memory_dispatch",
     |i| {
       let request = CommandRequest {
-        node_path: "cores/eos/layers/hardware/groups/base/nodes/base0".into(),
+        node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/drive".into(),
         meta: CommandMeta {
           command_id: format!("bench-{i}"),
           deadline_monotonic_ns: 1_000_000_000,
@@ -370,11 +334,11 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
     &profile(),
     vec![
       AdapterRegistration::Base {
-        node_id: "base0".into(),
+        node_id: "drive".into(),
         adapter: base,
       },
       AdapterRegistration::Camera {
-        node_id: "camera0".into(),
+        node_id: "front".into(),
         adapter: camera.clone(),
       },
     ],
@@ -386,7 +350,7 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
     "durable_dispatch",
     |i| {
       let result = black_box(durable.dispatch(CommandRequest {
-        node_path: "cores/eos/layers/hardware/groups/base/nodes/base0".into(),
+        node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/drive".into(),
         meta: CommandMeta {
           command_id: format!("durable-{i}"),
           deadline_monotonic_ns: 1_000_000_000,
@@ -407,7 +371,8 @@ fn run(index: usize, timeout: Option<Duration>) -> Repetition {
   std::fs::remove_dir_all(journal_dir).unwrap();
   workloads.push(measure(
     "mock_camera_rgb8_depth16_640x480",
-    |_| match dispatcher.capture_camera("cores/eos/layers/hardware/groups/camera/nodes/camera0") {
+    |_| match dispatcher.capture_camera("cores/isos/layers/eos_hardware/groups/camera/nodes/front")
+    {
       Ok(frame) => match frame.depth {
         Some(depth) => {
           black_box(frame.rgb8.len() + depth.depth_u16.len());

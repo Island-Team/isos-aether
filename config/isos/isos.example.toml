@@ -1,0 +1,37 @@
+# Complete IsOS defaults. config/isos/isos.toml overrides selected fields.
+# Comments are guidance only. Relative paths resolve from the IsOS checkout.
+# Process environment overrides matching values; active.env is retired.
+# See docs/isos/design/app/configuration.md for the explicit environment names.
+[server]
+http_port = 16000
+ui_port = 16001
+
+[paths]
+aether_bin_dir = "../../target/debug"
+ei_bin_dir = "../../ei/bin"
+ei_defaults_dir = "../../config/ei"
+ei_factory_defaults_dir = "../../share/ei/defaults/ei"
+ui_dist = "../../ui/dist/local"
+# Only for explicit `isos serve --ui-live` frontend development.
+# ui_repo = "../../ui"
+
+[deployment]
+name = "default"
+stop_timeout_ms = 30000 # milliseconds; 5000..120000
+eos_stop_grace_ms = 20000 # milliseconds; 1000..stop_timeout_ms-3000
+
+# Optional read-only vision evidence gate.
+# [vision_evidence]
+# gate_path = "eos/interface/gate/front"
+
+# Optional host paths required by a verified package contribution.
+# Names must be uppercase environment identifiers; values must be absolute.
+# [package_host_inputs]
+# RESOURCE_ROOT = "/absolute/path/to/resource"
+
+[logging]
+default_source = "all" # unified stream; a specific source may be selected when needed
+level = "debug" # trace, debug, info, warn, error
+max_bytes = 8388608 # bytes per source file
+backups = 5 # rotated files per source
+max_sources = 32 # bounds the number of source files in the log folder

@@ -26,7 +26,7 @@ class ComponentConfig:
 class Components:
   """Product components selected for one Island launch."""
 
-  egia: ComponentConfig
+  ei: ComponentConfig
   eos: ComponentConfig
 
 
@@ -69,7 +69,7 @@ def load(path: Path, *, defaults: Path | None = None) -> ProductConfig:
   raw_components = document.get("components")
   if not isinstance(raw_components, dict):
     raise ConfigError("[components] must be a table")
-  unknown = sorted(set(raw_components) - {"egia", "eos"})
+  unknown = sorted(set(raw_components) - {"ei", "eos"})
   if unknown:
     raise ConfigError(f"unknown components: {', '.join(unknown)}")
   logging = _logging_config(document.get("logging", {}))
@@ -78,7 +78,7 @@ def load(path: Path, *, defaults: Path | None = None) -> ProductConfig:
     profile=profile,
     share=share,
     components=Components(
-      egia=_component_config(raw_components, "egia"),
+      ei=_component_config(raw_components, "ei"),
       eos=_component_config(raw_components, "eos"),
     ),
     logging=logging,

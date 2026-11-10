@@ -13,69 +13,64 @@ use aether_hal::{
 fn profile() -> Profile {
   Profile::from_toml(
     r#"
-version = "1.0.0"
+version = "0.2.0"
 [robot]
 id = "robot-1"
 name = "Test robot"
-[cores.eos.layers.hardware.groups.base.nodes.base0]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0]
 id = "base0"
-node_type = "eos.hardware.base@v1.0"
+node_type = "isos.eos_hardware.base@v0.2"
 label = "Base"
 description = "Mock base"
 frame_id = "base_link"
 capabilities = ["body_velocity", "relative_pose"]
-[cores.eos.layers.hardware.groups.base.nodes.base0.adapter]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.adapter]
 type = "mock"
-[cores.eos.layers.hardware.groups.base.nodes.base0.health_timing]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.health_timing]
 poll_interval_ms = 10
 stale_after_ms = 100
-[cores.eos.layers.hardware.groups.base.nodes.base0.observation]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.observation]
 max_rate_hz = 50.0
 max_payload_bytes = 4096
-[cores.eos.layers.hardware.groups.base.nodes.base0.movement]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.movement]
 modes = ["body_velocity", "relative_pose"]
-[cores.eos.layers.hardware.groups.base.nodes.base0.movement.limits]
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.movement.limits]
 max_linear_m_s = 1.0
 max_angular_rad_s = 2.0
 max_velocity_lease_ms = 500
 max_translation_m = 3.0
 max_rotation_rad = 1.0
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0]
 id = "arm0"
-node_type = "eos.hardware.manipulator@v1.0"
+node_type = "isos.eos_hardware.manipulator@v0.2"
 label = "Arm"
 description = "Mock arm"
 frame_id = "arm_base"
 joint_names = ["j1", "j2"]
 capabilities = ["joint_positions"]
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.adapter]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.adapter]
 type = "mock"
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.health_timing]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.health_timing]
 poll_interval_ms = 10
 stale_after_ms = 100
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.observation]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.observation]
 max_rate_hz = 50.0
 max_payload_bytes = 4096
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.movement]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.movement]
 modes = ["joint_positions"]
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.movement.limits]
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.movement.limits]
 max_joint_position_rad = 3.14
 max_joint_speed_rad_s = 1.0
-[cores.eos.layers.dispatcher.groups.control.nodes.base0]
+[cores.isos.layers.eos_dispatcher.groups.control.nodes.base0]
 id = "base0"
-node_type = "eos.dispatcher.control@v1.0"
+node_type = "isos.eos_dispatcher.control@v0.2"
 label = "Control node"
 description = "Software node with a local name matching hardware"
-[cores.egia.layers.common.groups.process.nodes.base0]
-id = "base0"
-node_type = "egia.common.guard@v1.0"
-label = "Planning node"
-description = "EGIA software node with a local name matching EOS hardware"
-[cores.eos.layers.hardware.groups.base.nodes.base0.inputs.command]
-node = "cores/eos/layers/dispatcher/groups/control/nodes/base0"
+[cores.isos.layers.eos_hardware.groups.base.nodes.base0.inputs.command]
+node = "cores/isos/layers/eos_dispatcher/groups/control/nodes/base0"
 output = "base_command"
-[cores.eos.layers.hardware.groups.manipulator.nodes.arm0.inputs.command]
-node = "cores/eos/layers/dispatcher/groups/control/nodes/base0"
+[cores.isos.layers.eos_hardware.groups.manipulator.nodes.arm0.inputs.command]
+node = "cores/isos/layers/eos_dispatcher/groups/control/nodes/base0"
 output = "manipulator_command"
 "#,
   )
@@ -138,7 +133,7 @@ fn fixture() -> (
 
 fn base_request(id: &str, x_m_s: f64) -> CommandRequest {
   CommandRequest {
-    node_path: "cores/eos/layers/hardware/groups/base/nodes/base0".into(),
+    node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/base0".into(),
     meta: CommandMeta {
       command_id: id.into(),
       deadline_monotonic_ns: 1_000_000_000,
@@ -155,14 +150,16 @@ fn base_request(id: &str, x_m_s: f64) -> CommandRequest {
 #[test]
 fn generic_mock_does_not_claim_a_physical_stop_fence() {
   let (dispatcher, _, _, _) = fixture();
-  assert!(!dispatcher.has_terminal_stop_fence("cores/eos/layers/hardware/groups/base/nodes/base0"));
+  assert!(
+    !dispatcher.has_terminal_stop_fence("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
+  );
 }
 
 #[test]
 fn stopped_actuators_remain_observable_but_reject_movement() {
   let (dispatcher, base, arm, _) = fixture();
-  let base_path = "cores/eos/layers/hardware/groups/base/nodes/base0";
-  let arm_path = "cores/eos/layers/hardware/groups/manipulator/nodes/arm0";
+  let base_path = "cores/isos/layers/eos_hardware/groups/base/nodes/base0";
+  let arm_path = "cores/isos/layers/eos_hardware/groups/manipulator/nodes/arm0";
   for path in [base_path, arm_path] {
     dispatcher.stop_node(path).unwrap();
     assert_eq!(dispatcher.status(path).unwrap().state, NodeState::Stopped);
@@ -188,19 +185,19 @@ fn test_discovery_reports_hierarchy_and_facets() {
   let (dispatcher, _, _, _) = fixture();
   let nodes = dispatcher.discover();
   assert_eq!(nodes.len(), 2);
-  assert_eq!(nodes[0].path, "eos/hardware/base/base0");
+  assert_eq!(nodes[0].path, "isos/eos_hardware/base/base0");
   assert!(nodes[0].facets.contains(&NodeFacet::Movement));
   assert!(nodes[0].facets.contains(&NodeFacet::Safety));
 }
 
 #[test]
-fn test_canonical_paths_isolate_hardware_and_software_cores() {
+fn test_canonical_paths_isolate_hardware_and_software_nodes() {
   let (dispatcher, base, _, _) = fixture();
   for (index, path) in [
     "base0",
-    "cores/eos/layers/dispatcher/groups/control/nodes/base0",
-    "cores/egia/layers/common/groups/process/nodes/base0",
-    "cores/egia/layers/hardware/groups/base/nodes/base0",
+    "cores/isos/layers/eos_dispatcher/groups/control/nodes/base0",
+    "cores/isos/layers/ei_cognition/groups/process/nodes/base0",
+    "cores/isos/layers/eos_hardware/groups/base/nodes/other-base",
   ]
   .into_iter()
   .enumerate()
@@ -213,7 +210,7 @@ fn test_canonical_paths_isolate_hardware_and_software_cores() {
   }
   assert!(base.commands().is_empty());
   assert!(dispatcher
-    .health("cores/eos/layers/hardware/groups/base/nodes/base0")
+    .health("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
     .is_ok());
 }
 
@@ -282,7 +279,7 @@ fn test_durable_dispatch_does_not_release_duplicate_after_restart() {
   assert_eq!(base.commands().len(), 1);
   assert!(matches!(
     first_runtime.gateway_operation("restart-id"),
-    Err(aether_dispatcher::GatewayLookupError::LegacyRecord)
+    Err(aether_dispatcher::GatewayLookupError::UnadmittedRecord)
   ));
   let gateway_id = "g".repeat(128);
   let gateway_request = base_request(&gateway_id, 0.2);
@@ -373,23 +370,23 @@ fn test_bad_base_observation_degrades_health_until_valid_probe() {
   );
   assert_eq!(
     dispatcher
-      .health("cores/eos/layers/hardware/groups/base/nodes/base0")
+      .health("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
       .unwrap()
       .state,
     HealthState::Degraded
   );
   assert!(dispatcher
-    .refresh_node("cores/eos/layers/hardware/groups/base/nodes/base0")
+    .refresh_node("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
     .is_err());
   let mut valid = base.observe().unwrap();
   valid.x_m = 0.0;
   base.set_observation(valid);
   dispatcher
-    .refresh_node("cores/eos/layers/hardware/groups/base/nodes/base0")
+    .refresh_node("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
     .unwrap();
   assert_eq!(
     dispatcher
-      .health("cores/eos/layers/hardware/groups/base/nodes/base0")
+      .health("cores/isos/layers/eos_hardware/groups/base/nodes/base0")
       .unwrap()
       .state,
     HealthState::Healthy
@@ -406,7 +403,7 @@ fn test_manipulator_joint_order_and_mode_are_admitted() {
   let (dispatcher, _, arm, _) = fixture();
   let request =
     |id: &str, joint_names: Vec<String>, movement: ManipulatorMovement| CommandRequest {
-      node_path: "cores/eos/layers/hardware/groups/manipulator/nodes/arm0".into(),
+      node_path: "cores/isos/layers/eos_hardware/groups/manipulator/nodes/arm0".into(),
       meta: CommandMeta {
         command_id: id.into(),
         deadline_monotonic_ns: 1_000_000_000,
@@ -582,7 +579,7 @@ fn test_velocity_lease_cannot_outlive_deadline() {
 fn test_oversized_command_signature_rejects_before_reservation() {
   let (dispatcher, base, _, _) = fixture();
   let request = CommandRequest {
-    node_path: "cores/eos/layers/hardware/groups/base/nodes/base0".into(),
+    node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/base0".into(),
     meta: CommandMeta {
       command_id: "oversized".into(),
       deadline_monotonic_ns: 1_000_000_000,
@@ -604,23 +601,23 @@ fn test_camera_capture_validates_payload_and_freshness() {
   use aether_hal::{CameraFrame, ClockKind, DepthFrame, Intrinsics, MockCamera, SampleMeta};
   let camera_profile = Profile::from_toml(
     r#"
-version = "1.0.0"
+version = "0.2.0"
 [robot]
 id = "r"
 name = "Robot"
-[cores.eos.layers.hardware.groups.camera.nodes.cam0]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.cam0]
 id = "cam0"
-node_type = "eos.hardware.camera@v1.0"
+node_type = "isos.eos_hardware.camera@v0.2"
 label = "Camera"
 description = "Test camera"
 frame_id = "camera_link"
 capabilities = ["rgb8", "aligned_depth_u16"]
-[cores.eos.layers.hardware.groups.camera.nodes.cam0.adapter]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.cam0.adapter]
 type = "mock"
-[cores.eos.layers.hardware.groups.camera.nodes.cam0.health_timing]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.cam0.health_timing]
 poll_interval_ms = 10
 stale_after_ms = 100
-[cores.eos.layers.hardware.groups.camera.nodes.cam0.observation]
+[cores.isos.layers.eos_hardware.groups.camera.nodes.cam0.observation]
 max_rate_hz = 30.0
 max_payload_bytes = 64
 "#,
@@ -665,7 +662,7 @@ max_payload_bytes = 64
   .unwrap();
   assert_eq!(
     dispatcher
-      .capture_camera("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+      .capture_camera("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
       .unwrap()
       .depth
       .unwrap()
@@ -677,17 +674,17 @@ max_payload_bytes = 64
   invalid.depth.as_mut().unwrap().depth_u16.pop();
   camera.set_frame(invalid);
   assert!(dispatcher
-    .capture_camera("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+    .capture_camera("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
     .is_err());
   assert_eq!(
     dispatcher
-      .health("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+      .health("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
       .unwrap()
       .state,
     HealthState::Degraded
   );
   assert!(dispatcher
-    .refresh_node("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+    .refresh_node("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
     .is_err());
   camera.set_frame(CameraFrame {
     meta: meta("camera_link"),
@@ -699,18 +696,18 @@ max_payload_bytes = 64
     preview_jpeg: None,
   });
   dispatcher
-    .refresh_node("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+    .refresh_node("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
     .unwrap();
   assert_eq!(
     dispatcher
-      .health("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+      .health("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
       .unwrap()
       .state,
     HealthState::Healthy
   );
   clock.set_monotonic_ns(200_000_000);
   assert!(dispatcher
-    .capture_camera("cores/eos/layers/hardware/groups/camera/nodes/cam0")
+    .capture_camera("cores/isos/layers/eos_hardware/groups/camera/nodes/cam0")
     .is_err());
 }
 
@@ -719,10 +716,10 @@ fn test_registry_rejects_adapter_type_mismatch() {
   let mut configured = profile();
   configured
     .cores
-    .get_mut("eos")
+    .get_mut("isos")
     .unwrap()
     .layers
-    .get_mut("hardware")
+    .get_mut("eos_hardware")
     .unwrap()
     .groups
     .get_mut("base")
@@ -873,7 +870,7 @@ fn uncertain_base_release_blocks_concurrent_arm_before_it_can_actuate() {
     thread::spawn(move || {
       started_tx.send(()).unwrap();
       dispatcher.dispatch(CommandRequest {
-        node_path: "cores/eos/layers/hardware/groups/manipulator/nodes/arm0".into(),
+        node_path: "cores/isos/layers/eos_hardware/groups/manipulator/nodes/arm0".into(),
         meta: CommandMeta {
           command_id: "arm-after-uncertain".into(),
           deadline_monotonic_ns: 1_000_000_000,
@@ -1030,7 +1027,7 @@ fn test_emergency_stop_preempts_blocking_release() {
 fn test_relative_pose_rejects_frame_without_implicit_transform() {
   let (dispatcher, base, _, _) = fixture();
   let request = CommandRequest {
-    node_path: "cores/eos/layers/hardware/groups/base/nodes/base0".into(),
+    node_path: "cores/isos/layers/eos_hardware/groups/base/nodes/base0".into(),
     meta: CommandMeta {
       command_id: "wrong-frame".into(),
       deadline_monotonic_ns: 1_000_000_000,

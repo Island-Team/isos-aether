@@ -19,7 +19,7 @@ async function render(authority?: ValidatedEdge): Promise<{ change: ReturnType<t
 }
 
 describe('edge QoS inspector', () => {
-  it('shows legacy defaults and disables fixed or unrouted edges', async () => {
+  it('shows omitted optional values and disables fixed or unrouted edges', async () => {
     await render({ ...admitted, routed: false, qos_eligible: false, route_class: 'design_only' });
     expect(host.textContent).toContain('Design only');
     expect(host.textContent).toContain('unlimited');

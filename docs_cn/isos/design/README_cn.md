@@ -1,10 +1,16 @@
-# 已实现的 IsOS 设计
+# IsOS 设计
 
-本目录供需要理解 IsOS 当前边界原因的贡献者使用。**注册类型**规定节点可以做什么，**核心**拥有执行，**精确锁定**标识经过验证的软件包字节。字段级契约位于[接口](../interfaces/README_cn.md)；本目录解释流程而不重复定义字段。
+[架构](architecture_cn.md)是当前总览。专题页面与 Rust 源码边界对应：
 
-- [服务](server_cn.md)跟踪本地请求经过 `app`、`domain`、`runtime` 和交换值的过程，说明传输处理器为何不决定软件包或图权限。
-- [软件包](packages_cn.md)跟踪精确锁定通过发行、资源、归属方和生命周期准入的过程，说明 IsOS 为何不解析软件包专属负载。
-- [数据](data_cn.md)解释输出描述符的资格检查，以及生产者为何保留负载字节和端点授权。
-- [控制路径](control-path_cn.md)跟踪按键状态经过显式 HTTP 桥、EOS Dispatcher、基座硬件和模拟器软件包。
+- [服务端与启动器](app/server_cn.md)说明 CLI 准入、回环服务就绪和 manager 交接。
+- [软件包准入](domain/admission_cn.md)说明精确版本验证与归属方启动。
+- [软件包管理器](domain/packages_cn.md)记录已实现流程与明确标注的目标工作。
+- [Manager 服务](runtime/services_cn.md)说明本地归属方配置。
+- [展示选择](ui/presentation_cn.md)说明输出归属和当前不可用状态。
+- [注册节点族](node/README_cn.md)对应进程和 UI 消费方。
+- [控制路径](control-path_cn.md)跟踪 UI 按键到 EOS 准入。
+- [验证](verification_cn.md)记录命令与证据；[剩余工作](remaining-work_cn.md)列出待完成关口。
+
+公开字段由[接口](../interfaces/README_cn.md)定义。
 
 [English](../../../docs/isos/design/README.md)

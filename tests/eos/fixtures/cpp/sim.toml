@@ -1,4 +1,4 @@
-# Standalone simulator. eosd neither launches nor supervises this process.
+# Standalone simulator. aether-runtime neither launches nor supervises this process.
 [simulator]
 # "demo" keeps the built-in map simulator. "mujoco" dispatches an external
 # simulator package from [simulator.mujoco].

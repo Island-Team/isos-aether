@@ -1,17 +1,19 @@
-import type { DataTypeDefinition, NodeGraphDiagnostic } from '@/services/isos/node-graph';
+import type { DataTypeDefinition, NodeGraphDiagnostic, PortDefinition } from '@/services/isos/node-graph';
 import { canonicalNodePath, type GraphNode } from './node-graph-edits';
 
 export interface EdgePorts { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null; inputIndex?: number; inputCount?: number }
-export interface EdgeContracts { sourceType: string; targetType: string; sourceIdl?: DataTypeDefinition; targetIdl?: DataTypeDefinition }
+export interface EdgeContracts { sourceType: string; targetType: string; sourcePort?: PortDefinition; targetPort?: PortDefinition; sourceIdl?: DataTypeDefinition; targetIdl?: DataTypeDefinition }
 
 /** Resolve both catalog ends; mismatched graph declarations stay visible for diagnosis. */
 export function edgeContracts(entries: GraphNode[], edge: EdgePorts, types: DataTypeDefinition[]): EdgeContracts {
   const sourceName = edge.sourceHandle?.replace(/^out:/, '') || '';
   const targetName = edge.targetHandle?.replace(/^in:/, '') || '';
-  const sourceType = entries.find((entry) => entry.path === edge.source)?.definition?.outputs.find((port) => port.name === sourceName)?.data_type || '';
-  const targetType = entries.find((entry) => entry.path === edge.target)?.definition?.inputs.find((port) => port.name === targetName)?.data_type || '';
+  const sourcePort = entries.find((entry) => entry.path === edge.source)?.definition?.outputs.find((port) => port.name === sourceName);
+  const targetPort = entries.find((entry) => entry.path === edge.target)?.definition?.inputs.find((port) => port.name === targetName);
+  const sourceType = sourcePort?.data_type || '';
+  const targetType = targetPort?.data_type || '';
   const find = (name: string): DataTypeDefinition | undefined => types.find((item) => item.id === name || item.id.split('@')[0] === name);
-  return { sourceType, targetType, sourceIdl: find(sourceType), targetIdl: find(targetType) };
+  return { sourceType, targetType, sourcePort, targetPort, sourceIdl: find(sourceType), targetIdl: find(targetType) };
 }
 
 /** Match an IsOS input diagnostic to its destination port, never to live health. */

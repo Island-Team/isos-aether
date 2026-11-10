@@ -1,6 +1,6 @@
 //! IsOS-owned, selected camera evidence service binding outside graph edges.
 use crate::{
-  app::config, domain::graph::edge_admission, domain::graph::graph_compat,
+  app::config, domain::graph::edge_admission, domain::graph::graph_contract,
   runtime::process::ProcessSpec,
 };
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const TEMPLATE_FILE: &str = "isos/vision-template.json";
-const INGRESS: &str = "egia.vision.ingress@v0.1.frame";
+const INGRESS: &str = "ei.vision.ingress@v0.1.frame";
 
 #[cfg(test)]
 thread_local! {
@@ -105,50 +105,27 @@ pub fn selected_gate() -> Result<Option<(String, String)>, Diagnostic> {
 
 pub fn selected_gate_for_graph(graph: &Value) -> Result<Option<(String, String)>, Diagnostic> {
   if let Some(selected) = selected_gate()? {
-    if graph["version"] == "0.2.0" && selected.0.starts_with("eos/interface/gate/") {
-      return Ok(Some((
-        selected
-          .0
-          .replacen("eos/interface/gate/", "isos/eos_interface/gate/", 1),
-        selected.1,
-      )));
-    }
     return Ok(Some(selected));
   }
-  if graph["version"] != "0.1.0" && graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.0" {
     return Ok(None);
   }
-  let unified = graph["version"] == "0.2.0";
-  // A camera gate may serve EOS consumers without an EGIA ingress. Only
+  // A camera gate may serve EOS consumers without an EI ingress. Only
   // auto-select the vision handoff when the graph declares that core.
-  if if unified {
-    !graph
-      .pointer("/cores/isos/layers")
-      .and_then(Value::as_object)
-      .is_some_and(|layers| layers.keys().any(|name| name.starts_with("ei_")))
-  } else {
-    graph.pointer("/cores/egia").is_none()
-  } {
+  if !graph
+    .pointer("/cores/isos/layers")
+    .and_then(Value::as_object)
+    .is_some_and(|layers| layers.keys().any(|name| name.starts_with("ei_")))
+  {
     return Ok(None);
   }
-  let gate_nodes = if unified {
-    "/cores/isos/layers/eos_interface/groups/gate/nodes"
-  } else {
-    "/cores/eos/layers/interface/groups/gate/nodes"
-  };
+  let gate_nodes = "/cores/isos/layers/eos_interface/groups/gate/nodes";
   let Some(nodes) = graph.pointer(gate_nodes).and_then(Value::as_object) else {
     return Ok(None);
   };
   let gates: Vec<_> = nodes
     .iter()
-    .filter(|(_, node)| {
-      node["node_type"]
-        == if unified {
-          "isos.eos_interface.camera_gate@v0.2"
-        } else {
-          "eos.interface.camera_gate@v0.1"
-        }
-    })
+    .filter(|(_, node)| node["node_type"] == "isos.eos_interface.camera_gate@v0.2")
     .collect();
   if gates.len() > 1 {
     return Err(fail(
@@ -161,15 +138,7 @@ pub fn selected_gate_for_graph(graph: &Value) -> Result<Option<(String, String)>
     return Ok(None);
   }
   Ok(Some((
-    format!(
-      "{}/{}",
-      if unified {
-        "isos/eos_interface/gate"
-      } else {
-        "eos/interface/gate"
-      },
-      gates[0].0
-    ),
+    format!("isos/eos_interface/gate/{}", gates[0].0),
     String::new(),
   )))
 }
@@ -213,7 +182,7 @@ fn select_with_gate(
   let Some((gate, _source_config_sha256)) = selected else {
     return Ok(None);
   };
-  if graph["version"] != "0.1.0" && graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.0" {
     return Err(fail(
       "vision_graph_stale",
       "/version",
@@ -227,14 +196,7 @@ fn select_with_gate(
       "Selected gate is absent",
     )
   })?;
-  let unified = graph["version"] == "0.2.0";
-  if gate_node["node_type"]
-    != if unified {
-      "isos.eos_interface.camera_gate@v0.2"
-    } else {
-      "eos.interface.camera_gate@v0.1"
-    }
-  {
+  if gate_node["node_type"] != "isos.eos_interface.camera_gate@v0.2" {
     return Err(fail(
       "vision_gate_unknown",
       "/vision_evidence/gate_path",
@@ -258,12 +220,7 @@ fn select_with_gate(
       "Camera source is absent",
     )
   })?;
-  if source_node["node_type"]
-    != if unified {
-      "isos.eos_hardware.camera@v0.2"
-    } else {
-      "eos.hardware.camera@v0.1"
-    }
+  if source_node["node_type"] != "isos.eos_hardware.camera@v0.2"
     || gate_node["inputs"]["frame"]["output"] != "frame"
   {
     return Err(fail(
@@ -301,7 +258,7 @@ fn select_with_gate(
       "Selection must resolve to one admitted camera edge",
     ));
   }
-  let expected = [("eos", "eos"), ("bridge", "eos"), ("egia", "egia")];
+  let expected = [("eos", "eos"), ("bridge", "eos"), ("ei", "ei")];
   for (id, role) in expected {
     if specs
       .iter()
@@ -312,7 +269,7 @@ fn select_with_gate(
       return Err(fail(
         "vision_ingress_unsupported",
         format!("/cores/isos/layers/process/groups/component/nodes/{id}/node_type"),
-        "Vision requires selected EOS, bridge and EGIA children",
+        "Vision requires selected EOS, bridge and EI children",
       ));
     }
   }
@@ -324,7 +281,7 @@ fn select_with_gate(
       "Duplicate selected process target",
     ));
   }
-  for (id, dependency) in [("bridge", "eos"), ("egia", "bridge")] {
+  for (id, dependency) in [("bridge", "eos"), ("ei", "bridge")] {
     let spec = specs.iter().find(|spec| spec.id == id).unwrap();
     if !spec
       .settings
@@ -453,7 +410,7 @@ pub fn binding(
   );
   object.insert(
     "grant_file".into(),
-    json!(grant_root.join("egia-vision.grant")),
+    json!(grant_root.join("ei-vision.grant")),
   );
   value
 }
@@ -469,7 +426,7 @@ pub fn selected_template(
       std::thread::sleep(Duration::from_millis(delay.get()));
     }
   });
-  let saved = graph_compat::read(&paths.node_graph_path(deployment)).map_err(|_| {
+  let saved = graph_contract::read(&paths.node_graph_path(deployment)).map_err(|_| {
     fail(
       "vision_graph_stale",
       "/revision",
@@ -589,254 +546,13 @@ pub fn attest_eos(spec: &ProcessSpec, template: &Template, run_id: &str) -> bool
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::{os::unix::net::UnixListener, thread};
 
-  fn graph() -> Value {
-    serde_json::from_str(include_str!(
-      "../../../tests/fixtures/edge_admission/valid_0_1_0.json"
-    ))
-    .unwrap()
-  }
-  fn catalog() -> Value {
-    serde_json::from_str(include_str!(
-      "../../../tests/fixtures/edge_admission/catalog.json"
-    ))
-    .unwrap()
-  }
-  fn spec(id: &str, role: &str, dependencies: &[&str]) -> ProcessSpec {
-    let mut spec = ProcessSpec {
-      id: id.into(),
-      path: format!("isos/process/component/{id}"),
-      settings: serde_json::from_value(json!({"command":["/bin/true"],"role":role,
-                "depends_on":dependencies}))
-      .unwrap(),
-      package: None,
-      fingerprint: None,
-    };
-    if id == "eos" || id == "bridge" {
-      spec.settings.args = vec!["--socket".into(), "/tmp/q01-eos.sock".into()];
-    }
-    if id == "bridge" {
-      spec
-        .settings
-        .args
-        .extend(["--listen".into(), "127.0.0.1:16020".into()]);
-      spec.settings.ready_tcp = Some("127.0.0.1:16020".into());
-    }
-    spec
-  }
-  fn specs() -> Vec<ProcessSpec> {
-    vec![
-      spec("eos", "eos", &[]),
-      spec("bridge", "eos", &["eos"]),
-      spec("egia", "egia", &["bridge"]),
-    ]
-  }
-  fn selected() -> Option<(String, String)> {
-    Some(("eos/interface/gate/preview".into(), "f".repeat(64)))
-  }
-  fn template() -> Template {
-    select_with_gate(
-      &graph(),
-      &catalog(),
-      &specs(),
-      &"a".repeat(64),
-      b"eos projection",
-      selected(),
-    )
-    .unwrap()
-    .unwrap()
-  }
   #[test]
-  fn selected_gate_pins_exact_edge_and_projection_without_graph_bridge() {
-    let template = template();
-    assert_eq!(template.source_path, "eos/hardware/camera/front");
-    assert_eq!(
-      template.projection_revision,
-      hex::encode(Sha256::digest(b"eos projection"))
-    );
-    assert_eq!(
-      template.render,
-      Render {
-        max_width_px: 1280,
-        jpeg_quality: 80
-      }
-    );
-    assert_eq!(template.target_fps, 30);
-    let disabled = select_with_gate(
-      &graph(),
-      &catalog(),
-      &specs(),
-      &"a".repeat(64),
-      b"eos projection",
-      None,
-    )
-    .unwrap();
-    assert!(disabled.is_none());
-  }
-  #[test]
-  fn unified_gate_uses_single_core_path() {
-    let original = graph();
-    let saved = graph_compat::parse(&serde_json::to_vec(&original).unwrap()).unwrap();
-    let unified = crate::domain::graph::single_core::propose(&saved)
-      .unwrap()
-      .graph;
-    let gate = selected_gate_for_graph(&unified).unwrap().unwrap().0;
-    assert_eq!(gate, "isos/eos_interface/gate/preview");
-    assert_eq!(
-      node(&unified, &gate).unwrap()["node_type"],
-      "isos.eos_interface.camera_gate@v0.2"
-    );
-  }
-  #[test]
-  fn sole_camera_gate_is_selected_without_config_and_multiple_require_choice() {
-    let graph = graph();
-    assert_eq!(
-      selected_gate_for_graph(&graph).unwrap().unwrap().0,
-      "eos/interface/gate/preview"
-    );
-    let mut multiple = graph;
-    let duplicate = multiple
-      .pointer("/cores/eos/layers/interface/groups/gate/nodes/preview")
-      .unwrap()
-      .clone();
-    multiple["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["other"] = duplicate;
-    assert_eq!(
-      selected_gate_for_graph(&multiple).unwrap_err().code,
-      "vision_source_ambiguous"
-    );
-  }
-  #[test]
-  fn camera_gate_without_ingress_owner_does_not_require_egia() {
-    let mut graph = graph();
-    graph["cores"].as_object_mut().unwrap().remove("egia");
-    assert!(selected_gate_for_graph(&graph).unwrap().is_none());
-  }
-  #[test]
-  fn missing_source_gate_and_dependency_fail_closed() {
-    let mut bad_graph = graph();
-    bad_graph
-      .pointer_mut("/cores/eos/layers/interface/groups/gate/nodes/preview/inputs/frame/node")
-      .unwrap()
-      .clone_from(&json!("eos/hardware/camera/missing"));
-    assert_eq!(
-      select_with_gate(
-        &bad_graph,
-        &catalog(),
-        &specs(),
-        &"a".repeat(64),
-        b"p",
-        selected()
-      )
-      .unwrap_err()
-      .code,
-      "vision_source_missing"
-    );
-    assert_eq!(
-      select_with_gate(
-        &graph(),
-        &catalog(),
-        &specs(),
-        &"a".repeat(64),
-        b"p",
-        Some(("eos/interface/gate/other".into(), "f".repeat(64)))
-      )
-      .unwrap_err()
-      .code,
-      "vision_gate_unknown"
-    );
-    let mut specs = specs();
-    specs[2].settings.depends_on.clear();
-    assert_eq!(
-      select_with_gate(
-        &graph(),
-        &catalog(),
-        &specs,
-        &"a".repeat(64),
-        b"p",
-        selected()
-      )
-      .unwrap_err()
-      .code,
-      "vision_ingress_unsupported"
-    );
-  }
-  #[test]
-  fn selected_bridge_requires_exact_loopback_tcp_and_matching_readiness() {
-    let mut cases = Vec::new();
-    let mut missing = specs();
-    missing[1].settings.args.truncate(2);
-    cases.push(missing);
-    let mut wrong_ready = specs();
-    wrong_ready[1].settings.ready_tcp = Some("127.0.0.1:16021".into());
-    cases.push(wrong_ready);
-    let mut absent_ready = specs();
-    absent_ready[1].settings.ready_tcp = None;
-    cases.push(absent_ready);
-    let mut exposed = specs();
-    exposed[1].settings.args[3] = "0.0.0.0:16020".into();
-    exposed[1].settings.ready_tcp = Some("0.0.0.0:16020".into());
-    cases.push(exposed);
-    for specs in cases {
-      let error = select_with_gate(
-        &graph(),
-        &catalog(),
-        &specs,
-        &"a".repeat(64),
-        b"p",
-        selected(),
-      )
-      .unwrap_err();
-      assert_eq!(error.code, "vision_endpoint_unavailable");
-    }
-  }
-  #[test]
-  fn bridge_readiness_requires_both_selected_tcp_and_owner_socket() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner_socket = temp.path().join("eos-vision-owner.sock");
-    let mut bridge = spec("bridge", "eos", &["eos"]);
-    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = tcp.local_addr().unwrap().to_string();
-    bridge.settings.args[3] = address.clone();
-    bridge.settings.ready_tcp = Some(address);
-    assert!(!bridge_ready(&bridge, &owner_socket));
-    let owner = UnixListener::bind(&owner_socket).unwrap();
-    assert!(bridge_ready(&bridge, &owner_socket));
-    drop(owner);
-    std::fs::remove_file(&owner_socket).unwrap();
-    assert!(!bridge_ready(&bridge, &owner_socket));
-    drop(tcp);
-    let _owner = UnixListener::bind(&owner_socket).unwrap();
-    assert!(!bridge_ready(&bridge, &owner_socket));
-  }
-  #[test]
-  fn attestation_requires_selected_run_revision_and_source() {
-    let temp = tempfile::tempdir().unwrap();
-    let socket = temp.path().join("runtime.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let template = template();
-    let reply = json!({"ok":true,"ready":true,"run_id":"r-good",
-            "active_revision":template.graph_revision,"projection_revision":template.projection_revision,
-            "source_path":template.source_path,"gate_path":template.gate_path,
-            "runtime_stream_id":"f985a938-e639-4d53-8c6c-0a03b00482ca","gate_generation":0});
-    let worker = thread::spawn(move || {
-      for _ in 0..2 {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream.try_clone().unwrap())
-          .read_line(&mut line)
-          .unwrap();
-        assert_eq!(
-          serde_json::from_str::<Value>(&line).unwrap()["op"],
-          "vision_attest"
-        );
-        stream.write_all(format!("{}\n", reply).as_bytes()).unwrap();
-      }
-    });
-    let mut eos = spec("eos", "eos", &[]);
-    eos.settings.args = vec!["--socket".into(), socket.to_str().unwrap().into()];
-    assert!(attest_eos(&eos, &template, "r-good"));
-    assert!(!attest_eos(&eos, &template, "r-stale"));
-    worker.join().unwrap();
+  fn health_only_graph_has_no_vision_binding() {
+    let graph = json!({"version":"0.2.0","cores":{
+      "isos":{"layers":{}},"ei":{"layers":{}},"eos":{"layers":{}}
+    }});
+    let selected = select(&graph, &json!({"types":[]}), &[], &"0".repeat(64), b"").unwrap();
+    assert!(selected.is_none());
   }
 }

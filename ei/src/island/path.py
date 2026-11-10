@@ -1,4 +1,4 @@
-"""Resolve immutable Island-egia filesystem roles at composition roots.
+"""Resolve immutable Island-ei filesystem roles at composition roots.
 
 Submodules receive a :class:`Layout`; they must not rediscover the checkout,
 inspect the current working directory, or interpret path environment variables.
@@ -42,26 +42,35 @@ class Layout:
   src: Path | None = None
 
   @property
+  def is_source_ei_checkout(self) -> bool:
+    """Whether this layout selects EI inside the root IsOS checkout."""
+    return self.mode is Mode.SOURCE and _is_ei_checkout(self.prefix)
+
+  @property
   def contracts(self) -> Path:
     """Canonical versioned wire-contract root."""
     return self.share / "contracts"
 
   @property
   def prompts(self) -> Path:
-    """Factory prompt root shipped with EGIA."""
+    """Factory prompt root shipped with EI."""
     return self.share / "prompts"
 
   @property
-  def egia_defaults(self) -> Path:
+  def ei_defaults(self) -> Path:
     """Factory configuration inspected by IsOS before managed launch."""
     if self.mode is Mode.SYSTEM:
-      return self.prefix / "share/defaults/egia"
-    return self.share / "defaults/egia"
+      return self.prefix / "share/defaults/ei"
+    if self.is_source_ei_checkout:
+      return self.share / "ei/defaults/ei"
+    return self.share / "defaults/ei"
 
   @property
   def doc(self) -> Path:
     """Product-documentation root for the selected filesystem layout."""
     if self.mode is Mode.SOURCE:
+      if self.is_source_ei_checkout:
+        return self.prefix.parent / "docs"
       return self.prefix / "docs"
     if self.mode is Mode.SYSTEM:
       return self.prefix / "share/doc/island"
@@ -69,19 +78,31 @@ class Layout:
 
   def component_etc(self, component: str) -> Path:
     """Return one component's namespaced configuration root."""
+    if self.is_source_ei_checkout and component == "ei":
+      return self.prefix.parent / "config/ei"
     return self.etc / _component(component)
 
   def component_state(self, component: str) -> Path:
     """Return one component's durable-state root."""
-    return self.state / _component(component)
+    return self.state / _component(component) / "state"
 
   def component_cache(self, component: str) -> Path:
     """Return one component's rebuildable-cache root."""
-    return self.cache / _component(component)
+    return self.cache / _component(component) / "cache"
 
   def component_log(self, component: str) -> Path:
     """Return one component's diagnostic-log root."""
-    return self.log / _component(component)
+    return self.log / _component(component) / "log"
+
+  def component_run(self, component: str) -> Path:
+    """Return one component's process-lifetime root."""
+    if self.mode is Mode.SYSTEM and self.run == Path("/run/island"):
+      return self.run / _component(component)
+    return self.run / _component(component) / "run"
+
+  def component_tmp(self, component: str) -> Path:
+    """Return one component's disposable scratch root."""
+    return self.tmp / _component(component) / "tmp"
 
   @classmethod
   def resolve(
@@ -89,7 +110,6 @@ class Layout:
     *,
     mode: Mode | str | None = None,
     prefix: Path | str | None = None,
-    var: Path | str | None = None,
     etc: Path | str | None = None,
     share: Path | str | None = None,
     libexec: Path | str | None = None,
@@ -110,10 +130,6 @@ class Layout:
       mode: ``source``, ``portable``, or ``system``. Defaults to
         ``ISLAND_MODE`` and then ``source`` in a checkout.
       prefix: Immutable installation prefix or checkout root.
-      var: Legacy mutable root. When provided, roles default to ``lib``,
-        ``cache``, ``log``, ``run``, and ``tmp`` below it. Explicit role roots
-        still win. Relative values resolve below ``prefix`` for compatibility
-        with the former EGIA ``--var`` flag.
       etc: Product configuration root containing component namespaces.
       share: Architecture-independent resource root.
       libexec: Private executable root.
@@ -145,30 +161,15 @@ class Layout:
       prefix_path = _absolute("prefix", prefix_value)
 
     defaults = _defaults(selected, prefix_path)
-    legacy = None
-    if var is not None:
-      legacy = Path(var).expanduser()
-      if not legacy.is_absolute():
-        legacy = prefix_path / legacy
-      legacy = legacy.resolve()
-      defaults.update(
-        {
-          "state": legacy / "lib",
-          "cache": legacy / "cache",
-          "log": legacy / "log",
-          "run": legacy / "run",
-          "tmp": legacy / "tmp",
-        }
-      )
     values = {
       "etc": (etc, env.get("ISLAND_ETC")),
       "share": (share, env.get("ISLAND_SHARE")),
       "libexec": (libexec, env.get("ISLAND_LIBEXEC")),
-      "state": (state, None if legacy is not None else env.get("ISLAND_STATE")),
-      "cache": (cache, None if legacy is not None else env.get("ISLAND_CACHE")),
-      "log": (log, None if legacy is not None else env.get("ISLAND_LOG")),
-      "run": (run, None if legacy is not None else env.get("ISLAND_RUN")),
-      "tmp": (tmp, None if legacy is not None else env.get("ISLAND_TMP")),
+      "state": (state, env.get("ISLAND_STATE")),
+      "cache": (cache, env.get("ISLAND_CACHE")),
+      "log": (log, env.get("ISLAND_LOG")),
+      "run": (run, env.get("ISLAND_RUN")),
+      "tmp": (tmp, env.get("ISLAND_TMP")),
     }
     resolved = {
       name: _resolve_root(name, explicit, inherited, defaults[name])
@@ -195,21 +196,37 @@ def _defaults(mode: Mode, prefix: Path) -> dict[str, Path]:
       "share": prefix / "share/island",
       "libexec": prefix / "libexec/island",
       "state": Path("/var/lib/island"),
-      "cache": Path("/var/cache/island"),
-      "log": Path("/var/log/island"),
+      "cache": Path("/var/lib/island"),
+      "log": Path("/var/lib/island"),
       "run": Path("/run/island"),
-      "tmp": Path("/var/tmp/island"),
+      "tmp": Path("/var/lib/island"),
     }
+  data_root = (
+    prefix.parent / "data"
+    if mode is Mode.SOURCE and _is_ei_checkout(prefix)
+    else prefix / "data"
+  )
   return {
     "etc": prefix / "etc",
-    "share": prefix / "share",
+    "share": prefix.parent / "share"
+    if mode is Mode.SOURCE and _is_ei_checkout(prefix)
+    else prefix / "share",
     "libexec": prefix / "libexec",
-    "state": prefix / "var/lib",
-    "cache": prefix / "var/cache",
-    "log": prefix / "var/log",
-    "run": prefix / "var/run",
-    "tmp": prefix / "var/tmp",
+    "state": data_root,
+    "cache": data_root,
+    "log": data_root,
+    "run": data_root,
+    "tmp": data_root,
   }
+
+
+def _is_ei_checkout(prefix: Path) -> bool:
+  """Recognize EI inside this source workspace without changing other layouts."""
+  return (
+    (prefix / "pyproject.toml").is_file()
+    and (prefix / "src/ei").is_dir()
+    and (prefix.parent / "Cargo.toml").is_file()
+  )
 
 
 def _pick(
@@ -240,6 +257,6 @@ def _absolute(name: str, value: Path | str) -> Path:
 
 def _component(component: str) -> str:
   """Validate a brief component namespace used below role roots."""
-  if component not in {"egia", "eos"}:
+  if component not in {"ei", "eos", "isos"}:
     raise ValueError(f"unknown Island component: {component}")
   return component

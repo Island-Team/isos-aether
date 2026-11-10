@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
-# EI configuration adapter; egia-config remains a compatibility alias.
+# Side-effect-free IsOS adapter; use the selected EI interpreter.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-export EI_CLI_NAME=ei-config
-exec "$ROOT/bin/egia-config" "$@"
+LAUNCHER="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT="${ISLAND_PREFIX:-$(cd "$(dirname "$LAUNCHER")/.." && pwd)}"
+CLI_NAME=ei-config
+MODULE_ROOT=ei
+if [[ -f "$ROOT/pyproject.toml" && -d "$ROOT/src/ei" ]]; then
+  PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-$ROOT/.venv/bin/python}}"
+  export PYTHONPATH="$ROOT/src:$ROOT/libexec:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+else
+  PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-python3.12}}"
+  LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
+  export PYTHONPATH="$LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+fi
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+  echo "$CLI_NAME: Python interpreter '$PYTHON' was not found" >&2
+  exit 127
+fi
+exec "$PYTHON" -B -m "$MODULE_ROOT.config_cli" "$@"

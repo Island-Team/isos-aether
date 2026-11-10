@@ -1,4 +1,4 @@
-//! Full-graph, owner-catalog edge admission for graph 0.1.0.
+//! Full-graph, owner-catalog edge admission for graph 0.2.0.
 //!
 //! This module has no file or process effects. Callers must use the exact catalog
 //! and saved graph revision that they subsequently render or launch.
@@ -34,6 +34,7 @@ impl std::fmt::Display for Diagnostic {
 pub struct Edge {
   pub path: String,
   pub source: String,
+  pub output: String,
   pub target: String,
   pub input: String,
   pub route_class: &'static str,
@@ -143,6 +144,28 @@ fn bridge_port(
       })
 }
 
+fn registered_route(
+  catalog: &Value,
+  source: &Node<'_>,
+  output: &str,
+  target: &Node<'_>,
+  input: &str,
+  output_port: &Value,
+) -> bool {
+  catalog["port_routes"].as_array().is_some_and(|routes| {
+    routes.iter().any(|route| {
+      route["source_type"] == source.definition["id"]
+        && route["output"] == output
+        && route["target_type"] == target.definition["id"]
+        && route["input"] == input
+        && route["transport"] == output_port["transport"]
+        && route["delivery_mode"] == output_port["delivery_mode"]
+        && route["data_type"] == output_port["data_type"]
+        && route["contract"] == output_port["contract"]
+    })
+  })
+}
+
 fn valid_unit_annotations(schema: &Value) -> bool {
   match schema {
     Value::Object(fields) => {
@@ -196,11 +219,11 @@ fn routed_camera(
 ) -> bool {
   matches!(
     source.value["node_type"].as_str(),
-    Some("eos.hardware.camera@v0.1" | "isos.eos_hardware.camera@v0.2")
+    Some("isos.eos_hardware.camera@v0.2")
   ) && output == "frame"
     && matches!(
       target.value["node_type"].as_str(),
-      Some("eos.interface.camera_gate@v0.1" | "isos.eos_interface.camera_gate@v0.2")
+      Some("isos.eos_interface.camera_gate@v0.2")
     )
     && input == "frame"
     && output_port["data_type"] == "camera_frame"
@@ -211,7 +234,7 @@ fn routed_camera(
     && input_port["data_class"] == "image"
 }
 
-fn routed_egia_evidence(
+fn routed_ei_evidence(
   catalog: &Value,
   source: &Node<'_>,
   output: &str,
@@ -224,33 +247,21 @@ fn routed_egia_evidence(
   let target_type = target.value["node_type"].as_str();
   let pair = match (source_type, output, target_type, input) {
     (
-      Some("egia.link.gateway@v0.1"),
-      "resource",
-      Some("egia.perception.admission@v0.1"),
-      "resource",
-    ) => Some("egia.stage.resource@v0.1"),
-    (
-      Some("egia.perception.admission@v0.1"),
-      "observations",
-      Some("egia.context.builder@v0.1"),
-      "observations",
-    ) => Some("egia.stage.observations@v0.1"),
-    (
       Some("isos.ei_io.gateway@v0.2"),
       "resource",
       Some("isos.ei_evidence.admission@v0.2"),
       "resource",
-    ) => Some("egia.stage.resource@v0.1"),
+    ) => Some("ei.stage.resource@v0.1"),
     (
       Some("isos.ei_evidence.admission@v0.2"),
       "observations",
       Some("isos.ei_cognition.builder@v0.2"),
       "observations",
-    ) => Some("egia.stage.observations@v0.1"),
+    ) => Some("ei.stage.observations@v0.1"),
     _ => None,
   };
   pair.is_some_and(|data_type| {
-    matches!(source.owner.as_str(), "egia" | "ei")
+    matches!(source.owner.as_str(), "ei")
       && source.owner == target.owner
       && output_port["data_type"] == data_type
       && input_port["data_type"] == data_type
@@ -258,13 +269,7 @@ fn routed_egia_evidence(
       && input_port["transport"] == "in_process"
       && output_port["data_class"] == "evidence"
       && input_port["data_class"] == "evidence"
-      && catalog[if source.owner == "ei" {
-        "ei_routed_edges"
-      } else {
-        "egia_routed_edges"
-      }]
-      .as_array()
-      .is_some_and(|routes| {
+      && catalog["ei_routed_edges"].as_array().is_some_and(|routes| {
         routes.iter().any(|route| {
           route["source_type"] == source_type.unwrap()
             && route["output"] == output
@@ -314,11 +319,24 @@ fn visit(
 /// The resulting list is available only when the whole graph is admitted. It
 /// describes declarations, not live health or delivery.
 pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic>> {
-  if graph["version"] != "0.1.0" && graph["version"] != "0.2.0" {
+  admit_with_mode(graph, catalog, false)
+}
+
+/// Inspect a draft connection while other required inputs may still be empty.
+pub fn admit_partial(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic>> {
+  admit_with_mode(graph, catalog, true)
+}
+
+fn admit_with_mode(
+  graph: &Value,
+  catalog: &Value,
+  partial: bool,
+) -> Result<Vec<Edge>, Box<Diagnostic>> {
+  if graph["version"] != "0.2.0" {
     return Err(error(
       "/version",
       "unsupported_graph_version",
-      "edge admission requires graph 0.1.0 or 0.2.0",
+      "edge admission requires graph 0.2.0",
     ));
   }
   let types = catalog["types"].as_array().ok_or_else(|| {
@@ -361,6 +379,31 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
     })?;
     if data_definitions.insert(id, definition).is_some() {
       ambiguous_data.insert(id);
+    }
+  }
+  if let Some(id) = ambiguous_data.iter().next() {
+    return Err(error(
+      "/data_types",
+      "data_type_duplicate",
+      format!("data type {id} is declared more than once"),
+    ));
+  }
+  for (id, definition) in &data_definitions {
+    if !definition["schema"].is_object()
+      || jsonschema::validator_for(&definition["schema"]).is_err()
+      || !valid_unit_annotations(&definition["schema"])
+      || definition["version"].as_str().is_none_or(str::is_empty)
+      || definition["codec"].as_str().is_none_or(str::is_empty)
+      || definition["media_type"].as_str().is_none_or(str::is_empty)
+      || !definition["max_payload_bytes"]
+        .as_u64()
+        .is_some_and(|bound| (1..=100_000_000).contains(&bound))
+    {
+      return Err(error(
+        "/data_types",
+        "data_type_invalid",
+        format!("data type {id} lacks a valid payload contract"),
+      ));
     }
   }
   let cores = graph["cores"]
@@ -441,20 +484,7 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
               path,
               pointer,
               core: core_id.clone(),
-              owner: if graph["version"] == "0.2.0" {
-                if layer_id.starts_with("eos_") {
-                  "eos"
-                } else if layer_id.starts_with("ei_") {
-                  "ei"
-                } else if layer_id == "ui" {
-                  "ui"
-                } else {
-                  "isos"
-                }
-              } else {
-                core_id
-              }
-              .to_owned(),
+              owner: core_id.to_owned(),
               value,
               definition,
             },
@@ -521,7 +551,7 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
       None => &empty_inputs,
     };
     for required in target.definition["inputs"].as_array().into_iter().flatten() {
-      if required["required"] == true {
+      if !partial && required["required"] == true {
         let name = required["name"].as_str().ok_or_else(|| {
           error(
             &target.pointer,
@@ -651,13 +681,13 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
         })?;
         let output_type = output["data_type"].as_str();
         let input_type = input["data_type"].as_str();
-        if (source.core == "egia" || target.core == "egia")
+        if (source.owner == "ei" || target.owner == "ei")
           && (output["fixed"] == true || input["fixed"] == true)
         {
           return Err(edge_error(
             &pointer,
             "edge_fixed_route",
-            "EGIA fixed runtime port cannot be graph wired",
+            "EI fixed runtime port cannot be graph wired",
             source_path,
             &target.path,
             input_name,
@@ -736,7 +766,7 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
         if output_transport != input_transport
           || !matches!(
             input_transport,
-            "in_process" | "unix_socket" | "websocket" | "ros2" | "http"
+            "none" | "in_process" | "unix_socket" | "websocket" | "ros2" | "http"
           )
         {
           return Err(edge_error(
@@ -752,7 +782,9 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
         }
         let output_mode = output["delivery_mode"].as_str().unwrap_or("message");
         let input_mode = input["delivery_mode"].as_str().unwrap_or("message");
-        if !matches!(output_mode, "message" | "event" | "stream") || output_mode != input_mode {
+        if !matches!(output_mode, "declaration" | "message" | "event" | "stream")
+          || output_mode != input_mode
+        {
           return Err(edge_error(
             &pointer,
             "edge_delivery_mode",
@@ -764,11 +796,62 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
             Some(input_type),
           ));
         }
+        let declaration = input_mode == "declaration";
+        if (input_transport == "none") != declaration || (output_transport == "none") != declaration
+        {
+          return Err(edge_error(
+            &pointer,
+            "edge_delivery_mode",
+            "declaration edges require no transport and cannot carry payloads",
+            source_path,
+            &target.path,
+            input_name,
+            Some(output_type),
+            Some(input_type),
+          ));
+        }
+        if declaration {
+          if output.get("contract").is_some() || input.get("contract").is_some() {
+            return Err(edge_error(
+              &pointer,
+              "edge_protocol",
+              "static links cannot declare a live protocol",
+              source_path,
+              &target.path,
+              input_name,
+              Some(output_type),
+              Some(input_type),
+            ));
+          }
+        } else if output.get("contract").is_none()
+          || input.get("contract").is_none()
+          || output["contract"] != input["contract"]
+          || !["owner", "id", "version"].iter().all(|field| {
+            output["contract"][*field]
+              .as_str()
+              .is_some_and(|value| !value.trim().is_empty())
+          })
+          || !matches!(output["contract"]["owner"].as_str(), Some(owner) if owner == source.owner || owner == target.owner)
+        {
+          return Err(edge_error(
+            &pointer,
+            "edge_protocol",
+            "sender and receiver require the same declared protocol contract",
+            source_path,
+            &target.path,
+            input_name,
+            Some(output_type),
+            Some(input_type),
+          ));
+        }
         let cross_core = source.owner != target.owner;
-        let bridged = input_transport == "http"
-          && (bridge_port(catalog, source, "outputs", output_name, "http")
-            || bridge_port(catalog, target, "inputs", input_name, "http"));
-        if cross_core && !bridged {
+        let route_registered = !declaration
+          && registered_route(catalog, source, output_name, target, input_name, output);
+        let bridged = matches!(input_transport, "http" | "unix_socket")
+          && route_registered
+          && bridge_port(catalog, source, "outputs", output_name, input_transport)
+          && bridge_port(catalog, target, "inputs", input_name, input_transport);
+        if cross_core && !bridged && !declaration {
           return Err(edge_error(
             &pointer,
             "edge_bridge_undeclared",
@@ -780,7 +863,7 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
             Some(input_type),
           ));
         }
-        if !cross_core && input_transport != "in_process" && !bridged {
+        if !cross_core && input_transport != "in_process" && !bridged && !declaration {
           return Err(edge_error(
             &pointer,
             "edge_transport",
@@ -807,30 +890,48 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
           ));
         }
         let data_class = output_class.or(input_class);
-        let is_fixed = fixed(output_type, data_class, output_name, input_name);
-        let is_routed = source.owner == "eos"
-          && target.owner == "eos"
-          && routed_camera(source, output_name, target, input_name, output, input)
-          || routed_egia_evidence(
-            catalog,
-            source,
-            output_name,
-            target,
-            input_name,
-            output,
-            input,
-          );
-        let route_class = if cross_core && bridged {
+        let is_fixed = !declaration && fixed(output_type, data_class, output_name, input_name);
+        let is_routed = route_registered
+          && ((source.owner == target.owner
+            && matches!(
+              output_type,
+              "button_activation@v0.2" | "arm_joint_delta@v0.2" | "arm_monitor_state@v0.2"
+            ))
+            || source.owner == "eos"
+              && target.owner == "eos"
+              && routed_camera(source, output_name, target, input_name, output, input)
+            || routed_ei_evidence(
+              catalog,
+              source,
+              output_name,
+              target,
+              input_name,
+              output,
+              input,
+            ));
+        let route_class = if declaration {
+          "declaration"
+        } else if cross_core && bridged {
           "owner_bridge"
-        } else if target.owner == "eos" && (is_fixed || is_routed) {
+        } else if target.owner == "eos" && is_routed {
           "eos_local"
-        } else if target.owner == "ei" {
+        } else if target.owner == "ei" && is_routed {
           "ei_local"
-        } else if target.owner == "egia" {
-          "egia_local"
         } else {
           "design_only"
         };
+        if route_class == "design_only" {
+          return Err(edge_error(
+            &pointer,
+            "edge_route_unavailable",
+            "no owner-supported runtime route delivers this connection",
+            source_path,
+            &target.path,
+            input_name,
+            Some(output_type),
+            Some(input_type),
+          ));
+        }
         let priority = if let Some(value) = source_value.get("priority") {
           let priority = value.as_i64().ok_or_else(|| {
             edge_error(
@@ -916,17 +1017,10 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
         let command_input = input_name == "command"
           && matches!(
             target.value["node_type"].as_str(),
-            Some(
-              "eos.hardware.base@v0.1"
-                | "eos.hardware.manipulator@v0.1"
-                | "isos.eos_hardware.base@v0.2"
-                | "isos.eos_hardware.manipulator@v0.2"
-            )
+            Some("isos.eos_hardware.base@v0.2" | "isos.eos_hardware.manipulator@v0.2")
           );
         if command_input {
           let expected_binding = match target.value["node_type"].as_str() {
-            Some("eos.hardware.base@v0.1") => "eos.dispatcher.primitive_base@v0.1",
-            Some("eos.hardware.manipulator@v0.1") => "eos.dispatcher.primitive_manipulator@v0.1",
             Some("isos.eos_hardware.base@v0.2") => "isos.eos_dispatcher.primitive_base@v0.2",
             _ => "isos.eos_dispatcher.primitive_manipulator@v0.2",
           };
@@ -954,6 +1048,7 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
         edges.push(Edge {
           path: pointer,
           source: source_path.into(),
+          output: output_name.into(),
           target: target.path.clone(),
           input: input_name.clone(),
           route_class,
@@ -973,14 +1068,12 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
     if matches!(
       node.value["node_type"].as_str(),
       Some(
-        "eos.dispatcher.primitive_base@v0.1"
-          | "eos.dispatcher.primitive_manipulator@v0.1"
-          | "isos.eos_dispatcher.primitive_base@v0.2"
+        "isos.eos_dispatcher.primitive_base@v0.2"
           | "isos.eos_dispatcher.primitive_manipulator@v0.2"
       )
     ) {
       let count = binding_targets.get(path).map_or(0, Vec::len);
-      if count != 1 {
+      if !partial && count != 1 {
         return Err(error(
           format!("{}/node_type", node.pointer),
           "edge_binding_target",

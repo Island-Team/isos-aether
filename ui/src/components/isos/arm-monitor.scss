@@ -1,0 +1,10 @@
+.arm-monitor { display: grid; gap: 8px; padding: 10px; color: var(--text); font-size: .82rem; }
+.arm-monitor h2, .arm-monitor p { margin: 0; }
+.arm-monitor h2 { font-size: 1rem; }
+.arm-monitor p[role='alert'] { color: var(--warning); }
+.arm-monitor ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 14px; margin: 6px 0 0; padding-left: 20px; }
+.arm-monitor li { padding: 2px 0; }
+.arm-monitor li span { display: inline-block; max-width: 60%; overflow-wrap: anywhere; }
+.arm-monitor output { float: right; font-family: var(--font-mono, monospace); }
+.arm-monitor--compact { padding: 6px 0; font-size: .7rem; }
+.arm-monitor--compact ol { grid-template-columns: 1fr; gap: 1px; }

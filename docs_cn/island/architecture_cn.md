@@ -1,38 +1,27 @@
-# IsOS 0.2.1 架构目标
+# IsOS 产品架构
 
-[English](../../docs/island/architecture.md) · [合并设计](unification-v0.2.1_cn.md) · [数据流](layer-dataflow_cn.md) · [共用约定](conventions.v1.3.1_cn.md)
+[English](../../docs/island/architecture.md) · [共用规范](conventions.v1.4.0_cn.md)
 
-**集成目标，尚未发布。** IsOS（Island OS）是产品，也是新部署图中唯一的核心。EOS（Embodied OS）和 EI（Embodied Intelligence，原 EGIA）仍可作为独立受监管进程运行，各自保留安全及生命周期职责。IsosUI 是同仓库中的图编辑器与操作工作台。外部 `island/mujoco-sim@0.1.1` 软件包提供经过验证的模拟器，不导入本仓库。现有公开 EOS `0.2.0` 发布属于历史证据。本次集成不创建 `v0.2.1` 标签或产品发布。
+IsOS、EI、EOS 是三个独立的运行核心。IsOS 负责保存图修订、精确验证软件包、Apply、部署运行身份及本地 UI API。EI 负责认知与安全门控。EOS 负责调度准入、硬件适配器以及模拟机械臂的本地安全判断。浏览器和终端客户端通过 IsOS 访问。
 
-## 图与源码布局
+## 当前图与运行时
 
-图层级仍为 `core → layer → group → node`。`0.2.0` 图格式只有 `isos` 核心。IsOS 管理器层保留原名；EOS 域使用 `eos_*` 层，EI 域使用 `ei_*` 层，浏览器节点使用 `ui` 层。新注册类型 ID 使用 `isos.<layer>.<name>@v0.2`。目标路径不冲突时保留组和实例 ID。产品源码版本为 `0.2.1`；图、类型、HTTP、protobuf、软件包和模拟器版本分别维护。
+Graph `0.2.0` 使用 `core → layer → group → node` 层级及注册类型 `<core>.<layer>.<group>.<node>@v0.2`。每个核心发布并验证自己的类型。IsOS 准入完整图，随后仅向 EI 和 EOS 提供各自的投影。[起始图](../../crates/isos/templates/generic-graph.toml)有 16 个节点和 15 条类型化连接：八个节点把按钮激活传递到模拟六关节机械臂，另外八个节点将同一机械臂的观测送回 IsOS UI 监视节点。观测输出只读，不创建第二条执行器路径。
 
-| 源码 | 职责 | 入口 |
+| 核心 | 当前职责 | 运行边界 |
 | --- | --- | --- |
-| `crates/isos/` | 图、软件包准入、修订、进程监管、本地 API 和日志 | [IsOS 指南](../isos/README_cn.md) |
-| `crates/aether-*` 与 EOS 契约 | 设备适配器、健康、Dispatcher 准入、命令结果及 MuJoCo 直接子进程 | [EOS 指南](../eos/README_cn.md) |
-| `ei/` | 认知、阶段数据、模型调用和 EI 安全 | [EI 指南](../ei/README_cn.md) |
-| `ui/` | 图编辑器、状态、日志、Vision 及已准入浏览器控件 | [IsosUI 指南](../isosui/README_cn.md) |
+| IsOS | 图、软件包、Apply、运行围栏、本地 API、UI 监视 | 管理器与工作台 |
+| EI | 输入、认知、安全门控、监视数据转发 | 持久核心服务与工作进程 |
+| EOS | 入口、技能、调度、模拟适配器、本地观测检查 | 持久核心服务与工作进程 |
 
-## 配置与运行流
+按钮发出带运行围栏的激活事件。EI 经输入、认知和治理层传递；EOS 持久接受事件，将其映射为有界的六关节增量，并通过调度器准入。IsosUI 按事件 ID 读取最终命令结果。EOS 以 100 Hz 在本地采样同一模拟机械臂，在接收下一次运动前检查新鲜度和有效性。EI 独立于读取者，以最高 20 Hz 刷新一个最新已检查快照；IsOS 将经过验证的快照在最多 200 ms 内共享给 UI 读取者，UI 最高以 5 Hz 刷新。Stop 或运行切换会清除上一运行的监视数值。当前契约见[节点接口](../isos/interfaces/node/README_cn.md)、[EI setup](../ei/interfaces/setup.md)和 [EOS 核心健康](../eos/interfaces/owner-health_cn.md)。
 
-IsOS 校验完整图和所选软件包凭据，然后写入绑定修订的 EOS、EI 投影。各子进程在就绪前校验自身投影。图负责地址和配置；跨进程仍需显式、明确所有者的传输。EI 安全可拒绝提议。无论请求来自 EI 还是浏览器桥接，EOS Dispatcher 始终是唯一的执行器准入路径。EOS 只读已应用图，并在结束 MuJoCo 子进程前停止已准入执行器。IsOS 按依赖顺序停止并回收直接子进程。
+EI 与 EOS 提供私有的 Run、Status、Stop 接口。IsOS 启动缺失的核心服务，在管理器重启后重新连接，并要求各核心监管自己的工作进程。Status 分别读取两核心。显式 Stop 请求两核心停止并记录确认。存在模拟器子进程时，EOS 先停止获准执行的驱动，再终止该子进程。
 
-```mermaid
-flowchart LR
-  UI[IsosUI] -->|校验与应用| OS[IsOS 单图核心]
-  OS -->|绑定修订的投影| EOS[EOS 进程]
-  OS -->|绑定修订的投影| EI[EI 进程]
-  EI -->|类型化 gRPC 请求| EOS
-  UI -->|有界实时请求| BR[EOS 回环桥接]
-  BR --> EOS
-  EOS -->|准入| D[Dispatcher]
-  D -->|已准入适配器调用| SIM[外部 MuJoCo 子进程]
-```
+## 跨所有者契约
 
-首次使用依次验证外部 MuJoCo 软件包、必要时迁移旧图、Validate 与 Apply、启动修订、检查所有者就绪、相机数据和一次已准入控制结果，最后验证故障、重启及安全 Stop。[IsOS 使用指南](../isos/usage/README_cn.md)负责操作命令；[层数据流](layer-dataflow_cn.md)说明边界。
+类型化连接仅准入已声明的命令与观测路径。私有核心交换携带运行和修订身份；每个核心验证自己的负载，并拒绝过期或不匹配的数据。图描述路径，核心服务传递实时数据。
 
-## 兼容性与证据
+## 目标架构（尚未实现）
 
-带 `isos`、`eos`、`egia`、`isosui` 核心的受支持 `0.1.0` 图在显式原子迁移前保持只读；迁移同时重写路径、类型 ID、引用、连线、绑定和生成配置。未知类型、目标路径冲突和歧义映射返回源路径诊断，保留原始字节与修订。已记录的安全 `1.0.0` 旧图读取继续保留。现有 EOS HTTP v2、protobuf 身份和模拟器套接字契约独立维护版本，除非所有者契约显式修改。本目录的历史资格验证页面记录当时提交与已测行为，不代表 0.2.1 目标已经发布。
+未来算法可以用归属方定义的处理替换演示图中的透传认知和固定关节增量技能，同时保持类型化图准入、运行与修订围栏，以及仅由 EOS 执行驱动准入。未来的推送式监视传输应使用有界的最新状态交付，使 UI 或 EI 的延迟无法阻塞 EOS 本地 100 Hz 检查。这些是架构目标，不是当前图接口。

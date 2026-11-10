@@ -1,25 +1,8 @@
 # Internal model interfaces
 
-<!-- docs-tree:start -->
-**Location:** [Docs](../../../README.md) / [EOS](../../README.md) / [Interfaces](../README.md) / [External](README.md) / **models**
-
-<details>
-<summary>Docs tree</summary>
-
-- [docs/](../../../README.md)
-  - [eos/](../../README.md)
-    - [interfaces/](../README.md)
-      - [external/](README.md)
-        - [http.md](http.md)
-        - **models.md**
-        - [simulator.md](simulator.md)
-
-</details>
-<!-- docs-tree:end -->
-
 [中文](../../../../docs_cn/eos/interfaces/external/models_cn.md)
 
-[Interface overview](../README.md) · [Model runtime](../../design/runtime/models.md)
+[Interface overview](../README.md) · Model runtime
 
 EOS talks to models through private, capability-based interfaces. These interfaces describe what EOS sends and receives without depending on a model vendor, framework, deployment, or application domain. Provider URLs, headers, credentials, and native payload formats remain behind the model adapter and never cross the EOS client-facing gRPC interface.
 
@@ -196,27 +179,93 @@ Camera transport details are resolved before this private model boundary. EOS co
       "confidence": 0.94,
       "distance_m": 2.1,
       "keypoints": [
-        [310, 120],
-        [300, 110],
-        [320, 110],
-        [290, 115],
-        [330, 115],
-        [275, 210],
-        [345, 210],
-        [250, 320],
-        [370, 320],
-        [235, 420],
-        [385, 420],
-        [285, 410],
-        [335, 410],
-        [280, 540],
-        [340, 540],
-        [275, 675],
-        [345, 675]
+        [
+          310,
+          120
+        ],
+        [
+          300,
+          110
+        ],
+        [
+          320,
+          110
+        ],
+        [
+          290,
+          115
+        ],
+        [
+          330,
+          115
+        ],
+        [
+          275,
+          210
+        ],
+        [
+          345,
+          210
+        ],
+        [
+          250,
+          320
+        ],
+        [
+          370,
+          320
+        ],
+        [
+          235,
+          420
+        ],
+        [
+          385,
+          420
+        ],
+        [
+          285,
+          410
+        ],
+        [
+          335,
+          410
+        ],
+        [
+          280,
+          540
+        ],
+        [
+          340,
+          540
+        ],
+        [
+          275,
+          675
+        ],
+        [
+          345,
+          675
+        ]
       ],
       "keypoint_scores": [
-        0.95, 0.94, 0.94, 0.91, 0.92, 0.96, 0.96, 0.93, 0.93,
-        0.90, 0.91, 0.97, 0.97, 0.95, 0.95, 0.92, 0.92
+        0.95,
+        0.94,
+        0.94,
+        0.91,
+        0.92,
+        0.96,
+        0.96,
+        0.93,
+        0.93,
+        0.9,
+        0.91,
+        0.97,
+        0.97,
+        0.95,
+        0.95,
+        0.92,
+        0.92
       ],
       "pose": "stand",
       "pose_confidence": 0.93,
@@ -228,7 +277,6 @@ Camera transport details are resolved before this private model boundary. EOS co
 }
 ```
 
-All 17 `keypoints` and all 17 `keypoint_scores` are required. Canonical `pose` is `stand`, `sit`, `lie`, or `unknown`; canonical `action` is `waving`, `fallen`, `none`, or `unknown`. These canonical fields are the complete semantic output of `vision.human_pose`; legacy `posture`, `posture_state`, and `behavior_event` fields belong only to the separate `vision.posture` contract. All person fields shown above are required; `distance_m` is null when aligned depth has no estimate. When the request supplies `persons`, every response row must preserve the corresponding EOS `track_id`; EOS merges enrichment only into an existing person with that ID and ignores unmatched rows. Furniture context is resolved later by EOS world projection and does not cross this model boundary.
 
 ## Voice activity detection (VAD)
 
@@ -290,7 +338,6 @@ Optional request fields are `language`, `voice`, `instruction`, `temperature`, `
 
 ## Face identification
 
-Typed northbound and skill `vision.face` inference is recognize-only. The versioned v1 schema still admits the legacy provider operation shapes, but generic typed inference rejects non-recognition calls. Only `input.data_b64` is required; `input.filename` and `input.media_type` are optional transport hints. Registration is a separate internal EOS operation.
 
 ### Recognize faces
 
@@ -342,7 +389,8 @@ The `message` field is optional. Of the non-recognition operations, only the int
 
 ### ArcFace request timing
 
-The camera runtime waits for a completed human-detection result and sends recognition frames only while a tracked person is present. While the person's identity is unresolved, ArcFace requests are scheduled at 250 ms intervals. Once a registered identity is matched, refresh requests are spaced at least 1 second apart. These are minimum intervals: a configured longer minimum is respected. The ArcFace worker keeps only the newest waiting frame, reports queue wait, inference duration, and frame age in logs, and discards results whose source frame is older than 3 seconds so a delayed response cannot replace newer state.
+The camera runtime waits for human detection and sends recognition frames only while a tracked person is present. It schedules requests at 250 ms intervals while identity is unresolved, then at least one second apart after matching a registered identity. A longer configured minimum interval still applies. The worker retains only the latest waiting frame, logs queue, inference, and frame age, and discards results whose source frame is more than three seconds old.
+
 
 ## General VLM request
 
@@ -350,8 +398,16 @@ The `vla-gemma4` model serves the private `vision.vlm` capability and targeted p
 
 ```json
 {
-  "messages": [{"role": "user", "content": "What is in front of me?"}],
-  "input": {"data_b64": "<base64-encoded JPEG image>", "media_type": "image/jpeg"},
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is in front of me?"
+    }
+  ],
+  "input": {
+    "data_b64": "<base64-encoded JPEG image>",
+    "media_type": "image/jpeg"
+  },
   "max_tokens": 128,
   "stream": false
 }

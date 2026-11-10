@@ -1,5 +1,0 @@
-add_subdirectory(core)
-add_subdirectory(builtin)
-add_subdirectory(manager)
-add_subdirectory(native)
-add_subdirectory(worker)

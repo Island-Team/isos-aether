@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use aether_common::events::{
-  Event, EventSink, NonblockingStderr, Reason, Source, Stage, local_run_id, valid_digest,
-  valid_run_id,
+  Event, EventSink, LocalCoreLog, Reason, Source, Stage, local_run_id, valid_digest, valid_run_id,
 };
 use aether_common::time::SystemClock;
 use aether_control::http::{read_request, reply, reply_with_headers};
@@ -48,9 +47,17 @@ fn main() {
     );
     return;
   }
-  if launch().is_err() {
+  if let Err(error) = launch() {
+    aether_common::diagnostics::report(
+      &aether_common::diagnostics::directory(),
+      "bridge",
+      "error",
+      "bridge_failed",
+      &error.to_string(),
+      None,
+    );
     if !EVENT_INITIALIZED.load(Ordering::SeqCst) {
-      eprintln!("aether-http-bridge: invalid launch arguments");
+      eprintln!("aether-http-bridge: invalid launch arguments: {error}");
     }
     std::process::exit(1);
   }
@@ -96,13 +103,23 @@ fn launch() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     None
   };
-  let sink = Arc::new(EventSink::new(
+  let sink = EventSink::new(
     Source::Bridge,
     run_id.unwrap_or_else(local_run_id),
-    NonblockingStderr::new()?,
+    LocalCoreLog::new()?,
     SystemClock,
-  )?);
+  )?;
+  let sink = Arc::new(sink);
   EVENT_INITIALIZED.store(true, Ordering::SeqCst);
+  let diagnostic_dir = aether_common::diagnostics::directory();
+  aether_common::diagnostics::report(
+    &diagnostic_dir,
+    "bridge",
+    "info",
+    "bridge_starting",
+    "EOS HTTP bridge starting",
+    None,
+  );
   let _ = sink.emit(Event::Starting, None);
   let grant = match env::var_os("AETHER_BRIDGE_CONTROL_GRANT_FILE") {
     Some(path) => {
@@ -141,7 +158,7 @@ fn run(
   address: SocketAddr,
   grant: Option<Arc<PathBuf>>,
   owner_vision: Option<owner_vision::OwnerVision>,
-  sink: &Arc<EventSink<NonblockingStderr, SystemClock>>,
+  sink: &Arc<EventSink<LocalCoreLog, SystemClock>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   let listener = TcpListener::bind(address)?;
   listener.set_nonblocking(true)?;
@@ -158,6 +175,14 @@ fn run(
     }
   }
   let _ = sink.emit(Event::Ready { node_count: 0 }, None);
+  aether_common::diagnostics::report(
+    &aether_common::diagnostics::directory(),
+    "bridge",
+    "info",
+    "bridge_ready",
+    "EOS HTTP bridge ready",
+    None,
+  );
   let mut clients: Vec<std::thread::JoinHandle<()>> = Vec::new();
   let result_events = Arc::new(result_events::ResultEvents::default());
   while !TERMINATE.load(Ordering::SeqCst) {
@@ -284,7 +309,7 @@ fn serve(
   stream: &mut TcpStream,
   socket: &PathBuf,
   grant: Option<&PathBuf>,
-  sink: &EventSink<NonblockingStderr, SystemClock>,
+  sink: &EventSink<LocalCoreLog, SystemClock>,
   result_events: &result_events::ResultEvents,
 ) -> Result<(), String> {
   let request = read_request(stream)?;

@@ -1,13 +1,23 @@
-# Keyboard-to-base control path
+# Mock arm control and monitor paths
 
-This page explains the current first control path for graph authors and implementers. It composes [generic node types](../interfaces/nodes/README.md), a [UI event](../interfaces/ui/node-events.md), and [core handoff](../interfaces/cores/README.md). The path demonstrates typed bridges; it is not a second node schema or a package-specific IsOS rule.
+The current 16-node [demo graph](../../../config/graph-pool/demo.nodes.json) declares two paths around one mock arm. Each edge uses registered ports and exact data types. IsOS saves and admits the graph; EI and EOS own their runtime stages.
 
-1. An IsosUI keyboard node selects one key or chord in its settings. While armed and focused, it publishes `pressed`, bounded `refresh`, and `released` states from its `state` output. Browser repeats do not multiply activation; focus loss and unmount release the hold.
-2. The IsOS HTTP gateway is a separate registered bridge node. Its saved settings select an exact primitive binding path, three body velocity components (`x_m_s`, `y_m_s`, `yaw_rad_s`), and a 50–500 ms lease. A browser event supplies only key state, activation order, source path, and run fence. IsOS resolves the saved graph and converts the event into a typed movement request. Its command deadline allows 500 ms beyond the chosen lease for owner admission; the actuator lease itself does not grow.
-3. The EOS HTTP gateway receives that request for the declared `movement` input. Its owner authenticates and fences it, then calls the EOS Dispatcher `base.velocity` primitive binding. Stream publication acknowledges admission without waiting for the whole lease to finish; the dispatcher remains the sole actuator admission point.
-4. The primitive binding sends a typed command to the selected base hardware node. EOS owns the hardware adapter and MuJoCo child; the simulator is a generic verified package process from IsOS's perspective. The owner checks its own payload and stop semantics before readiness.
-5. `released`, focus loss, disconnect, run replacement, and lease expiry all stop renewal. The owner must report terminal stop evidence; an uncertain physical stop is not reported as complete. The UI shows pending, accepted, terminal, or uncertain outcomes using run-fenced status.
+The starter graph names the button **Forward: move arm** and the reader **Return: arm state**. Its explicit monitor settings refresh EI at 10 Hz and the UI at 5 Hz. On a fresh canvas, the control chain runs left to right in the upper lane and the observation chain runs right to left below it. The lane arrangement is UI layout only; dragging a node keeps the authored position locally. The two chains have no edge between them. EOS reads the same mock arm sampler locally for the return chain without creating another actuator route.
 
-Every edge is declared in the graph: UI producer → IsOS gateway → EOS gateway → primitive binding → hardware. The port data type and delivery mode must agree. Bridge capabilities allow the explicit HTTP transitions; they do not turn arbitrary edges into transport calls. The graph stores no bearer secret, endpoint URL, or unverified executable path. The [package design](packages.md) explains exact-pin resolution and [server design](server.md) explains the IsOS module boundary.
+## Control
+
+`isos/ui/button/trigger` → `ei/io/input/trigger` → `ei/cognition/intent/forwarder` → `ei/governance/safety/gate` → `eos/interface/ingress/trigger` → `eos/skill/demo/joint_delta` → `eos/dispatcher/arm/delta` → `eos/hardware/mock/arm`.
+
+The button emits a run-fenced `button_activation@v0.2` without a movement target. EI validates and passes the activation. EOS creates a bounded `arm_joint_delta@v0.2` and admits it through the dispatcher before updating the mock adapter. The saved graph cannot create a second actuator route.
+
+## Observation
+
+The independent observation source `eos/hardware/mock/arm_observer` → `eos/dispatcher/arm/monitor` → `eos/skill/demo/arm_status` → `eos/interface/egress/arm_status` → `ei/io/input/arm_status` → `ei/cognition/state/arm_status` → `ei/governance/monitor/arm_status` → `isos/ui/monitor/arm`.
+
+This path carries `arm_monitor_state@v0.2`. EOS samples and checks the arm locally at 100 Hz, lets EI poll the latest state at up to 20 Hz, and the UI refreshes at up to 5 Hz. EI and UI polling are independent of local EOS safety checks; a slow UI read does not hold the control path. EOS alone blocks movement on stale or invalid local samples. Stop and run changes clear the displayed positions.
+
+The 2026-11-10 two-chain check traversed the saved pool graph and found 16 nodes, 14 edges, and two components of eight nodes. `ISOS_AETHER_BIN_DIR=$PWD/target/debug cargo test -p isos --no-fail-fast` passed (284 unit and 18 integration tests); `cargo fmt --all -- --check` and `python3 scripts/check_doc_links.py --all` passed. Complete IsOS test output is under ignored `data/test/async-two-chain-20261110/`.
+
+The [button event](../interfaces/ui/node-events.md), [monitor state](../interfaces/ui/node-monitor.md), and [data types](../interfaces/node/data-types.md) define the external boundaries.
 
 [中文](../../../docs_cn/isos/design/control-path_cn.md)

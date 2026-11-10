@@ -196,11 +196,11 @@ class SessionLogCollector:
     self.layout = layout
     self.config = config
     self.session_id = str(uuid.uuid4())
-    self.sessions_dir = layout.log / "island/sessions"
-    self.runtime_dir = layout.run / "island/sessions"
+    self.sessions_dir = layout.component_log("isos") / "sessions"
+    self.runtime_dir = layout.component_run("isos") / "sessions"
     # Linux limits AF_UNIX paths to 107 bytes. Keep the endpoint directly
     # below the run root and use metadata for the full session identity.
-    self.socket_path = layout.run / f"i-{self.session_id[:8]}.sock"
+    self.socket_path = layout.component_run("isos") / f"i-{self.session_id[:8]}.sock"
     self.log_path = self.sessions_dir / f"{self.session_id}.jsonl"
     self._socket: socket.socket | None = None
     self._handler: _PlainRotatingHandler | None = None
@@ -265,10 +265,8 @@ class SessionLogCollector:
       "timestamp", sanitized.pop("source_timestamp", None)
     )
     logger_name = str(sanitized.get("logger", ""))
-    if logger_name.startswith("egia_ext.tui"):
-      component = "tui"
-    elif logger_name.startswith("egia.") and component == "unknown":
-      component = "egia"
+    if logger_name.startswith("ei.") and component == "unknown":
+      component = "ei"
     with self._lock:
       self._sequence += 1
       record = {

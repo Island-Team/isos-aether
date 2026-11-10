@@ -1,8 +1,9 @@
 # UI node boundaries
 
-These pages are for IsosUI producers and consumers. The graph gives each UI node a registered type and typed ports. IsOS currently accepts a run-fenced key-state event through a node output and can select display metadata from registered output types; the producer owns payload bytes and endpoint authorization.
+These pages are for IsosUI producers and consumers. The graph gives each UI node a registered type and typed ports. IsOS accepts run-fenced button activation and serves a read-only arm monitor through declared nodes.
 
-- [Node events](node-events.md) defines the authenticated key-state request, activation ordering, and graph-owned movement settings for the first control input.
+- [Node events](node-events.md) defines the authenticated button activation request.
+- [Arm monitor](node-monitor.md) defines the return chain and read-only UI endpoint.
 - [Selection](selection.md) defines codec, media, schema, payload, and run-fence checks when a UI chooses how to display an output.
 - [Presentation](presentation.md) defines the owner descriptor and output identity that a UI may display; it does not grant a private endpoint.
 

@@ -24,9 +24,15 @@ describe('IsOS API client', () => {
     await expect(request('/graph', 'PUT', { revision: 'old' })).rejects.toMatchObject({ name: 'IsosApiError', status: 409, message: expect.stringContaining('Refresh before applying') });
   });
 
+  it('distinguishes a stale active run from an editor revision conflict', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ schema_version: '0.1.0', ok: false, data: null, error: { code: 'graph_fence_stale', message: 'active graph changed', details: null, correlation_id: 'req-2' } }) }));
+    const { request } = await import('./api-client');
+    await expect(request('/nodes/monitor')).rejects.toMatchObject({ name: 'IsosApiError', status: 409, code: 'graph_fence_stale', message: expect.stringContaining('active run uses an older graph') });
+  });
+
   it('rejects a mismatched API envelope', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ schema_version: 2, ok: true, data: {}, error: null }) }));
     const { request } = await import('./api-client');
-    await expect(request('/graph')).rejects.toThrow('needs the IsOS v1 API');
+    await expect(request('/graph')).rejects.toThrow('unsupported API schema version');
   });
 });

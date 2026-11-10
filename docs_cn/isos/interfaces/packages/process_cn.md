@@ -1,6 +1,6 @@
 # 通用进程贡献
 
-[English](../../../../docs/isos/interfaces/packages/process.md) · [资源](resources_cn.md) · [所有者交接](../cores/handoff_cn.md)
+[English](../../../../docs/isos/interfaces/packages/process.md) · [资源](resources_cn.md) · [所有者交接](../core/handoff_cn.md)
 
 `node_contributions.processes[]` 条目描述软件包进程，但不授予启动权限。IsOS 解析精确且已验证的锁定，匹配注册节点类型与位置，检查所声明的资源 ID 与摘要，并选择所属核心。所有者验证其生命周期适配器。IsOS 仅监护 IsOS 自有直接子进程；其他核心监护自己的子进程。
 
@@ -12,7 +12,7 @@
 | `resources` | 数组 / 设置引用 | 每个设置指向已注册资源类别和描述符；选择的 ID 在验证发行包中解析。 | 无资源时为空。 |
 | `host_inputs` | 数组 / 主机需求声明 | 所有者验证命名输入；其值不进入发行包或保存的图。 | 无需求时为空。 |
 
-绑定的 `isos.package-process@v1` 交接携带已验证可执行文件和资源、所属核心、生命周期适配器、运行 ID 及保存的修订。依赖顺序及就绪/停止条件保留在 IsOS 运行时计划和所有者策略中，不是该交接的字段。所有者拒绝、就绪失败或停止不确定均不能变成成功替换。[交接契约](../cores/handoff_cn.md)定义通信字段。
+绑定的 `isos.package-process@v1` 交接携带已验证可执行文件和资源、所属核心、生命周期适配器、运行 ID 及保存的修订。依赖顺序及就绪/停止条件保留在 IsOS 运行时计划和所有者策略中，不是该交接的字段。所有者拒绝、就绪失败或停止不确定均不能变成成功替换。[交接契约](../core/handoff_cn.md)定义通信字段。
 
 ## 通用技能选择
 

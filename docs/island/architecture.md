@@ -1,38 +1,27 @@
-# IsOS 0.2.1 architecture target
+# IsOS product architecture
 
-[中文](../../docs_cn/island/architecture_cn.md) · [Unification design](unification-v0.2.1.md) · [Data flow](layer-dataflow.md) · [Conventions](conventions.v1.3.1.md)
+[中文](../../docs_cn/island/architecture_cn.md) · [Conventions](conventions.v1.4.0.md)
 
-**Integration target, unreleased.** IsOS (Island OS) is the product and the only core in new deployment graphs. EOS (Embodied OS) and EI (Embodied Intelligence, formerly EGIA) remain separately supervised processes with distinct safety and lifecycle owners. IsosUI is the graph editor and operator workbench in the same repository. The external `island/mujoco-sim@0.1.1` package supplies the verified simulator; it is not imported into this repository. The existing public EOS `0.2.0` release remains historical evidence. No `v0.2.1` tag or product release is made by this integration.
+IsOS, EI, and EOS are three independent runtime cores. IsOS owns saved graph revisions, exact package verification, Apply, deployment run identity, and the local UI API. EI owns cognition and its safety gate. EOS owns dispatcher admission, hardware adapters, and the mock arm's local safety decision. The browser and terminal clients use IsOS.
 
-## Graph and source layout
+## Current graph and runtime
 
-The graph hierarchy remains `core → layer → group → node`. Graph format `0.2.0` has one `isos` core. IsOS manager layers keep their names; EOS domains use `eos_*` layers, EI domains use `ei_*` layers, and browser nodes use `ui`. New registered type IDs have the form `isos.<layer>.<name>@v0.2`. Group and instance IDs survive migration when their destination paths are unambiguous. The product source version is `0.2.1`; graph, type, HTTP, protobuf, package and simulator versions are independent.
+Graph `0.2.0` uses `core → layer → group → node` and registered `<core>.<layer>.<group>.<node>@v0.2` types. Each core publishes and validates its types. IsOS admits the complete graph, then gives EI and EOS their own projections. The [starter graph](../../crates/isos/templates/generic-graph.toml) has 16 nodes and 15 typed edges: eight nodes carry a button activation to the mock six-joint arm; eight nodes carry an observation from that same arm back to the IsOS UI monitor. The observation output is read-only and creates no second actuator route.
 
-| Source | Owner | Entry |
+| Core | Current responsibility | Runtime boundary |
 | --- | --- | --- |
-| `crates/isos/` | Graph, package admission, revision, process supervision, local API and logs | [IsOS guide](../isos/README.md) |
-| `crates/aether-*` and EOS contracts | Device adapters, health, Dispatcher admission, command outcomes and MuJoCo direct child | [EOS guide](../eos/README.md) |
-| `ei/` | Cognition, stage data, model calls and EI safety | [EI guide](../ei/README.md) |
-| `ui/` | Graph editor, status, logs, Vision and admitted browser controls | [IsosUI guide](../isosui/README.md) |
+| IsOS | Graph, packages, Apply, run fence, local API, UI monitor | Manager and workbench |
+| EI | Input, cognition, safety gate, monitor forwarding | Persistent owner service and worker |
+| EOS | Ingress, skill, dispatcher, mock adapter, local observation checks | Persistent owner service and worker |
 
-## Configuration and runtime flow
+The button emits a run-fenced activation. EI passes it through input, cognition, and governance; EOS durably accepts it, maps it to a bounded six-joint delta, and admits it through the dispatcher. IsosUI reads the eventual command result by event ID. EOS samples the same mock arm locally at 100 Hz and checks freshness and validity before another movement. EI refreshes one latest checked snapshot at up to 20 Hz independently of readers; IsOS shares a validated snapshot for up to 200 ms among UI readers, which refresh at up to 5 Hz. Stop and run replacement clear prior-run monitor values. See the [node interface](../isos/interfaces/node/README.md), [EI setup](../ei/interfaces/setup.md), and [EOS owner health](../eos/interfaces/owner-health.md) for current contracts.
 
-IsOS validates the whole graph and selected package receipts, then writes revision-bound EOS and EI projections. Each child validates its own projection before readiness. The graph is an address and configuration authority; crossing a process boundary still requires an explicit owned transport. EI safety may reject a proposal. EOS Dispatcher remains the only actuator admission route, regardless of whether the request comes from EI or the browser bridge. EOS reads the applied graph without mutating it and stops admitted actuators before terminating its MuJoCo child. IsOS orders dependent process Stop and reaps its direct children.
+EI and EOS expose private Run, Status, and Stop interfaces. IsOS starts missing owner services, reconnects after a manager restart, and asks each owner to supervise its worker. Status is read independently from both owners. Explicit Stop requests both owners and records their confirmations. EOS stops admitted actuators before terminating a simulator child when one is present.
 
-```mermaid
-flowchart LR
-  UI[IsosUI] -->|Validate and Apply| OS[IsOS single graph core]
-  OS -->|revision-bound projection| EOS[EOS process]
-  OS -->|revision-bound projection| EI[EI process]
-  EI -->|typed gRPC request| EOS
-  UI -->|bounded live request| BR[EOS loopback bridge]
-  BR --> EOS
-  EOS -->|admission| D[Dispatcher]
-  D -->|admitted adapter call| SIM[External MuJoCo child]
-```
+## Cross-owner contracts
 
-For first use, verify the external MuJoCo package, migrate a supported old graph if needed, Validate and Apply, launch the revision, inspect owner readiness, camera data and one admitted control result, then exercise failure, restart and safe Stop. [IsOS usage](../isos/usage/README.md) owns operator commands; [layer data flow](layer-dataflow.md) explains the boundaries.
+Typed edges admit only the declared command and observation routes. Private owner exchanges carry run and revision identity; each owner validates its own payload and rejects stale or mismatched data. The graph describes the route, while owner services carry live values.
 
-## Compatibility and evidence
+## Target architecture (not implemented)
 
-Supported `0.1.0` graphs with `isos`, `eos`, `egia` and `isosui` cores remain read-only until an explicit, atomic migration rewrites paths, type IDs, references, edges, bindings and generated configuration together. Unknown types, duplicate destination paths and ambiguous mappings produce source-path diagnostics and leave original bytes and revision intact. Safe legacy `1.0.0` reads remain available where documented. Existing EOS HTTP v2, protobuf identities and simulator socket contracts retain their independent versioning unless an owner contract changes them explicitly. Historical qualification pages in this directory record the commits and behavior tested at their original dates; they are not claims that this 0.2.1 target is released.
+Future algorithms may replace the demo's pass-through cognition and fixed joint-delta skill with owner-defined processing while preserving typed graph admission, run/revision fencing, and EOS-only actuator admission. A future push-based monitor transport should retain bounded latest-state delivery so UI or EI delay cannot block EOS's local 100 Hz checks. These are architecture targets, not current graph interfaces.

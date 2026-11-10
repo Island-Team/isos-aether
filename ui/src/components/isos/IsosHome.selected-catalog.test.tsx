@@ -18,7 +18,7 @@ vi.mock('@/services/isos/node-graph', async (importOriginal) => ({
   stopProcesses: mocks.stop,
 }));
 
-const graph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+const graph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
 const snapshot = (revision: string): GraphCatalogSnapshot => ({ graph: { revision, graph }, selected: { types: [] }, global: { types: [] }, reason: null });
 const status: ProcessStatus = { schema_version: '1.0.0', state: 'running', run_id: 'run-a', run_id_state: 'known', saved_revision: 'b'.repeat(64), active_revision: 'b'.repeat(64), processes: [] };
 

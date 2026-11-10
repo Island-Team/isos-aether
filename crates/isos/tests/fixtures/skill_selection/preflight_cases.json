@@ -8,12 +8,12 @@
     "generation": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "run_id": "candidate-1",
     "selection_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "libraries": [
+    "executables": [
       {
         "package_id": "island/example-skills",
         "package_version": "0.1.0",
-        "library": "lib/island/skills/example.skill.so",
-        "library_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "executable": "lib/island/skills/example.skill",
+        "executable_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "abi_version": 2,
         "skill_count": 1
       }
@@ -28,7 +28,7 @@
   "cases": [
     {
       "id": "R04-IPF01",
-      "mutation": "valid exact candidate verifier, saved revision, selected binary and ABI v2 library",
+      "mutation": "valid exact candidate verifier, saved revision, selected binary and ABI v2 executable",
       "expected": "single_success_line_exact_echo_and_ordered_digests_workers_reaped_old_run_live",
       "isos_code": null
     },
@@ -58,7 +58,7 @@
     },
     {
       "id": "R04-IPF05",
-      "mutation": "duplicate skill identity across selected libraries",
+      "mutation": "duplicate skill identity across selected executables",
       "expected": "rejected_before_old_pid_stop_or_execute_checked_grant_retirement",
       "isos_code": "skill_catalog_preflight_rejected",
       "eos_stage": "catalog",
@@ -128,7 +128,7 @@
     },
     {
       "id": "R04-IPF15",
-      "mutation": "selected library changes after old stop but before replacement EOS admission",
+      "mutation": "selected executable changes after old stop but before replacement EOS admission",
       "expected": "fresh_launch_admission_rejects_and_existing_recovery_path_runs_no_cached_probe_authority",
       "isos_code": null
     },

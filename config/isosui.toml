@@ -1,0 +1,10 @@
+# Non-secret defaults for browser and terminal clients, served by IsOS.
+# Process environment may override each field with ISOSUI_DEFAULT_INTERFACE,
+# ISOSUI_LOCALE, ISOSUI_STARTUP_TIMEOUT_MS, or ISOSUI_POLL_INTERVAL_MS.
+[ui]
+default_interface = "web" # web or tui
+locale = "en" # en or cn
+
+[connection]
+startup_timeout_ms = 30000 # 1000 to 60000; wait for an auto-started IsOS server
+poll_interval_ms = 2000 # 500 to 10000; TUI status refresh interval

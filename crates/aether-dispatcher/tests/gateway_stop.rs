@@ -16,7 +16,7 @@ use aether_hal::{
   NodeStatus, Profile, SampleMeta,
 };
 
-const BASE_A: &str = "cores/eos/layers/hardware/groups/base/nodes/a";
+const BASE_A: &str = "cores/isos/layers/eos_hardware/groups/base/nodes/a";
 
 pub(crate) struct ProofBase {
   state: Mutex<NodeState>,
@@ -187,7 +187,7 @@ fn profile() -> Profile {
 
 fn profile_with_nodes(ids: &[&str]) -> Profile {
   Profile::from_toml(&format!(
-    "version = \"1.0.0\"\n[robot]\nid = \"r\"\nname = \"R\"\n{}",
+    "version = \"0.2.0\"\n[robot]\nid = \"r\"\nname = \"R\"\n{}",
     ids.iter().map(|id| node_toml(id)).collect::<String>()
   ))
   .unwrap()
@@ -195,7 +195,7 @@ fn profile_with_nodes(ids: &[&str]) -> Profile {
 
 fn node_toml(id: &str) -> String {
   format!(
-    "[cores.eos.layers.hardware.groups.base.nodes.{id}]\nid = \"{id}\"\nnode_type = \"eos.hardware.base@v1.0\"\nlabel = \"{id}\"\ndescription = \"Proof base\"\nframe_id = \"base_link\"\ncapabilities = [\"body_velocity\"]\n[cores.eos.layers.hardware.groups.base.nodes.{id}.adapter]\ntype = \"mock\"\n[cores.eos.layers.hardware.groups.base.nodes.{id}.health_timing]\npoll_interval_ms = 10\nstale_after_ms = 1000\n[cores.eos.layers.hardware.groups.base.nodes.{id}.observation]\nmax_rate_hz = 50.0\nmax_payload_bytes = 4096\n[cores.eos.layers.hardware.groups.base.nodes.{id}.movement]\nmodes = [\"body_velocity\"]\n[cores.eos.layers.hardware.groups.base.nodes.{id}.movement.limits]\nmax_linear_m_s = 1.0\nmax_angular_rad_s = 1.0\nmax_velocity_lease_ms = 500\n[cores.eos.layers.dispatcher.groups.control.nodes.{id}]\nid = \"{id}\"\nnode_type = \"eos.dispatcher.control@v1.0\"\nlabel = \"Control\"\ndescription = \"Control\"\n[cores.eos.layers.hardware.groups.base.nodes.{id}.inputs.command]\nnode = \"cores/eos/layers/dispatcher/groups/control/nodes/{id}\"\noutput = \"base_command\"\n"
+    "[cores.isos.layers.eos_hardware.groups.base.nodes.{id}]\nid = \"{id}\"\nnode_type = \"isos.eos_hardware.base@v0.2\"\nlabel = \"{id}\"\ndescription = \"Proof base\"\nframe_id = \"base_link\"\ncapabilities = [\"body_velocity\"]\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.adapter]\ntype = \"mock\"\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.health_timing]\npoll_interval_ms = 10\nstale_after_ms = 1000\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.observation]\nmax_rate_hz = 50.0\nmax_payload_bytes = 4096\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.movement]\nmodes = [\"body_velocity\"]\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.movement.limits]\nmax_linear_m_s = 1.0\nmax_angular_rad_s = 1.0\nmax_velocity_lease_ms = 500\n[cores.isos.layers.eos_dispatcher.groups.control.nodes.{id}]\nid = \"{id}\"\nnode_type = \"isos.eos_dispatcher.control@v0.2\"\nlabel = \"Control\"\ndescription = \"Control\"\n[cores.isos.layers.eos_hardware.groups.base.nodes.{id}.inputs.command]\nnode = \"cores/isos/layers/eos_dispatcher/groups/control/nodes/{id}\"\noutput = \"base_command\"\n"
   )
 }
 
@@ -367,11 +367,30 @@ fn shared_managed_fixture(
     physical_calls: AtomicUsize::new(0),
   });
   let base = node_toml("a")
-    .replace("[cores.eos.layers.hardware.groups.base.nodes.a.adapter]",
-      "references = [\"cores/eos/layers/process/groups/backend/nodes/simulator\"]\n[cores.eos.layers.hardware.groups.base.nodes.a.adapter]")
-    .replace("type = \"mock\"", "type = \"mujoco-v2\"\n[cores.eos.layers.hardware.groups.base.nodes.a.adapter.settings]\nsocket_path = \"/tmp/r06-stub.sock\"\nsimulator_node = \"base-0\"\ndevice_id = \"base-0\"\nbackend = \"cores/eos/layers/process/groups/backend/nodes/simulator\"");
-  let source = format!("version = \"1.0.0\"\n[robot]\nid = \"r\"\nname = \"R\"\n{base}\n[cores.eos.layers.process.groups.backend.nodes.simulator]\nid = \"simulator\"\nnode_type = \"eos.process.backend@v1.0\"\nlabel = \"Simulator\"\ndescription = \"Stub backend\"\ncapabilities = [\"process\"]\n[cores.eos.layers.process.groups.backend.nodes.simulator.settings]\npackage = \"island/mujoco-sim\"\nversion = \"0.1.1\"\nscene = \"pick-place\"\nsocket = \"/tmp/r06-stub.sock\"\n");
-  let profile = Profile::from_toml(&source).unwrap();
+    .replace("type = \"mock\"", "type = \"mujoco-v2\"\n[cores.isos.layers.eos_hardware.groups.base.nodes.a.adapter.package]\nid = \"island/mujoco-sim\"\nversion = \"0.1.1\"\n[cores.isos.layers.eos_hardware.groups.base.nodes.a.adapter.settings]\nsocket_path = \"/tmp/r06-stub.sock\"\nsimulator_node = \"base-0\"\ndevice_id = \"base-0\"\nbackend = \"cores/isos/layers/eos_process/groups/mujoco/nodes/simulator\"")
+    .replace("[cores.isos.layers.eos_hardware.groups.base.nodes.a.adapter]", "references = [\"cores/isos/layers/eos_process/groups/mujoco/nodes/simulator\"]\n[cores.isos.layers.eos_hardware.groups.base.nodes.a.adapter]");
+  let source = format!("version = \"0.2.0\"\n[robot]\nid = \"r\"\nname = \"R\"\n{base}\n[cores.isos.layers.eos_process.groups.mujoco.nodes.simulator]\nid = \"simulator\"\nnode_type = \"isos.eos_process.mujoco@v0.2\"\nlabel = \"Simulator\"\ndescription = \"Stub backend\"\n[cores.isos.layers.eos_process.groups.mujoco.nodes.simulator.package]\nid = \"island/mujoco-sim\"\nversion = \"0.1.1\"\n[cores.isos.layers.eos_process.groups.mujoco.nodes.simulator.settings]\nscene = \"pick-place\"\nsocket = \"/tmp/r06-stub.sock\"\n");
+  let published: serde_json::Value = serde_json::from_str(include_str!(
+    "../../isos/tests/fixtures/packages/mujoco_published_0_1_1.json"
+  ))
+  .unwrap();
+  let mut process = published["node_contributions"]["node_types"]
+    .as_array()
+    .unwrap()
+    .iter()
+    .find(|node| node["id"] == "eos.process.mujoco@v0.1")
+    .unwrap()
+    .clone();
+  process["id"] = serde_json::json!("isos.eos_process.mujoco@v0.2");
+  process["core"] = serde_json::json!("isos");
+  process["layer"] = serde_json::json!("eos_process");
+  let contribution: aether_hal::NodeTypeContribution = serde_json::from_value(serde_json::json!({
+    "package":{"id":"island/mujoco-sim","version":"0.1.1"}, "node_types":[process], "safety_adapters":[], "data_types":[],
+    "adapter_families":published["node_contributions"]["adapter_families"]
+  })).unwrap();
+  let mut registry = aether_hal::NodeTypeRegistry::builtin();
+  registry.register_contribution(contribution).unwrap();
+  let profile = Profile::from_toml_with_registry(&source, &registry).unwrap();
   let dispatcher = Arc::new(
     Dispatcher::new_durable_managed(
       &profile,
@@ -457,7 +476,7 @@ fn closed_managed_shutdown_gate_rejects_late_public_stop() {
   let (dispatcher, adapter, _) = shared_managed_fixture(&path);
   dispatcher.quiesce();
   let late = dispatcher.dispatch_managed_stop_checked(
-    managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+    managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
     stop(
       "late-estop",
       StopKind::SafetyEstop {
@@ -482,7 +501,7 @@ fn failed_admitted_estop_latch_cannot_be_hidden_by_later_routine_marker_write() 
   std::fs::rename(&control, &saved).unwrap();
   std::fs::create_dir(&control).unwrap();
   let result = dispatcher.dispatch_managed_stop_checked(
-    stop_context(AuthorityRole::EgiaControl, "safety.estop", None),
+    stop_context(AuthorityRole::EiControl, "safety.estop", None),
     stop(
       "failed-estop-latch",
       StopKind::SafetyEstop {
@@ -551,7 +570,7 @@ fn routine_shutdown_physical_stop_preempts_stalled_movement_journal() {
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("stalled-before-routine-shutdown"),
       )
     })
@@ -591,7 +610,7 @@ fn managed_whole_robot_stop_preempts_blocked_release_and_fences_late_completion(
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("old-epoch"),
       )
     })
@@ -668,7 +687,7 @@ fn managed_stop_reaches_physical_lane_while_releasing_journal_is_stalled() {
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("stalled-releasing"),
       )
     })
@@ -725,7 +744,7 @@ fn managed_emergency_stop_reaches_physical_lane_while_journal_is_stalled() {
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("stalled-before-shutdown"),
       )
     })
@@ -806,7 +825,7 @@ fn browser_worker_stalled_at_journal_cannot_delay_managed_physical_stop() {
   std::fs::remove_dir_all(path).unwrap();
 }
 
-const BINDING_A: &str = "cores/eos/layers/dispatcher/groups/primitive_base/nodes/velocity_a";
+const BINDING_A: &str = "cores/isos/layers/eos_dispatcher/groups/primitive_base/nodes/velocity_a";
 const REVISION_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 pub(crate) fn managed_fixture(
@@ -931,7 +950,7 @@ fn browser_result_requires_current_run_operator_and_private_movement_ingress() {
     AuthorityRole::OperatorControl,
     AdmissionIngress::PrivateBridge,
   );
-  let grpc = managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc);
+  let grpc = managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc);
   assert_eq!(
     dispatcher
       .dispatch_managed_movement(private, move_a("browser-command"))
@@ -955,7 +974,7 @@ fn browser_result_requires_current_run_operator_and_private_movement_ingress() {
     assert!(dispatcher.browser_result_authorized(id, "run-a").is_none());
   }
   let stopped = dispatcher.dispatch_managed_stop_checked(
-    stop_context(AuthorityRole::EgiaControl, "safety.estop", None),
+    stop_context(AuthorityRole::EiControl, "safety.estop", None),
     stop(
       "stop-command",
       StopKind::SafetyEstop {
@@ -1322,7 +1341,7 @@ fn managed_movement_identity_and_owner_survive_restart_without_replay() {
   let b = Arc::new(ProofBase::new());
   let clock = Arc::new(ManualClock::new(0, None));
   let dispatcher = managed_fixture(&path, a.clone(), b.clone(), clock.clone(), "run-a");
-  let ctx = managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc);
+  let ctx = managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc);
   let request = move_a("managed-one");
   assert_eq!(
     dispatcher.dispatch(request.clone()).status,
@@ -1356,7 +1375,7 @@ fn managed_movement_identity_and_owner_survive_restart_without_replay() {
     Err(GatewayLookupError::Unauthorized)
   );
   assert!(dispatcher
-    .gateway_operation_authorized("managed-one", "run-a", AuthorityRole::EgiaControl)
+    .gateway_operation_authorized("managed-one", "run-a", AuthorityRole::EiControl)
     .unwrap()
     .is_some());
   assert_eq!(
@@ -1365,7 +1384,7 @@ fn managed_movement_identity_and_owner_survive_restart_without_replay() {
   );
   assert_eq!(
     dispatcher
-      .cancel_authorized("managed-one", "run-a", AuthorityRole::EgiaControl)
+      .cancel_authorized("managed-one", "run-a", AuthorityRole::EiControl)
       .unwrap()
       .status,
     OutcomeStatus::Completed
@@ -1390,7 +1409,7 @@ fn managed_movement_identity_and_owner_survive_restart_without_replay() {
   );
   assert_eq!(a.movement_calls(), 1);
   assert_eq!(
-    restarted.gateway_operation_authorized("managed-one", "run-b", AuthorityRole::EgiaControl),
+    restarted.gateway_operation_authorized("managed-one", "run-b", AuthorityRole::EiControl),
     Err(GatewayLookupError::WrongRun)
   );
   drop(restarted);
@@ -1413,7 +1432,7 @@ fn managed_binding_role_freshness_and_limits_fail_before_release() {
   let b = Arc::new(ProofBase::new());
   let clock = Arc::new(ManualClock::new(0, None));
   let dispatcher = managed_fixture(&path, a.clone(), b, clock.clone(), "run-a");
-  let ctx = managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc);
+  let ctx = managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc);
   for (id, invalid) in [
     (
       "role",
@@ -1431,7 +1450,7 @@ fn managed_binding_role_freshness_and_limits_fail_before_release() {
     (
       "binding",
       AdmissionContext {
-        binding_path: "cores/eos/layers/dispatcher/groups/primitive_base/nodes/other".into(),
+        binding_path: "cores/isos/layers/eos_dispatcher/groups/primitive_base/nodes/other".into(),
         ..ctx.clone()
       },
     ),
@@ -1444,7 +1463,7 @@ fn managed_binding_role_freshness_and_limits_fail_before_release() {
     );
   }
   let mut wrong_target = move_a("target");
-  wrong_target.node_path = "cores/eos/layers/hardware/groups/base/nodes/b".into();
+  wrong_target.node_path = "cores/isos/layers/eos_hardware/groups/base/nodes/b".into();
   assert_eq!(
     dispatcher
       .dispatch_managed_movement(ctx.clone(), wrong_target)
@@ -1505,7 +1524,7 @@ fn managed_stop_recovery_is_operator_only_and_estop_ignores_stale_revision() {
   let clock = Arc::new(ManualClock::new(0, None));
   a.movement_outcome(CommandOutcome::Ambiguous);
   let dispatcher = managed_fixture(&path, a.clone(), b.clone(), clock, "run-a");
-  let movement = managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc);
+  let movement = managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc);
   assert_eq!(
     dispatcher
       .dispatch_managed_movement(movement, move_a("uncertain"))
@@ -1516,10 +1535,10 @@ fn managed_stop_recovery_is_operator_only_and_estop_ignores_stale_revision() {
   let robot = StopKind::RobotStop {
     robot_id: "r".into(),
   };
-  let egia = stop_context(AuthorityRole::EgiaControl, "robot.stop", Some(REVISION_A));
+  let ei = stop_context(AuthorityRole::EiControl, "robot.stop", Some(REVISION_A));
   assert_eq!(
     dispatcher
-      .dispatch_managed_stop_checked(egia, stop("egia-recovery", robot.clone(), true))
+      .dispatch_managed_stop_checked(ei, stop("ei-recovery", robot.clone(), true))
       .result()
       .status,
     OutcomeStatus::Rejected
@@ -1553,7 +1572,7 @@ fn managed_stop_recovery_is_operator_only_and_estop_ignores_stale_revision() {
     OutcomeStatus::Rejected
   );
   assert_eq!(a.calls() + b.calls(), before);
-  let estop = stop_context(AuthorityRole::EgiaControl, "safety.estop", None);
+  let estop = stop_context(AuthorityRole::EiControl, "safety.estop", None);
   assert_eq!(
     dispatcher
       .dispatch_managed_stop_checked(
@@ -1596,13 +1615,13 @@ fn managed_generation_seals_historical_operation_identity_and_raw_stop() {
     "run-a",
   );
   assert_eq!(
-    managed.gateway_operation_authorized("historical", "run-a", AuthorityRole::EgiaControl),
-    Err(GatewayLookupError::LegacyRecord)
+    managed.gateway_operation_authorized("historical", "run-a", AuthorityRole::EiControl),
+    Err(GatewayLookupError::UnadmittedRecord)
   );
   assert_eq!(
     managed
       .dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("historical")
       )
       .status,
@@ -1635,7 +1654,7 @@ fn old_revision_submit_cannot_replay_success_after_new_generation() {
   let b = Arc::new(ProofBase::new());
   let clock = Arc::new(ManualClock::new(0, None));
   let old = managed_fixture(&path, a.clone(), b.clone(), clock.clone(), "run-a");
-  let ctx = managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc);
+  let ctx = managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc);
   assert_eq!(
     old
       .dispatch_managed_movement(ctx.clone(), move_a("old-success"))
@@ -1653,7 +1672,7 @@ fn old_revision_submit_cannot_replay_success_after_new_generation() {
   assert_eq!(a.movement_calls(), 1);
   assert_eq!(
     current
-      .gateway_operation_authorized("old-success", "run-a", AuthorityRole::EgiaControl)
+      .gateway_operation_authorized("old-success", "run-a", AuthorityRole::EiControl)
       .unwrap()
       .unwrap()
       .status,
@@ -1677,7 +1696,7 @@ fn managed_queued_movement_rechecks_fake_clock_before_adapter_release() {
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         move_a("prior"),
       )
     })
@@ -1689,7 +1708,7 @@ fn managed_queued_movement_rechecks_fake_clock_before_adapter_release() {
       let mut request = move_a("queued");
       request.meta.deadline_monotonic_ns = 300_000_000;
       dispatcher.dispatch_managed_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::Grpc),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::Grpc),
         request,
       )
     })
@@ -1713,7 +1732,7 @@ fn skill_revocation_before_durable_release_never_calls_adapter() {
   let dispatcher = managed_fixture(&path, a.clone(), b, clock, "run-a");
   let revoked = AtomicBool::new(true);
   let result = dispatcher.dispatch_skill_movement(
-    managed_context(AuthorityRole::EgiaControl, AdmissionIngress::SkillWorker),
+    managed_context(AuthorityRole::EiControl, AdmissionIngress::SkillWorker),
     move_a("skill-revoked-before-release"),
     &revoked,
   );
@@ -1739,7 +1758,7 @@ fn skill_cancel_after_durable_release_is_bounded_and_latches_unknown() {
     let revoked = revoked.clone();
     std::thread::spawn(move || {
       dispatcher.dispatch_skill_movement(
-        managed_context(AuthorityRole::EgiaControl, AdmissionIngress::SkillWorker),
+        managed_context(AuthorityRole::EiControl, AdmissionIngress::SkillWorker),
         move_a("skill-releasing"),
         &revoked,
       )
@@ -1752,7 +1771,7 @@ fn skill_cancel_after_durable_release_is_bounded_and_latches_unknown() {
     let dispatcher = dispatcher.clone();
     std::thread::spawn(move || {
       let result =
-        dispatcher.cancel_authorized("skill-releasing", "run-a", AuthorityRole::EgiaControl);
+        dispatcher.cancel_authorized("skill-releasing", "run-a", AuthorityRole::EiControl);
       cancel_tx.send(result).unwrap();
     })
   };
