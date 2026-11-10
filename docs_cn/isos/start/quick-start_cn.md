@@ -8,7 +8,7 @@
 2. 运行 `isos config init`。已保存的演示图位于所选 IsOS 主目录的 `config/graph-pool/demo.nodes.json`；部署只保存图库名称绑定。
 3. 验证并 Apply 该图库文件。Apply 的 `--revision` 必须是其当前字节的精确 SHA-256；`config apply --file` 只接受图库中的文件。
 4. 用 `isos web` 打开工作台（或用 `isos serve` 在前台启动服务器）。这会启动 IsOS 和空闲的归属方目录服务，但不会启动 EI 或 EOS 部署工作进程。拖动节点只修改浏览器保存的画布布局。准备执行时，在工作台使用 **保存并运行**，或明确运行 `isos start` / `isos run`。随后查看 `isos status --json`：EI 应为 `running`，EOS 应为 `ready`，EOS 模拟适配器应为 `ready`。
-5. 在工作台点击按钮节点上的 **Activate**。按钮先显示已接受的事件 ID，然后单独读取关联结果；每个获准且成功的不同激活事件使模拟机械臂按固定的小关节增量移动。检查最终位置、独立的机械臂监控快照和归属方日志。然后运行 `isos deployment stop` 停止两个核心。`isos stop` 只停止 IsOS 管理器，独立的核心服务仍运行。
+5. 在工作台点击按钮节点上的 **Activate**。按钮先显示已接受的事件 ID，然后单独读取关联结果；每个获准且成功的不同激活事件使模拟机械臂按固定的小关节增量移动。检查最终位置、独立的机械臂监控快照和归属方日志。然后运行 `isos deployment stop` 停止两个核心。按 Ctrl+C 关闭前台 `isos run` 会话。`isos stop` 使用已配置的口令执行工作区紧急停止。
 
 修改选定的核心二进制后，先重新 Apply 图，再 Run，以更新经过验证的启动输入摘要。IsOS 退出后 EI 和 EOS 可继续运行；重启 IsOS 并读取状态即可重新连接。某个核心失败时会单独报告，健康核心保持运行。参见[运行时设计与重放](../design/runtime/owner-health_cn.md)及[图 API](../interfaces/http/graph_cn.md)。
 
