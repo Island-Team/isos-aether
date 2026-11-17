@@ -5,11 +5,14 @@ use thiserror::Error;
 
 mod registry;
 mod edge_contract;
-pub const GRAPH_VERSION: &str = "0.2.0";
+pub mod isolated;
+pub mod scene_data;
+pub mod vision_flow;
+pub const GRAPH_VERSION: &str = "0.2.1";
 pub use registry::{
-  is_eos_backend_type, AdapterFamilyDescriptor, BridgeDeclaration, CatalogAdapterFamily, DataClass,
-  DeliveryMode, DataTypeDescriptor, Lifecycle, NodeType, NodeTypeContribution, NodeTypeRegistry,
-  Port, PortCardinality, PortDataType, PortTransport, PrimitiveSpec, SafetyAdapterType, Setting,
+  AdapterFamilyDescriptor, BridgeDeclaration, CatalogAdapterFamily, DataClass, DeliveryMode,
+  DataTypeDescriptor, Lifecycle, NodeType, NodeTypeContribution, NodeTypeRegistry, Port,
+  PortCardinality, PortDataType, PortTransport, PrimitiveSpec, SafetyAdapterType, Setting,
   SettingSelector, SettingType, SelectorProvider, PackageSource, PRIMITIVE_SPECS,
 };
 pub use edge_contract::{EosEdgeClass, EosEdgeContract};
@@ -34,6 +37,8 @@ pub enum NodeKind {
   Camera,
   Base,
   Manipulator,
+  Gripper,
+  Torso,
   Software,
 }
 
@@ -43,6 +48,8 @@ impl std::fmt::Display for NodeKind {
       Self::Camera => "camera",
       Self::Base => "base",
       Self::Manipulator => "manipulator",
+      Self::Gripper => "gripper",
+      Self::Torso => "torso",
       Self::Software => "software",
     })
   }
@@ -89,6 +96,7 @@ pub struct NodeProfile {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub package: Option<PackageRef>,
   pub label: String,
+  #[serde(default)]
   pub description: String,
   #[serde(default)]
   pub frame_id: String,
@@ -168,13 +176,55 @@ pub struct PortSource {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum PortSources {
+  Configured(PortInput),
   One(PortSource),
   Many(Vec<PortSource>),
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortInput {
+  pub sources: Box<PortSources>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub desired_rate_hz: Option<DesiredRate>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredRate {
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub min: Option<f64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub max: Option<f64>,
+}
+
+impl DesiredRate {
+  fn valid(&self) -> bool {
+    self.min.is_none_or(|r| r.is_finite() && r > 0.0)
+      && self.max.is_none_or(|r| r.is_finite() && r > 0.0)
+      && self.min.zip(self.max).is_none_or(|(min, max)| min <= max)
+  }
+}
+
 impl PortSources {
+  pub fn desired_rate_hz(&self) -> Option<&DesiredRate> {
+    match self {
+      Self::Configured(input) => input.desired_rate_hz.as_ref(),
+      _ => None,
+    }
+  }
+
+  pub fn is_many(&self) -> bool {
+    match self {
+      Self::Configured(input) => input.sources.is_many(),
+      Self::Many(_) => true,
+      Self::One(_) => false,
+    }
+  }
+
   pub fn values(&self) -> &[PortSource] {
     match self {
+      Self::Configured(input) => input.sources.values(),
       Self::One(source) => std::slice::from_ref(source),
       Self::Many(sources) => sources,
     }
@@ -187,6 +237,7 @@ impl PortSources {
 
   fn values_mut(&mut self) -> &mut [PortSource] {
     match self {
+      Self::Configured(input) => input.sources.values_mut(),
       Self::One(source) => std::slice::from_mut(source),
       Self::Many(sources) => sources,
     }
@@ -364,10 +415,13 @@ impl Profile {
       .filter(|(stage, _)| !is_observer || stage.node_type != ids[4])
     {
       let Some(binding) = stage.inputs.get(input).and_then(PortSources::one) else {
-        return Err(ProfileError(format!(
-          "EOS demo {} lacks {input}",
-          stage.path()
-        )));
+        if stage.inputs.contains_key(input) {
+          return Err(ProfileError(format!(
+            "EOS demo {} has invalid input cardinality",
+            stage.path()
+          )));
+        }
+        continue;
       };
       let source_matches = if stage.node_type == ids[0] {
         binding.node.starts_with(source)
@@ -383,6 +437,16 @@ impl Profile {
       }
     }
     let arm = stages[3];
+    if arm
+      .movement
+      .as_ref()
+      .and_then(|movement| movement.limits.max_joint_position_rad)
+      .is_some_and(|limit| limit > 314.0 / 100.0)
+    {
+      return Err(ProfileError(
+        "EOS mock arm max_joint_position_rad exceeds 3.14 rad safety bound".into(),
+      ));
+    }
     let sample_ms = arm
       .settings
       .get("sample_interval_ms")
@@ -399,6 +463,79 @@ impl Profile {
       ));
     }
     Ok(())
+  }
+
+  /// The mock worker is permitted to run for observation when the command chain is disconnected.
+  pub fn demo_activation_chain_complete(&self) -> bool {
+    let kinds = [
+      "eos.interface.ingress.trigger@v0.2",
+      "eos.skill.demo.joint_delta@v0.2",
+      "eos.dispatcher.arm.delta@v0.2",
+      "eos.hardware.mock.arm@v0.2",
+    ];
+    let Some(stages) = kinds
+      .iter()
+      .map(|kind| self.all_nodes().find(|node| node.node_type == *kind))
+      .collect::<Option<Vec<_>>>()
+    else {
+      return false;
+    };
+    let inputs = ["activation", "activation", "delta", "delta"];
+    let outputs = ["activation", "activation", "delta", "delta"];
+    stages.iter().enumerate().all(|(index, stage)| {
+      stage
+        .inputs
+        .get(inputs[index])
+        .and_then(PortSources::one)
+        .is_some_and(|binding| {
+          let source_matches = if index == 0 {
+            binding.node.starts_with("ei/governance/safety/")
+          } else {
+            binding.node == stages[index - 1].path()
+          };
+          source_matches && binding.output == outputs[index]
+        })
+    })
+  }
+
+  /// The owner must not expose mock monitor snapshots through an undeclared route.
+  pub fn demo_monitor_chain_complete(&self) -> bool {
+    let observer = self.all_nodes().find(|node| {
+      matches!(
+        node.node_type.as_str(),
+        "eos.hardware.mock.arm_observer@v0.2" | "eos.hardware.mock.arm_output@v0.2"
+      )
+    });
+    let kinds = [
+      "eos.dispatcher.arm.monitor@v0.2",
+      "eos.skill.demo.arm_status@v0.2",
+      "eos.interface.egress.arm_status@v0.2",
+    ];
+    let Some(stages) = kinds
+      .iter()
+      .map(|kind| self.all_nodes().find(|node| node.node_type == *kind))
+      .collect::<Option<Vec<_>>>()
+    else {
+      return false;
+    };
+    let Some(observer) = observer else {
+      return false;
+    };
+    stages.iter().enumerate().all(|(index, stage)| {
+      stage
+        .inputs
+        .get("observation")
+        .and_then(PortSources::one)
+        .is_some_and(|binding| {
+          binding.node
+            == (if index == 0 {
+              observer.path()
+            } else {
+              stages[index - 1].path()
+            })
+            && binding.output == "observation"
+        })
+    })
   }
 
   pub fn node(&self, path: &str) -> Option<&NodeProfile> {
@@ -538,15 +675,29 @@ impl Profile {
             if let Some(package) = &node.adapter.package {
               package.validate()?;
             }
+            if node.adapter.settings.contains_key("service_instance") {
+              let service = node
+                .adapter
+                .settings
+                .get("service_instance")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("");
+              if !valid_segment(service) || node.adapter.package.is_none() {
+                return Err(ProfileError(format!(
+                  "node {key} has invalid package service binding"
+                )));
+              }
+              if node.adapter.settings.contains_key("socket_path") {
+                return Err(ProfileError(format!(
+                  "node {key} cannot author a package service socket"
+                )));
+              }
+            }
             let kind = definition.kind;
             let hardware = kind != NodeKind::Software;
             if hardware {
               if let Some(family) = registry.adapter_family(&node.adapter.adapter_type) {
-                let family_package = if family.id == "mujoco-v2" {
-                  node.adapter.package.as_ref().or(node.package.as_ref())
-                } else {
-                  node.adapter.package.as_ref()
-                };
+                let family_package = node.adapter.package.as_ref();
                 if !family.device_kinds.contains(&kind)
                   || family_package != registry.package_for_adapter_family(&family.id)
                 {
@@ -554,9 +705,13 @@ impl Profile {
                     "node {key} adapter family provenance or kind mismatch"
                   )));
                 }
-              } else if node.adapter.package.is_some() || node.adapter.adapter_type == "mujoco-v2" {
+              } else if node.adapter.package.is_some() {
                 return Err(ProfileError(format!(
                   "node {key} has unregistered adapter family"
+                )));
+              } else if registry.package_for_type(&definition.id).is_some() {
+                return Err(ProfileError(format!(
+                  "node {key} requires a registered adapter family"
                 )));
               }
             }
@@ -581,7 +736,6 @@ impl Profile {
               return Err(ProfileError(format!("duplicate hardware node id: {key}")));
             }
             if node.label.trim().is_empty()
-              || node.description.trim().is_empty()
               || (hardware
                 && (node.adapter.adapter_type.trim().is_empty() || node.frame_id.trim().is_empty()))
             {
@@ -633,7 +787,9 @@ impl Profile {
                   return Err(ProfileError(format!("node {key} has invalid joint names")));
                 }
               }
-              (NodeKind::Manipulator, _) => {
+              (NodeKind::Manipulator, _)
+                if node.node_type == "eos.hardware.manipulator.device@v0.2" =>
+              {
                 return Err(ProfileError(format!("node {key} requires joint_names")))
               }
               (_, Some(_)) => {
@@ -653,7 +809,7 @@ impl Profile {
                 )));
               }
             }
-            if node.observation.is_none() {
+            if node.observation.is_none() && kind != NodeKind::Torso {
               return Err(ProfileError(format!(
                 "node {key} requires observation settings"
               )));
@@ -670,24 +826,39 @@ impl Profile {
             }
             let allowed_capabilities: &[&str] = match kind {
               NodeKind::Software => unreachable!(),
-              NodeKind::Camera => &["rgb8", "aligned_depth_u16"],
-              NodeKind::Base => &["body_velocity", "relative_pose"],
-              NodeKind::Manipulator => &["joint_positions", "end_effector_pose"],
+              NodeKind::Camera => &["rgb8", "jpeg", "aligned_depth_u16"],
+              NodeKind::Base => &["body_velocity", "relative_pose", "normalized_axes"],
+              NodeKind::Manipulator => &[
+                "joint_positions",
+                "end_effector_pose",
+                "normalized_cartesian",
+              ],
+              NodeKind::Gripper => &["binary"],
+              NodeKind::Torso => &["normalized_axes"],
             };
             if node.capabilities.is_empty()
               || !node
                 .capabilities
                 .iter()
                 .all(|c| allowed_capabilities.contains(&c.as_str()))
-              || (kind == NodeKind::Camera && !capabilities.contains(&"rgb8".to_string()))
+              || (kind == NodeKind::Camera
+                && !capabilities.contains(&"rgb8".to_string())
+                && !capabilities.contains(&"jpeg".to_string()))
             {
               return Err(ProfileError(format!("node {key} has invalid capabilities")));
             }
             if let Some(movement) = &node.movement {
               let allowed = match kind {
                 NodeKind::Software => unreachable!(),
-                NodeKind::Base => ["body_velocity", "relative_pose"].as_slice(),
-                NodeKind::Manipulator => ["joint_positions", "end_effector_pose"].as_slice(),
+                NodeKind::Base => ["body_velocity", "relative_pose", "normalized_axes"].as_slice(),
+                NodeKind::Manipulator => [
+                  "joint_positions",
+                  "end_effector_pose",
+                  "normalized_cartesian",
+                ]
+                .as_slice(),
+                NodeKind::Gripper => ["binary"].as_slice(),
+                NodeKind::Torso => ["normalized_axes"].as_slice(),
                 NodeKind::Camera => &[],
               };
               let mut modes = BTreeSet::new();
@@ -720,6 +891,10 @@ impl Profile {
                     limits.max_end_effector_translation_m.is_some()
                       && limits.max_end_effector_speed_m_s.is_some()
                   }
+                  "normalized_axes" | "normalized_cartesian" => limits
+                    .max_velocity_lease_ms
+                    .is_some_and(|ms| ms > 0 && ms <= 1000),
+                  "binary" => true,
                   _ => false,
                 };
                 if !bounded {
@@ -739,6 +914,9 @@ impl Profile {
                   "relative_pose",
                   "joint_positions",
                   "end_effector_pose",
+                  "normalized_axes",
+                  "normalized_cartesian",
+                  "binary",
                 ]
                 .contains(&c.as_str())
                   && !modes.contains(c)
@@ -783,6 +961,19 @@ impl Profile {
       }
       let definition = registry.get(&node.node_type).expect("validated node type");
       for (input_name, sources) in &node.inputs {
+        if let PortSources::Configured(configured) = sources {
+          if matches!(*configured.sources, PortSources::Configured(_))
+            || configured
+              .desired_rate_hz
+              .as_ref()
+              .is_some_and(|rate| !rate.valid())
+          {
+            return Err(ProfileError(format!(
+              "node {} input {input_name} has invalid desired rate or nested input configuration",
+              node.path()
+            )));
+          }
+        }
         let input = definition
           .inputs
           .iter()
@@ -845,94 +1036,20 @@ impl Profile {
               node.path()
             )));
           }
-          if node.node_type == "isos.eos_interface.camera_gate@v0.2"
+          if node.node_type == "eos.interface.egress.vision_flow@v0.2"
             && (source_node.kind != NodeKind::Camera
               || input_name != "frame"
               || source.output != "frame")
           {
             return Err(ProfileError(format!(
-              "camera gate {} must read a camera frame output",
+              "Vision transfer {} must read a camera frame output",
               node.path()
             )));
           }
         }
       }
-      for input in definition.inputs.iter().filter(|port| port.required) {
-        if !node.inputs.contains_key(&input.name) {
-          return Err(ProfileError(format!(
-            "node {} requires input {}",
-            node.path(),
-            input.name
-          )));
-        }
-      }
     }
     edge_contract::validate(self, registry)?;
-    // EOS owns package-backed simulator children. A backend declaration
-    // binds every MuJoCo adapter to its one typed socket endpoint.
-    if self
-      .all_nodes()
-      .any(|node| is_eos_backend_type(&node.node_type))
-    {
-      for node in self
-        .hardware_nodes()
-        .filter(|node| node.adapter.adapter_type == "mujoco-v2")
-      {
-        let backend_path = node
-          .adapter
-          .settings
-          .get("backend")
-          .and_then(toml::Value::as_str)
-          .ok_or_else(|| ProfileError(format!("node {} requires backend binding", node.path())))?;
-        let backend = self.node(backend_path).ok_or_else(|| {
-          ProfileError(format!(
-            "node {} references missing backend {backend_path}",
-            node.path()
-          ))
-        })?;
-        if !is_eos_backend_type(&backend.node_type)
-          || !node.references.iter().any(|path| path == backend_path)
-        {
-          return Err(ProfileError(format!(
-            "node {} must reference an EOS backend",
-            node.path()
-          )));
-        }
-        let socket = node
-          .adapter
-          .settings
-          .get("socket_path")
-          .and_then(toml::Value::as_str);
-        let backend_socket = backend.settings.get("socket").and_then(toml::Value::as_str);
-        let device = node
-          .adapter
-          .settings
-          .get("simulator_node")
-          .and_then(toml::Value::as_str);
-        let device_alias = node
-          .adapter
-          .settings
-          .get("device_id")
-          .and_then(toml::Value::as_str);
-        if socket.is_none()
-          || socket != backend_socket
-          || device.is_none()
-          || device_alias != device
-          || (node
-            .adapter
-            .package
-            .as_ref()
-            .or(node.package.as_ref())
-            .is_some()
-            && node.adapter.package.as_ref().or(node.package.as_ref()) != backend.package.as_ref())
-        {
-          return Err(ProfileError(format!(
-            "node {} has a mismatched backend socket or device ID",
-            node.path()
-          )));
-        }
-      }
-    }
     let mut dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for node in self.all_nodes().filter(|node| {
       registry
@@ -982,13 +1099,31 @@ impl Profile {
       .hardware_nodes()
       .filter(|node| node.kind != NodeKind::Camera)
     {
-      let sources = node
-        .inputs
-        .get("command")
-        .ok_or_else(|| ProfileError(format!("actuator {} requires a command edge", node.path())))?;
+      let Some(sources) = node.inputs.get("command") else {
+        // Package v2 hardware uses the owner's implicit Dispatcher route.
+        if node.adapter.package.is_some()
+          && matches!(
+            node.node_type.as_str(),
+            "eos.hardware.base.normalized_axes@v0.2"
+              | "eos.hardware.manipulator.normalized_cartesian@v0.2"
+              | "eos.hardware.gripper.binary@v0.2"
+              | "eos.hardware.torso.normalized_axes@v0.2"
+          )
+        {
+          continue;
+        }
+        if node.node_type == "eos.hardware.mock.arm@v0.2" {
+          continue;
+        }
+        return Err(ProfileError(format!(
+          "actuator {} requires a command edge",
+          node.path()
+        )));
+      };
       let dispatcher_output = match node.kind {
         NodeKind::Base => "base_command",
         NodeKind::Manipulator => "manipulator_command",
+        NodeKind::Gripper | NodeKind::Torso => "command",
         _ => unreachable!(),
       };
       let mut dispatcher_route = false;

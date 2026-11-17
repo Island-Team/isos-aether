@@ -10,8 +10,6 @@ pub(crate) mod preflight;
 pub(crate) mod reader_features;
 pub(crate) mod readiness;
 pub(crate) mod skill_selection;
-#[cfg(test)]
-pub(crate) mod vision_binding;
 use crate::{
   app::config::{self, Paths},
   domain::graph::graph_contract,
@@ -287,8 +285,8 @@ impl ProcessSpec {
     );
     for (target, source) in &s.env_from {
       ensure!(
-        crate::domain::graph::generated_v2::valid_env(target)
-          && crate::domain::graph::generated_v2::valid_env(source)
+        crate::domain::graph::generated::valid_env(target)
+          && crate::domain::graph::generated::valid_env(source)
           && !s.env.contains_key(target),
         "{}: invalid or duplicate env_from target",
         self.id
@@ -332,7 +330,7 @@ pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Resu
     path.is_absolute() && path.is_file(),
     "verified EOS generated profile is missing"
   );
-  for id in ["eos", "config"] {
+  for id in ["eos", "bridge"] {
     let spec = specs
       .iter_mut()
       .find(|spec| spec.id == id)
@@ -395,6 +393,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     "node graph exceeds 1 MiB"
   );
   let value = normalize_source(source)?;
+  package_process::ensure_single_eos_process(&value)?;
   crate::runtime::process::skill_selection::check_reserved(&value)?;
   crate::runtime::process::skill_selection::entries(&value)?;
   let sidecars = paths
@@ -402,7 +401,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     .transpose()?
     .unwrap_or_default();
   let graph: Graph = serde_json::from_value(value.clone())?;
-  ensure!(graph.version == "0.2.0", "graph version must be 0.2.0");
+  ensure!(graph.version == "0.2.1", "graph version must be 0.2.1");
   let mut specs = BTreeMap::new();
   let mut package_processes = BTreeMap::new();
   for (core_id, core) in &graph.cores {
@@ -414,7 +413,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
           }
           let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
           ensure!(
-            (core_id == "isos" && layer_id == "eos_process") && key == &node.id,
+            ((core_id == "isos" && layer_id == "eos_process")
+              || (core_id == "eos" && layer_id == "process"))
+              && key == &node.id,
             "{path}: package process has invalid placement or id"
           );
           let paths = paths.context("package process requires IsOS package resolver")?;
@@ -527,8 +528,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
               .with_context(|| format!("{path}: invalid process settings"))?;
             let binary = match key.as_str() {
               "eos" => "aether-runtime",
-              "bridge" => "aether-http-bridge",
-              "config" => "aether-config-server",
+              "bridge" => "aether-server",
+              "config" => "aether-server",
               _ => "",
             };
             if !binary.is_empty() && paths.is_some() {
@@ -570,7 +571,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
               settings.role = Some("ei".into());
               settings
                 .env
-                .extend(crate::domain::graph::generated_v2::ei_launch_env(&value)?);
+                .extend(crate::domain::graph::generated::ei_launch_env(&value)?);
             }
             for dependency in &mut settings.depends_on {
               *dependency = canonical_node_path(dependency);
@@ -641,6 +642,38 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
       }
     }
   }
+  // The saved graph retains separate bridge and config declarations, while EOS
+  // runs both listeners in one server process. Preserve their authored ports.
+  if let Some(config) = specs.remove("config") {
+    let bridge = specs
+      .get_mut("bridge")
+      .context("EOS catalog requires bridge process")?;
+    let config_args = &config.settings.command[1..];
+    ensure!(
+      config_args.len() % 2 == 0,
+      "config: incomplete server option"
+    );
+    for index in (0..config_args.len()).step_by(2) {
+      let pair = &config_args[index..index + 2];
+      match pair[0].as_str() {
+        "--listen" => bridge
+          .settings
+          .command
+          .extend(["--catalog-listen".into(), pair[1].clone()]),
+        "--profile" | "--node-types" => bridge
+          .settings
+          .command
+          .extend([pair[0].clone(), pair[1].clone()]),
+        "--run-id" => {}
+        other => bail!("config: unsupported merged server option {other}"),
+      }
+    }
+    for dependency in config.settings.depends_on {
+      if !bridge.settings.depends_on.contains(&dependency) {
+        bridge.settings.depends_on.push(dependency);
+      }
+    }
+  }
   ensure!(
     package_processes.is_empty() || specs.contains_key("eos"),
     "package process requires a selected owner runtime"
@@ -652,11 +685,16 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     let mut deps = BTreeSet::new();
     for dep in &spec.settings.depends_on {
       let dep_id = dep.rsplit('/').next().unwrap_or(dep);
+      let dep_id = if dep_id == "config" && specs.contains_key("bridge") {
+        "bridge"
+      } else {
+        dep_id
+      };
       let provider = specs
         .get(dep_id)
         .ok_or_else(|| anyhow::anyhow!("{} depends on unknown process {dep}", id))?;
       ensure!(
-        dep == &provider.path,
+        dep == &provider.path || (dep.ends_with("/config") && dep_id == "bridge"),
         "{}: noncanonical process dependency {dep}",
         id
       );
@@ -695,7 +733,9 @@ fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> 
       endpoints.push(ready.as_str());
     }
     for pair in spec.settings.command.windows(2) {
-      if matches!(id.as_str(), "eos" | "bridge" | "config" | "ei") && pair[0] == "--listen" {
+      if matches!(id.as_str(), "eos" | "bridge" | "config" | "ei")
+        && matches!(pair[0].as_str(), "--listen" | "--catalog-listen")
+      {
         endpoints.push(&pair[1]);
       }
     }
@@ -742,22 +782,15 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
-  crate::runtime::owners::ei_state::reject_test_env_graph(graph)?;
-  crate::runtime::process::skill_selection::check_reserved(graph)?;
-  crate::runtime::process::skill_selection::entries(graph)?;
-  packages::verify_graph_packages(paths, graph)?;
-  package_process::validate_graph(paths, graph)?;
-  graph_contract::admit(graph, catalog().ok().as_ref())?;
   validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
-  crate::runtime::owners::ei_state::reject_test_env_graph(graph)?;
   crate::runtime::process::skill_selection::check_reserved(graph)?;
   crate::runtime::process::skill_selection::entries(graph)?;
   packages::verify_graph_packages(paths, graph)?;
   package_process::validate_graph(paths, graph)?;
-  graph_contract::admit(graph, catalog().ok().as_ref())?;
+  graph_contract::admit(graph, Some(&catalog_for_graph(paths, graph)?))?;
   let eos_graph = crate::domain::graph::single_core::owner_projection(graph, "eos")?;
   paths.prepare()?;
   let mut file = tempfile::Builder::new()
@@ -767,19 +800,19 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
   serde_json::to_writer(&mut file, &eos_graph)?;
   use std::io::Write;
   file.flush()?;
-  validate_with_program(file.path(), profile)?;
+  validate_with_program(paths, file.path(), profile)?;
   project_with_packages(paths, &serde_json::to_string(graph)?)?;
   Ok(())
 }
 
 mod catalog;
-pub use catalog::{catalog, catalog_at, catalog_for_graph, catalog_for_option_graph};
+pub use catalog::{catalog_at, catalog_for_graph, catalog_for_option_graph};
 
-fn validate_with_program(path: &Path, program: &Path) -> Result<()> {
+fn validate_with_program(paths: &Paths, path: &Path, program: &Path) -> Result<()> {
   let mut command = Command::new(program);
   command.arg("validate").arg("--file").arg(path);
   let graph = normalize_source(&fs::read_to_string(path)?)?;
-  for sidecar in packages::node_type_sidecars_for_graph(&Paths::discover()?, &graph)? {
+  for sidecar in packages::node_type_sidecars_for_graph(paths, &graph)? {
     command.arg("--node-types").arg(sidecar);
   }
   let output = command
@@ -803,8 +836,23 @@ mod projection_tests {
   use super::*;
 
   #[test]
+  fn eos_owned_package_process_reaches_package_resolution() {
+    let graph = serde_json::json!({"version":"0.2.1","robot":{},"cores":{
+      "eos":{"layers":{"process":{"groups":{"driver":{"nodes":{
+        "service":{"id":"service","node_type":"eos.process.driver.service@v0.2",
+          "package":{"id":"vendor/driver","version":"0.1.2"},"settings":{"scene":"pick-place"}}
+      }}}}}}
+    }});
+    let error = project(&graph.to_string()).unwrap_err().to_string();
+    assert!(
+      error.contains("package process requires IsOS package resolver"),
+      "{error}"
+    );
+  }
+
+  #[test]
   fn registered_isos_http_gateway_has_no_child_process() {
-    let graph = serde_json::json!({"version":"0.2.0","robot":{},"cores":{
+    let graph = serde_json::json!({"version":"0.2.1","robot":{},"cores":{
       "isos":{"layers":{"interface":{"groups":{"gateway":{"nodes":{
         "control":{"id":"control","node_type":"isos.interface.http_gateway@v0.2","settings":{}}
       }}}}}}

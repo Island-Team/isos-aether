@@ -1,0 +1,365 @@
+{
+  "format_version": 1,
+  "catalogs": [
+    {
+      "id": "node-interfaces",
+      "kind": "graph-schema",
+      "owner": "isos",
+      "consumers": [
+        "isos",
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "graph",
+        "registry"
+      ],
+      "paths": [
+        "node/*.schema.json"
+      ],
+      "purpose": "Validate registered graph node types and instances.",
+      "origin": "authored"
+    },
+    {
+      "id": "node-abi",
+      "kind": "native-abi",
+      "owner": "isos",
+      "consumers": [
+        "isos",
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "node-runtime"
+      ],
+      "paths": [
+        "node/*.h"
+      ],
+      "purpose": "Define the native plugin interfaces used by graph workers.",
+      "origin": "authored"
+    },
+    {
+      "id": "owner-services",
+      "kind": "protobuf-service",
+      "owner": "isos",
+      "consumers": [
+        "isos",
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "owner-exchange",
+        "capabilities"
+      ],
+      "paths": [
+        "proto/*.proto"
+      ],
+      "purpose": "Define cross-owner gRPC services and operation envelopes.",
+      "origin": "authored"
+    },
+    {
+      "id": "actions-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "actions"
+      ],
+      "paths": [
+        "proto/actions/*.proto"
+      ],
+      "purpose": "Define typed actuator and primitive command payloads.",
+      "origin": "authored"
+    },
+    {
+      "id": "body-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "body"
+      ],
+      "paths": [
+        "proto/body/*.proto"
+      ],
+      "purpose": "Define typed hardware device descriptors.",
+      "origin": "authored"
+    },
+    {
+      "id": "perception-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "perception"
+      ],
+      "paths": [
+        "proto/perception/*.proto"
+      ],
+      "purpose": "Define perception observations and media messages.",
+      "origin": "authored"
+    },
+    {
+      "id": "robot-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "robot"
+      ],
+      "paths": [
+        "proto/robot/*.proto"
+      ],
+      "purpose": "Define robot descriptors, navigation, and primitives.",
+      "origin": "authored"
+    },
+    {
+      "id": "skills-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "skills"
+      ],
+      "paths": [
+        "proto/skills/*.proto"
+      ],
+      "purpose": "Define skill catalog, execution, journal, and signal messages.",
+      "origin": "authored"
+    },
+    {
+      "id": "system-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "system"
+      ],
+      "paths": [
+        "proto/system/*.proto"
+      ],
+      "purpose": "Define shared resource and system status messages.",
+      "origin": "authored"
+    },
+    {
+      "id": "workflow-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "workflow"
+      ],
+      "paths": [
+        "proto/workflow/*.proto"
+      ],
+      "purpose": "Define workflow execution and result messages.",
+      "origin": "authored"
+    },
+    {
+      "id": "world-payloads",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "world"
+      ],
+      "paths": [
+        "proto/world/*.proto"
+      ],
+      "purpose": "Define observed world state and resource messages.",
+      "origin": "authored"
+    },
+    {
+      "id": "wire-annotations",
+      "kind": "protobuf-message",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "schema-generation"
+      ],
+      "paths": [
+        "proto/options/*.proto"
+      ],
+      "purpose": "Provide Protobuf options used to generate JSON Schemas.",
+      "origin": "authored"
+    },
+    {
+      "id": "external-interfaces",
+      "kind": "protobuf-service",
+      "owner": "isos",
+      "consumers": [
+        "eos"
+      ],
+      "domains": [
+        "external-http",
+        "model-provider"
+      ],
+      "paths": [
+        "proto/external/http/*.proto",
+        "proto/external/models/*.proto"
+      ],
+      "purpose": "Define HTTP adapter and private model-provider transports.",
+      "origin": "authored"
+    },
+    {
+      "id": "private-model-schemas",
+      "kind": "json-schema",
+      "owner": "isos",
+      "consumers": [
+        "eos"
+      ],
+      "domains": [
+        "model-provider"
+      ],
+      "paths": [
+        "schemas/models/*.json"
+      ],
+      "purpose": "Validate provider-neutral requests and responses at the EOS model boundary.",
+      "origin": "authored"
+    },
+    {
+      "id": "google-api-compat",
+      "kind": "protobuf-dependency",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "http-annotations"
+      ],
+      "paths": [
+        "proto/google/api/*.proto"
+      ],
+      "purpose": "Provide minimal Google API HTTP annotation declarations compatible with the standard import paths.",
+      "origin": "authored"
+    },
+    {
+      "id": "actions-runtime-schemas",
+      "kind": "generated-json-schema",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "actions"
+      ],
+      "paths": [
+        "schemas/actions/*.json"
+      ],
+      "purpose": "Validate EOS action payloads at runtime; generated from matching action Protobuf source.",
+      "origin": "generated"
+    },
+    {
+      "id": "body-runtime-schemas",
+      "kind": "generated-json-schema",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "body"
+      ],
+      "paths": [
+        "schemas/body/*.json"
+      ],
+      "purpose": "Validate EOS body payloads at runtime; generated from matching body Protobuf source.",
+      "origin": "generated"
+    },
+    {
+      "id": "world-runtime-schemas",
+      "kind": "generated-json-schema",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "world"
+      ],
+      "paths": [
+        "schemas/world/*.json"
+      ],
+      "purpose": "Validate EOS world payloads at runtime; generated from matching world Protobuf source.",
+      "origin": "generated"
+    },
+    {
+      "id": "eos-schema-manifest",
+      "kind": "generated-json-schema",
+      "owner": "isos",
+      "consumers": [
+        "ei",
+        "eos"
+      ],
+      "domains": [
+        "schema-generation"
+      ],
+      "paths": [
+        "schemas/eos.manifest.json"
+      ],
+      "purpose": "Record generated EOS schema identities and checksums for consumers.",
+      "origin": "generated"
+    },
+    {
+      "id": "ei-northbound-schemas",
+      "kind": "json-schema",
+      "owner": "isos",
+      "consumers": [
+        "ei"
+      ],
+      "domains": [
+        "northbound"
+      ],
+      "paths": [
+        "schemas/northbound/*.json"
+      ],
+      "purpose": "Validate EI northbound request and response models.",
+      "origin": "checked"
+    },
+    {
+      "id": "north-http-description",
+      "kind": "generated-openapi",
+      "owner": "isos",
+      "consumers": [
+        "eos"
+      ],
+      "domains": [
+        "external-http"
+      ],
+      "paths": [
+        "schemas/north-http.openapi.json"
+      ],
+      "purpose": "Describe external North HTTP routes as generated OpenAPI.",
+      "origin": "generated"
+    }
+  ]
+}

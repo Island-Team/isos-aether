@@ -7,19 +7,18 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import grpc
-from google.protobuf import json_format, struct_pb2
-from grpc_health.v1 import health_pb2, health_pb2_grpc
-
-from island.generated.eos import (
+from ei.generated.eos import (
   capabilities_pb2,
   capabilities_pb2_grpc,
   gateway_pb2_grpc,
   skills_pb2_grpc,
 )
-from island.generated.eos.perception import camera_pb2
-from island.generated.eos.robot import descriptor_pb2, primitive_pb2
-from island.generated.eos.skills import catalog_pb2, execution_pb2
-from island.generated.eos.system import resource_pb2
+from ei.generated.eos.perception import camera_pb2
+from ei.generated.eos.robot import descriptor_pb2, primitive_pb2
+from ei.generated.eos.skills import catalog_pb2, execution_pb2
+from ei.generated.eos.system import resource_pb2
+from google.protobuf import json_format, struct_pb2
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 ROBOT_ID = "01a077f7-b5b8-7b4e-8057-ca688b8ff48f"
 ROBOT_NAME = "demo-0"

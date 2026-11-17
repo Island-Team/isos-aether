@@ -1,4 +1,4 @@
-version = "0.2.0"
+version = "0.2.1"
 
 [robot]
 id = "demo-0"
@@ -17,12 +17,21 @@ label = "EI input"
 description = "Receive button activation"
 inputs.activation = { node = "isos/ui/button/trigger", output = "activation" }
 
+[cores.ei.layers.cognition.groups.intent.nodes.context]
+id = "context"
+node_type = "ei.cognition.intent.context@v0.2"
+label = "EI input context"
+description = "Organize agent input context from observations for cognition"
+inputs.activation = { node = "ei/io/input/trigger", output = "activation" }
+inputs.observation = { node = "ei/cognition/state/arm_status", output = "observation" }
+
 [cores.ei.layers.cognition.groups.intent.nodes.forwarder]
 id = "forwarder"
 node_type = "ei.cognition.intent.forwarder@v0.2"
 label = "EI cognition"
-description = "Pass activation with its event identity"
-inputs.activation = { node = "ei/io/input/trigger", output = "activation" }
+description = "Consume context snapshot and forward activation"
+inputs.activation = { node = "ei/cognition/intent/context", output = "activation" }
+inputs.snapshot = { node = "ei/cognition/intent/context", output = "snapshot" }
 
 [cores.ei.layers.governance.groups.safety.nodes.gate]
 id = "gate"

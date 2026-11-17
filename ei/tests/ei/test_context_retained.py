@@ -6,15 +6,17 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.observation import ObservationRecord
-from ei.core.context import ContextBuilder
-from ei.core.context.detection_digest import (
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.context.detection_digest import (
   build_detection_digest,
   build_detection_lines,
 )
-from ei.core.context.object_digest import build_object_digest, build_object_lines
-from ei.core.perception.admission import Admission
+from ei.core.cognition.context.object_digest import (
+  build_object_digest,
+  build_object_lines,
+)
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.observation import ObservationRecord
 from ei.lib.config import (
   AgentPromptConfig,
   PromptConfig,

@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from ei.lib import logger as logger_mod
 from ei.lib.config import LoggingConfig
 from ei.lib.logger import configure_logging, get_logger

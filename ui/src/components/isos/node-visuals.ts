@@ -1,6 +1,17 @@
 import type { NodeInstance, NodeTypeDefinition, PortDefinition } from '@/services/isos/node-graph';
 
 export type PortFamily = 'camera' | 'observation' | 'movement' | 'request' | 'outcome' | 'health' | 'status' | 'context' | 'plan' | 'other';
+export type InteractionRole = 'publisher' | 'subscriber' | 'service' | 'action';
+
+/** Older catalogs expose port direction but do not declare interaction roles. */
+export function nodeInteractionRoles(definition?: NodeTypeDefinition): InteractionRole[] {
+  if (!definition) return [];
+  if (definition.interaction_roles) return definition.interaction_roles;
+  const roles: InteractionRole[] = [];
+  if (definition.inputs.some((port) => port.transport !== 'none' && port.delivery_mode !== 'declaration')) roles.push('subscriber');
+  if (definition.outputs.some((port) => port.transport !== 'none' && port.delivery_mode !== 'declaration')) roles.push('publisher');
+  return roles;
+}
 
 /** Stable layer hue with a bounded group shade for both editor themes. */
 export function nodeVisualStyle(definition?: NodeTypeDefinition): Record<string, string> {

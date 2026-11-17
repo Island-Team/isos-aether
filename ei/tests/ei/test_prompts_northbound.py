@@ -6,9 +6,8 @@ import asyncio
 import json
 
 import pytest
-
-from ei.api.prompts import PromptsSnapshot
-from ei.core.perception.admission import Admission
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.prompts import PromptsSnapshot
 from ei.io.northbound import PROMPTS_PATH, NorthboundServer
 from ei.io.state import ServerState
 from ei.io.store import PromptsStore
@@ -17,8 +16,7 @@ from ei.io.store import PromptsStore
 @pytest.mark.asyncio
 async def test_prompts_ws_stream() -> None:
   import websockets
-
-  from ei.api.status import HealthState
+  from ei.core.system.models.status import HealthState
 
   state = ServerState("test")
   state.status = HealthState.READY

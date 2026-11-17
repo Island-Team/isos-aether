@@ -8,12 +8,11 @@ from pathlib import Path
 
 import pytest
 import websockets
-
-from ei.api.status import HealthState
-from ei.core.context import context_entry
-from ei.core.missions import MissionQueue
-from ei.core.perception.admission import Admission
-from ei.core.supervisor import SubsystemSpec, Supervisor
+from ei.core.cognition.context import context_entry
+from ei.core.cognition.missions import MissionQueue
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.status import HealthState
+from ei.core.system.supervisor import SubsystemSpec, Supervisor
 from ei.io import CHAT_PATH, HEALTH_PATH, NorthboundServer
 from ei.io.state import ServerState
 from ei.lib.config import load_prompt_config

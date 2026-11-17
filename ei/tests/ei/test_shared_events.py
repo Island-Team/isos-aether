@@ -11,10 +11,10 @@ from pathlib import Path
 
 import grpc
 import pytest
-
-from ei.core.link import EosClient, LinkPrimitiveError
+from ei.core.io.link import EosClient, LinkPrimitiveError
 from ei.lib import shared_event_policy, shared_events
 from ei.lib.config import GatewayConfig
+
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 

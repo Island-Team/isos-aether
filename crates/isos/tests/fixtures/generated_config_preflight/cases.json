@@ -12,7 +12,7 @@
     "ei/prompts.toml",
     "ei/missions.toml",
     "ei/safety/gate.toml",
-    "ei/opt/sandbox.toml"
+    "ei/sandbox.toml"
   ],
   "cases": [
     {

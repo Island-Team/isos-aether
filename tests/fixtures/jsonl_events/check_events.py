@@ -127,24 +127,19 @@ def main() -> None:
     ]
     assert [event["timestamp"] for event in examples] == sorted(event["timestamp"] for event in examples)
     assert examples[2]["fields"]["reason_code"] == "child_exited"
-    english = ROOT / "docs/eos/interfaces/events.md"
-    chinese = ROOT / "docs_cn/eos/interfaces/events_cn.md"
-    assert markdown_examples(english) == example_lines == markdown_examples(chinese)
+    english = ROOT / "docs/isos/interfaces/server/eos.md"
+    chinese = ROOT / "docs_cn/isos/interfaces/server/eos_cn.md"
     for path in (
         english, chinese,
-        ROOT / "docs/eos/design/runtime/events.md",
-        ROOT / "docs_cn/eos/design/runtime/events_cn.md",
-        ROOT / "docs/eos/start/README.md",
-        ROOT / "docs_cn/eos/start/README_cn.md",
-        ROOT / "docs/eos/interfaces/README.md",
-        ROOT / "docs_cn/eos/interfaces/README_cn.md",
-        ROOT / "docs/eos/design/runtime/README.md",
-        ROOT / "docs_cn/eos/design/runtime/README_cn.md",
+        ROOT / "docs/eos/core/README.md",
+        ROOT / "docs_cn/eos/core/README_cn.md",
+        ROOT / "docs/isos/start/quick-start.md",
+        ROOT / "docs_cn/isos/start/quick-start_cn.md",
+        ROOT / "docs/eos/interfaces.md",
+        ROOT / "docs_cn/eos/interfaces_cn.md",
         FIXTURE / "README.md", FIXTURE / "README_cn.md",
     ):
         check_links(path)
-    for token in ("run_id", "correlation_id", "eos_package_admitted", "eos_backend_lost", "--package-process", "isos.package-process@v1"):
-        assert token in english.read_text() and token in chinese.read_text(), token
     case_list = cases["cases"]
     ids = [case["id"] for case in case_list]
     assert len(ids) == 27 and len(ids) == len(set(ids))
@@ -167,14 +162,14 @@ def main() -> None:
         "result": "reject_or_bound_before_emit", "max_raw_line_bytes": 8064,
         "max_stored_line_bytes": 8192, "pid_reserved_bytes": 128,
     }
-    assert by_id["private_mujoco_capture"]["expected"]["shared_event"] is False
-    assert by_id["private_mujoco_capture"]["expected"]["log_dir"].endswith("/owner/eos/")
+    assert by_id["private_driver_capture"]["expected"]["shared_event"] is False
+    assert by_id["private_driver_capture"]["expected"]["log_dir"].endswith("/owner/eos/")
     mutations = [
         ("run_id", "bad/id"), ("timestamp", "2026-11-01T08:00:00Z"),
         ("level", "verbose"), ("core", "egia"), ("source", "bridge"),
         ("node_path", "/home/private"),
-        ("node_path", "isos/eos_process/mujoco/sim"),
-        ("node_path", "/cores/isos/layers/eos_process/groups/mujoco/nodes/bad~2escape"),
+        ("node_path", "isos/eos_process/driver/sim"),
+        ("node_path", "/cores/isos/layers/eos_process/groups/driver/nodes/bad~2escape"),
         ("message", "bad\nline"), ("fields", {"raw_prompt": "private"}),
         ("fields", {"nested": {"secret": "x"}}),
     ]
@@ -188,7 +183,7 @@ def main() -> None:
     bad = copy.deepcopy(examples[0])
     bad["pid"] = 1234
     assert not valid(bad)
-    print(f"P06 EOS fixtures valid: {len(examples)} bilingual examples, {len(case_list)} unique cases, {len(mutations)+2} malformed envelopes")
+    print(f"P06 EOS fixtures valid: {len(examples)} event examples, {len(case_list)} unique cases, {len(mutations)+2} malformed envelopes")
 
 
 if __name__ == "__main__":

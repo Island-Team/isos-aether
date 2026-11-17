@@ -6,13 +6,13 @@ LAUNCHER="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT="${ISLAND_PREFIX:-$(cd "$(dirname "$LAUNCHER")/.." && pwd)}"
 CLI_NAME=ei-config
 MODULE_ROOT=ei
-if [[ -f "$ROOT/pyproject.toml" && -d "$ROOT/src/ei" ]]; then
+if [[ -f "$ROOT/pyproject.toml" && -f "$ROOT/__init__.py" ]]; then
   PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-$ROOT/.venv/bin/python}}"
-  export PYTHONPATH="$ROOT/src:$ROOT/libexec:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH="$ROOT/..:$ROOT/package${PYTHONPATH:+:$PYTHONPATH}"
 else
   PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-python3.12}}"
-  LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
-  export PYTHONPATH="$LIB_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  PKG_ROOT="${ISLAND_PKG:-$ROOT/pkg}"
+  export PYTHONPATH="$PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 fi
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
   echo "$CLI_NAME: Python interpreter '$PYTHON' was not found" >&2

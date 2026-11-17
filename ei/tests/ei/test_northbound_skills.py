@@ -8,11 +8,10 @@ from collections.abc import AsyncIterator
 
 import pytest
 import websockets
-
-from ei.api.status import HealthState
-from ei.core.link import LinkPrimitiveError, SkillBinding
-from ei.core.link.client import SkillExecutionSnapshot
-from ei.core.perception.admission import Admission
+from ei.core.evidence.perception.admission import Admission
+from ei.core.io.link import LinkPrimitiveError, SkillBinding
+from ei.core.io.link.client import SkillExecutionSnapshot
+from ei.core.system.models.status import HealthState
 from ei.io import SKILLS_COMMAND_PATH, SKILLS_EXECUTION_PATH, NorthboundServer
 from ei.io.state import ServerState
 

@@ -1,0 +1,3 @@
+include native/demo_stage.c
+include native/isos_node_v1.h
+exclude native/*.so

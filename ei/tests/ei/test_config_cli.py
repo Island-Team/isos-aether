@@ -11,11 +11,10 @@ from typing import Any, cast
 
 import grpc
 import pytest
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc
-
 from ei.config_cli import main
-from ei.core.link import EosClient
+from ei.core.io.link import EosClient
 from ei.lib.config import GatewayConfig, load_mode_config, resolve_etc_root
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 
 def test_ei_etc_and_explicit_root(monkeypatch, tmp_path: Path) -> None:
@@ -114,7 +113,7 @@ def test_adapter_renders_uds_overlay_that_runtime_loader_accepts(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(item["content"], encoding="utf-8")
   preset = load_mode_config(
-    root / "ei", defaults=(Path(__file__).parents[3] / "share/ei/defaults/ei").resolve()
+    root / "ei", defaults=(Path(__file__).parents[3] / "config/defaults/ei").resolve()
   )
   assert preset.gateway.endpoint == f"unix://{socket_path}"
 
@@ -136,11 +135,11 @@ def test_adapter_reports_field_address_for_unsafe_uds_path(monkeypatch, capsys) 
 
 def _setup_request(op: str, endpoints: dict | None = None) -> dict:
   return {
-    "schema_version": 2,
+    "schema_version": 3,
     "op": op,
     "core": "ei",
     "revision": "sha256:test-revision",
-    "graph": {"version": "0.2.0", "robot": {}, "cores": {"ei": {"layers": {}}}},
+    "graph": {"version": "0.2.1", "robot": {}, "cores": {"ei": {"layers": {}}}},
     "endpoints": endpoints or {},
     "packages": [],
   }
@@ -149,40 +148,48 @@ def _setup_request(op: str, endpoints: dict | None = None) -> dict:
 def test_setup_identity_reports_product_and_contract_versions(
   monkeypatch, capsys
 ) -> None:
-  request = {"schema_version": 2, "op": "identity", "core": "ei"}
+  request = {"schema_version": 3, "op": "identity", "core": "ei"}
   status, response = _invoke(monkeypatch, capsys, "setup", request)
   _, described = _invoke(monkeypatch, capsys, "describe")
   assert status == 0
-  assert described["data"]["version"] == "0.2.1"
+  assert described["data"]["version"] == "0.2.3"
   assert response == {
-    "schema_version": 2,
+    "schema_version": 3,
     "ok": True,
     "diagnostics": [],
     "files": [],
     "identity": {
       "core": "ei",
       "product_version": described["data"]["version"],
-      "graph_version": "0.2.0",
+      "graph_version": "0.2.1",
       "node_type_version": "0.2",
-      "supported_graph_versions": ["0.2.0"],
+      "supported_graph_versions": ["0.2.1"],
       "supported_node_type_versions": ["0.2"],
       "supported_node_types": [
+        "ei.cognition.context.builder@v0.2",
+        "ei.cognition.decision.planner@v0.2",
+        "ei.cognition.intent.context@v0.2",
         "ei.cognition.intent.forwarder@v0.2",
+        "ei.cognition.missions.queue@v0.2",
         "ei.cognition.state.arm_status@v0.2",
+        "ei.evidence.perception.admission@v0.2",
         "ei.governance.monitor.arm_status@v0.2",
+        "ei.governance.monitor.health@v0.2",
         "ei.governance.safety.gate@v0.2",
         "ei.io.input.arm_status@v0.2",
         "ei.io.input.trigger@v0.2",
+        "ei.io.link.gateway@v0.2",
       ],
       "features": [
-        "setup-v2",
+        "setup-v3",
         "catalog",
+        "custom-node-v1",
         "graph-0.2-ei-projection",
         "health-only-owner-v1",
         "activation-owner-v1",
         "arm-monitor-owner-v1",
       ],
-      "setup_schema_version": 2,
+      "setup_schema_version": 3,
     },
   }
 
@@ -193,7 +200,7 @@ def test_setup_identity_rejects_graph_fields(monkeypatch, capsys, extra) -> None
     monkeypatch,
     capsys,
     "setup",
-    {"schema_version": 2, "op": "identity", "core": "ei", **extra},
+    {"schema_version": 3, "op": "identity", "core": "ei", **extra},
   )
   assert status == 2
   assert response["ok"] is False
@@ -205,7 +212,7 @@ def test_setup_catalog_is_available_without_runtime_gateway(
 ) -> None:
   status, response = _invoke(monkeypatch, capsys, "setup", _setup_request("catalog"))
   assert status == 0
-  assert response["schema_version"] == 2
+  assert response["schema_version"] == 3
   assert response["catalog"]["profiles"][0]["id"] == "ei.agent"
   assert response["files"] == []
 
@@ -271,7 +278,7 @@ def test_setup_bounds_request_and_preserves_standalone_contract(
 def test_setup_rejects_pre_release_contract(monkeypatch, capsys, setup_payload) -> None:
   status, response = _invoke(monkeypatch, capsys, "setup", setup_payload)
   assert status == 2
-  assert response["schema_version"] == 2
+  assert response["schema_version"] == 3
   assert response["files"] == []
   if setup_payload.get("graph", {}).get("version") == "2.0.0":
     assert response["diagnostics"][0]["path"] == "/graph/version"

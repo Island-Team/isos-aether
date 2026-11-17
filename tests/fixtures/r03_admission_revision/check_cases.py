@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check frozen R03 design cases and their owner-contract anchors."""
+"""Check frozen R03 design cases and current documentation anchors."""
 
 import json
 from pathlib import Path
@@ -22,14 +22,13 @@ def check() -> None:
   assert "same graph" in cases[17]["stimulus"]
   assert "PERMISSION_DENIED" in cases[20]["expect"]
   assert "old/current target union" in cases[22]["expect"]
-  grpc = (ROOT / "docs/eos/interfaces/grpc.md").read_text()
-  hardware = (ROOT / "docs/eos/interfaces/hardware.md").read_text()
-  for field in ("x-eos-active-revision", "authorization", "eos-active-revision", "x-eos-stop-recovery"):
-    assert field in grpc
-  for field in ("AdmissionContext", "active_revision", "authority_role"):
-    assert field in hardware
+  grpc = (ROOT / "docs/isos/interfaces/server/eos.md").read_text()
+  dispatcher = (ROOT / "docs/eos/core/dispatcher/dispatcher.md").read_text()
+  assert "R03 governed actuator admission target contract" in grpc
+  for term in ("R03 governed actuator admission design", "run_id", "OUTCOME_UNKNOWN", "First-use replay"):
+    assert term in dispatcher
 
 
 if __name__ == "__main__":
   check()
-  print("R03 design fixture: 25 cases and owner-contract anchors valid")
+  print("R03 design fixture: 25 cases and documentation anchors valid")

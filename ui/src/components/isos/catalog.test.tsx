@@ -5,25 +5,38 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CatalogBrowser } from './CatalogBrowser';
 import { CatalogSelector, settingOptionGroup, unavailableSelections } from './CatalogSelector';
-import { catalogReloadGraph, catalogReloadIsCurrent, catalogSelectionBlocks, optionResponseIsCurrent } from './catalog-options';
+import { catalogErrorIsStable, catalogReloadGraph, catalogReloadIsCurrent, catalogSelectionBlocks, optionResponseIsCurrent } from './catalog-options';
 import { catalogTypeKey, type NodeOptions, type NodeTypeDefinition, type SettingOptionGroup } from '../../services/isos/node-graph';
 
-const group: SettingOptionGroup = { node_path: 'isos/eos_process/mujoco/simulator', setting: 'scene', selected: 'pick-place', options: [
+const group: SettingOptionGroup = { node_path: 'isos/eos_process/driver/simulator', setting: 'scene', selected: 'pick-place', options: [
   { value: 'navigation', label: 'Navigation', description: 'Drive to a goal', available: true, reason_code: null, reason: null },
   { value: 'pick-place', label: 'Pick and place', description: 'Saved scene', available: false, reason_code: 'package_changed', reason: 'Relink the exact release' },
 ] };
 const options: NodeOptions = { adapter_families: [], primitive_bindings: [], targets: [], setting_options: [group], graph_revision: null, read_only: false };
 
 describe('P03 catalog options', () => {
+  it('shows a blocking catalog note only after the current request settles', () => {
+    expect(catalogErrorIsStable(true, 'draft-b', null, '')).toBe(false);
+    expect(catalogErrorIsStable(true, 'draft-b', { draft: 'draft-a', options }, '')).toBe(false);
+    expect(catalogErrorIsStable(true, 'draft-b', { draft: 'draft-b', options }, '')).toBe(true);
+    expect(catalogErrorIsStable(true, 'draft-b', null, 'draft-b')).toBe(true);
+    expect(catalogErrorIsStable(false, 'draft-b', { draft: 'draft-b', options }, '')).toBe(false);
+  });
   it('uses exact node path and setting, and blocks an unavailable saved ID', () => {
     expect(settingOptionGroup(options, group.node_path, 'scene')).toBe(group);
-    expect(settingOptionGroup(options, 'isos/eos_process/mujoco/other', 'scene')).toBeUndefined();
+    expect(settingOptionGroup(options, 'isos/eos_process/driver/other', 'scene')).toBeUndefined();
     expect(unavailableSelections(options)).toEqual([group]);
     const html = renderToStaticMarkup(<CatalogSelector group={group} label="Scene" value="pick-place" lang="en" onChange={() => undefined} />);
     expect(html).toContain('aria-invalid="true"');
     expect(html).toContain('package_changed Relink the exact release');
     expect(html).toContain('2 options');
     expect(html).toContain('value="pick-place"');
+  });
+
+  it('keeps stale choices visible but disables their controls', () => {
+    const html = renderToStaticMarkup(<CatalogSelector group={group} label="Scene" value="navigation" lang="en" disabled onChange={() => undefined} />);
+    expect(html).toContain('Navigation');
+    expect(html.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it('keeps a selected ID visible even if the server omitted its row', () => {
@@ -79,7 +92,7 @@ describe('P03 catalog options', () => {
   });
 
   it('keeps the latest edited draft when a package reload resolves', async () => {
-    const saved = { version: '0.2.0', robot: { id: 'robot', name: 'Before' }, cores: {} };
+    const saved = { version: '0.2.1', robot: { id: 'robot', name: 'Before' }, cores: {} };
     const edited = { ...saved, robot: { ...saved.robot, name: 'After edit' } };
     let resolveReload!: (value: typeof saved) => void;
     const reload = new Promise<typeof saved>((resolve) => { resolveReload = resolve; });
@@ -93,48 +106,46 @@ describe('P03 catalog options', () => {
   it('blocks an absent required selector and an unavailable selected value for any registered type', () => {
     const type: NodeTypeDefinition = { id: 'isos.eos_process.worker@v0.2', core: 'isos', layer: 'eos_process', group: 'worker', kind: 'software', lifecycle: 'process', capabilities: [], settings: [{ name: 'scene', data_type: 'string', required: true, selector: { provider: 'package', resource: 'scene', package_from: 'node.package' } }], inputs: [], outputs: [] };
     const entry = { path: group.node_path, definition: type, node: { id: 'simulator', node_type: type.id, label: 'Simulator', description: '', settings: {} as Record<string, unknown> } };
-    expect(catalogSelectionBlocks('0.2.0', [entry], { ...options, setting_options: [{ ...group, selected: null }] })).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], { ...options, setting_options: [{ ...group, selected: null }] })).toBe(true);
     entry.node.settings.scene = 'pick-place';
-    expect(catalogSelectionBlocks('0.2.0', [entry], options)).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], options)).toBe(true);
   });
 
-  it('blocks an adapter until EOS returns all required owner choices', () => {
+  it('checks only owner-declared adapter choices', () => {
     const type: NodeTypeDefinition = { id: 'isos.eos_hardware.sensor@v0.2', core: 'isos', layer: 'eos_hardware', group: 'sensor', kind: 'software', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [] };
-    const entry = { path: 'isos/eos_hardware/sensor/front', definition: type, node: { id: 'front', node_type: type.id, label: 'Front', description: '', adapter: { type: 'mujoco-v2', settings: {} } } };
-    expect(catalogSelectionBlocks('0.2.0', [entry], null)).toBe(true);
-    const selected = { ...entry, node: { ...entry.node, adapter: { type: 'mujoco-v2', settings: { device_id: 'base', simulator_node: 'sim' } } } };
+    const entry = { path: 'isos/eos_hardware/sensor/front', definition: type, node: { id: 'front', node_type: type.id, label: 'Front', description: '', adapter: { type: 'vendor-socket', settings: {} } } };
+    expect(catalogSelectionBlocks('0.2.1', [entry], null)).toBe(true);
+    const selected = { ...entry, node: { ...entry.node, adapter: { type: 'vendor-socket', settings: { device_id: 'base' } } } };
     const ownerGroups = [
-      { node_path: entry.path, setting: 'adapter.type', selected: 'mujoco-v2', options: [{ value: 'mujoco-v2', label: 'MuJoCo', description: '', available: true, reason_code: null, reason: null }] },
+      { node_path: entry.path, setting: 'adapter.type', selected: 'vendor-socket', options: [{ value: 'vendor-socket', label: 'Vendor socket', description: '', available: true, reason_code: null, reason: null }] },
       { node_path: entry.path, setting: 'adapter.settings.device_id', selected: 'base', options: [{ value: 'base', label: 'Base', description: '', available: true, reason_code: null, reason: null }] },
-      { node_path: entry.path, setting: 'adapter.settings.simulator_node', selected: 'sim', options: [{ value: 'sim', label: 'Simulator', description: '', available: true, reason_code: null, reason: null }] },
     ];
-    expect(catalogSelectionBlocks('0.2.0', [selected], { ...options, setting_options: ownerGroups.slice(0, 1) })).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [selected], { ...options, setting_options: ownerGroups.slice(0, 2) })).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [selected], { ...options, setting_options: ownerGroups })).toBe(false);
-    expect(catalogSelectionBlocks('0.2.0', [selected], { ...options, setting_options: ownerGroups.map((group) => group.setting === 'adapter.settings.device_id' ? { ...group, options: group.options.map((option) => ({ ...option, available: false })) } : group) })).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [selected], { ...options, setting_options: ownerGroups.slice(0, 1) })).toBe(false);
+    expect(catalogSelectionBlocks('0.2.1', [selected], { ...options, setting_options: ownerGroups })).toBe(false);
+    expect(catalogSelectionBlocks('0.2.1', [selected], { ...options, setting_options: ownerGroups.map((group) => group.setting === 'adapter.settings.device_id' ? { ...group, options: group.options.map((option) => ({ ...option, available: false })) } : group) })).toBe(true);
   });
 
   it('blocks a missing owner option group even for an optional selector', () => {
     const type: NodeTypeDefinition = { id: 'isos.ei_process.worker@v0.2', core: 'isos', layer: 'ei_process', group: 'worker', kind: 'software', lifecycle: 'process', capabilities: [], settings: [{ name: 'mode', data_type: 'string', required: false, selector: { provider: 'owner', resource: 'modes' } }], inputs: [], outputs: [] };
     const entry = { path: 'isos/ei_process/worker/one', definition: type, node: { id: 'one', node_type: type.id, label: 'One', description: '', settings: {} } };
-    expect(catalogSelectionBlocks('0.2.0', [entry], null)).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [entry], options)).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [entry], { ...options, setting_options: [{ node_path: entry.path, setting: 'mode', selected: null, options: [] }] })).toBe(false);
+    expect(catalogSelectionBlocks('0.2.1', [entry], null)).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], options)).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], { ...options, setting_options: [{ node_path: entry.path, setting: 'mode', selected: null, options: [] }] })).toBe(false);
   });
 
   it('blocks an unavailable effective default from an owner selector', () => {
     const type: NodeTypeDefinition = { id: 'isos.ei_process.planner@v0.2', core: 'isos', layer: 'ei_process', group: 'planner', kind: 'software', lifecycle: 'process', capabilities: [], settings: [{ name: 'controller.model', data_type: 'string', required: false, default: 'control', selector: { provider: 'owner', resource: 'model' } }], inputs: [], outputs: [] };
     const entry = { path: 'isos/ei_process/planner/main', definition: type, node: { id: 'main', node_type: type.id, label: 'Planner', description: '', settings: {} } };
     const ownerGroup: SettingOptionGroup = { node_path: entry.path, setting: 'controller.model', selected: null, options: [{ value: 'control', label: 'Control', description: '', available: false, reason_code: 'unknown_model_binding', reason: 'Binding missing' }] };
-    expect(catalogSelectionBlocks('0.2.0', [entry], { ...options, setting_options: [ownerGroup] })).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [entry], { ...options, setting_options: [{ ...ownerGroup, options: [{ ...ownerGroup.options[0], available: true }] }] })).toBe(false);
+    expect(catalogSelectionBlocks('0.2.1', [entry], { ...options, setting_options: [ownerGroup] })).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], { ...options, setting_options: [{ ...ownerGroup, options: [{ ...ownerGroup.options[0], available: true }] }] })).toBe(false);
   });
 
   it('blocks legacy browser key selectors from the health-only graph', () => {
     const type: NodeTypeDefinition = { id: 'isos.ui.key@v0.2', core: 'isos', layer: 'ui', group: 'keyboard', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [{ name: 'key', data_type: 'string', required: true, selector: { provider: 'ui', resource: 'keys' } }], inputs: [], outputs: [] };
     const entry = { path: 'isos/ui/keyboard/drive', definition: type, node: { id: 'drive', node_type: type.id, label: 'Drive', description: '', settings: { key: 'KeyW' } } };
-    expect(catalogSelectionBlocks('0.2.0', [entry], null)).toBe(true);
-    expect(catalogSelectionBlocks('0.2.0', [{ ...entry, node: { ...entry.node, settings: { key: 'Unidentified' } } }], null)).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [entry], null)).toBe(true);
+    expect(catalogSelectionBlocks('0.2.1', [{ ...entry, node: { ...entry.node, settings: { key: 'Unidentified' } } }], null)).toBe(true);
   });
 });
 
@@ -143,13 +154,21 @@ describe('catalog hierarchy', () => {
   it('keeps the exact core, layer, group and type tuple', () => {
     const other = { ...base, group: 'camera', description: 'Capture frames.' };
     expect(catalogTypeKey(base)).not.toBe(catalogTypeKey(other));
-    const html = renderToStaticMarkup(<CatalogBrowser types={[base, other]} value="" lang="en" onChange={() => undefined} />);
-    expect(html).toContain('Core');
-    expect(html).toContain('Layer');
-    expect(html).toContain('Group');
-    expect(html).toContain('Node type');
+    const html = renderToStaticMarkup(<CatalogBrowser types={[base, other]} value={catalogTypeKey(base)} lang="en" onChange={() => undefined} />);
+    expect(html).toContain('<summary>isos</summary>');
+    expect(html).toContain('<summary>eos_hardware</summary>');
+    expect(html).toContain('<summary>base</summary>');
     expect(html).toContain('Search node types');
-    expect(renderToStaticMarkup(<CatalogBrowser types={[base]} value="" lang="cn" onChange={() => undefined} />)).toContain('节点类型');
+    expect(renderToStaticMarkup(<CatalogBrowser types={[base]} value={catalogTypeKey(base)} lang="cn" onChange={() => undefined} />)).toContain('类型描述');
+  });
+  it('distinguishes equal node types from different exact packages', () => {
+    const first = { ...base, package: { id: 'one/robot', version: '0.2.1' } };
+    const second = { ...base, package: { id: 'two/robot', version: '0.2.1' } };
+    expect(catalogTypeKey(first)).not.toBe(catalogTypeKey(second));
+    const html = renderToStaticMarkup(<CatalogBrowser types={[first, second]} value={catalogTypeKey(first)} lang="en" onChange={() => undefined} />);
+    expect(html).toContain('one/robot@0.2.1');
+    expect(html).toContain('two/robot@0.2.1');
+    expect(html).not.toContain('Show legacy package process nodes');
   });
 });
 

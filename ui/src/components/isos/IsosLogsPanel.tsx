@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   getCurrentLogPage, getProcessStatus,
-  type LogLevel, type LogLine, type ProcessStatus,
+  isCurrentLogPage, type CurrentLogPage, type LogLevel, type LogLine, type ProcessStatus,
 } from '../../services/isos/node-graph';
-import { IsosApiError } from '../../services/isos/api-client';
+import { IsosApiError, resolveIsosApiOrigin } from '../../services/isos/api-client';
 import type { Language } from '@/types';
 import { getBrowserLogs, subscribeBrowserLogs } from '../../services/isos/browser-logs';
 import {
@@ -12,10 +12,10 @@ import {
 } from './log-cursor-state';
 import './isos-logs-panel.scss';
 
-const SOURCES = ['all', 'isos', 'packages', 'graph', 'browser', 'ui', 'services', 'eos', 'ei', 'mujoco', 'bridge', 'config'];
+const SOURCES = ['all', 'isos', 'packages', 'graph', 'browser', 'ui', 'services', 'eos', 'ei', 'bridge', 'config'];
 export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error'] as const;
 const POLL_MS = 1200;
-const RETRY_MS = 30_000;
+const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
 
 /** Browser logs are separate local diagnostics. */
 export function visibleLogLines(lines: LogLine[], threshold: LogLevel): LogLine[] {
@@ -64,10 +64,73 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
     let needsStatus = true;
     let statusIdentityUnavailable = false;
     let retryAt = 0;
+    let failures = 0;
     let timer: number | undefined;
     let generation = 0;
     let controller: AbortController | null = null;
-    const schedule = (delay: number): void => { if (!stopped) timer = window.setTimeout(() => { void poll(); }, delay); };
+    let socket: WebSocket | null = null;
+    const acceptPage = (page: CurrentLogPage): void => {
+      const anchorKey = `${page.scope.kind}:${page.scope.run_id}`;
+      if (observedAnchor.current?.key !== anchorKey) setAnchorAnnouncement(false);
+      if (observedAnchor.current?.key === anchorKey && observedAnchor.current.state === 'pending' && page.anchor.state === 'found' && announcedAnchor.current !== anchorKey) {
+        announcedAnchor.current = anchorKey;
+        setAnchorAnnouncement(true);
+      }
+      observedAnchor.current = { key: anchorKey, state: page.anchor.state };
+      cursor.current = page.next_cursor;
+      currentScope.current = anchorKey;
+      setCurrent((state) => acceptCurrentLogPage(state, page));
+      setStale(statusIdentityUnavailable);
+    };
+    const connectSocket = async (): Promise<void> => {
+      if (stopped || !following || document.visibilityState !== 'visible' || socket) return;
+      try {
+        const origin = await resolveIsosApiOrigin(true);
+        if (stopped || document.visibilityState !== 'visible') return;
+        const url = new URL(`${origin}/api/isos/v1/runtime/logs/ws`);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.searchParams.set('source', source);
+        url.searchParams.set('level', level);
+        url.searchParams.set('limit', '200');
+        if (nodePath) url.searchParams.set('node_path', nodePath);
+        if (correlationId) url.searchParams.set('correlation_id', correlationId);
+        if (cursor.current) url.searchParams.set('cursor', cursor.current);
+        const next = new WebSocket(url);
+        socket = next;
+        next.onmessage = (event) => {
+          try {
+            const message: unknown = JSON.parse(String(event.data));
+            if (!message || typeof message !== 'object') throw new Error('Invalid log stream event');
+            const value = message as { type?: string; page?: unknown; error?: { message?: string; code?: string } };
+            if (value.type === 'page' && isCurrentLogPage(value.page)) { acceptPage(value.page); setError(''); failures = 0; return; }
+            if (value.type === 'error') {
+              if (value.error?.code === 'log_scope_unavailable') setStale(true);
+              if (value.error?.code === 'log_cursor_filter_mismatch' || value.error?.code === 'log_cursor_invalid') {
+                cursor.current = undefined;
+                setCurrent(resetCurrentLogDetails);
+                next.close();
+              }
+              setError(value.error?.message || 'Log stream unavailable');
+              return;
+            }
+            throw new Error('Invalid log stream event');
+          } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); next.close(); }
+        };
+        next.onerror = () => next.close();
+        next.onclose = () => {
+          if (socket !== next) return;
+          socket = null;
+          if (!stopped && document.visibilityState === 'visible') {
+            const delay = RETRY_DELAYS_MS[Math.min(failures++, RETRY_DELAYS_MS.length - 1)];
+            schedule(delay);
+          }
+        };
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        schedule(RETRY_DELAYS_MS[Math.min(failures++, RETRY_DELAYS_MS.length - 1)]);
+      }
+    };
+    const schedule = (delay: number): void => { if (!stopped) timer = window.setTimeout(() => { if (typeof WebSocket === 'undefined') void poll(); else void connectSocket(); }, delay); };
     const poll = async (): Promise<void> => {
       if (stopped || pending || document.visibilityState !== 'visible' || Date.now() < retryAt) return;
       pending = true;
@@ -86,18 +149,8 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
         const page = await getCurrentLogPage({ source, level, ...(nodePath ? { node_path: nodePath } : {}), ...(correlationId ? { correlation_id: correlationId } : {}), cursor: cursor.current, limit: 200 }, requestController.signal);
         if (stopped || requestGeneration !== generation) return;
         {
-          const anchorKey = `${page.scope.kind}:${page.scope.run_id}`;
-          if (observedAnchor.current?.key !== anchorKey) setAnchorAnnouncement(false);
-          if (observedAnchor.current?.key === anchorKey && observedAnchor.current.state === 'pending' && page.anchor.state === 'found' && announcedAnchor.current !== anchorKey) {
-            announcedAnchor.current = anchorKey;
-            setAnchorAnnouncement(true);
-          }
-          observedAnchor.current = { key: anchorKey, state: page.anchor.state };
           const oldScope = currentScope.current;
-          cursor.current = page.next_cursor;
-          currentScope.current = `${page.scope.kind}:${page.scope.run_id}`;
-          setCurrent((state) => acceptCurrentLogPage(state, page));
-                setStale(statusIdentityUnavailable);
+          acceptPage(page);
           if (oldScope && oldScope !== currentScope.current) {
             const fresh = await getProcessStatus(requestController.signal);
             if (stopped || requestGeneration !== generation) return;
@@ -107,12 +160,15 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
           }
         }
         retryAt = 0;
+        failures = 0;
         setError('');
-        schedule(POLL_MS);
+        schedule(typeof WebSocket === 'undefined' ? POLL_MS : 0);
       } catch (reason) {
         if (!stopped && requestGeneration === generation) {
           needsStatus = true;
-          retryAt = Date.now() + RETRY_MS;
+          const delay = RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)];
+          failures += 1;
+          retryAt = Date.now() + delay;
           if (reason instanceof IsosApiError && (reason.code === 'log_cursor_filter_mismatch' || reason.code === 'log_cursor_invalid')) {
             cursor.current = undefined;
             setCurrent(resetCurrentLogDetails);
@@ -125,7 +181,7 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
             ? (lang === 'cn' ? '当前运行日志范围不可用；请查看 IsOS 状态。' : 'Current log scope unavailable; check IsOS status.')
             : reason instanceof Error ? reason.message : String(reason);
           setError(message);
-          schedule(RETRY_MS);
+          schedule(delay);
         }
       } finally {
         if (requestGeneration === generation) {
@@ -135,9 +191,17 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
       }
     };
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible' && Date.now() >= retryAt) {
+      if (document.visibilityState === 'visible') {
+        generation += 1;
+        controller?.abort();
+        controller = null;
+        pending = false;
+        retryAt = 0;
+        needsStatus = true;
         if (timer !== undefined) window.clearTimeout(timer);
-        void poll();
+        if (typeof WebSocket === 'undefined') void poll(); else void connectSocket();
+      } else {
+        socket?.close();
       }
     };
     const onScopeRecheck = (): void => {
@@ -149,12 +213,13 @@ export function IsosLogsPanel({ lang, onClose, initialSource = 'all', sources = 
       needsStatus = true;
       retryAt = 0;
       if (timer !== undefined) window.clearTimeout(timer);
+      socket?.close();
       void poll();
     };
     void poll();
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('isosui:log-scope-recheck', onScopeRecheck);
-    return () => { stopped = true; generation += 1; controller?.abort(); if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('isosui:log-scope-recheck', onScopeRecheck); };
+    return () => { stopped = true; generation += 1; controller?.abort(); socket?.close(); if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('isosui:log-scope-recheck', onScopeRecheck); };
   }, [source, level, nodePath, correlationId, following, visible, lang]);
   const currentScope = useRef<string | null>(null);
 

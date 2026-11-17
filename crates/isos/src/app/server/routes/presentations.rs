@@ -6,7 +6,7 @@ pub(crate) async fn process_status(State(app): State<Arc<App>>, headers: HeaderM
   let paths = app.paths.clone();
   let deployment = app.deployment.clone();
   let status = tokio::task::spawn_blocking(move || {
-    crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+    crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
   })
   .await
   .map_err(|_| {

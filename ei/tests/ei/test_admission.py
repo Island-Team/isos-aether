@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from ei.core.evidence.perception.admission import Admission
 from structlog.testing import capture_logs
-
-from ei.core.perception.admission import Admission
 
 
 @pytest.mark.asyncio

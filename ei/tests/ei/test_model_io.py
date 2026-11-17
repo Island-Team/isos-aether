@@ -7,9 +7,8 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.model_io import ModelActivity, ModelExchange, ModelMessage
-from ei.core.decision.model_io import ModelIOStore
+from ei.core.cognition.decision.model_io import ModelIOStore
+from ei.core.system.models.model_io import ModelActivity, ModelExchange, ModelMessage
 
 
 def _exchange(
@@ -116,9 +115,8 @@ async def test_store_wait_next() -> None:
 @pytest.mark.asyncio
 async def test_model_io_ws_stream() -> None:
   import websockets
-
-  from ei.api.status import HealthState
-  from ei.core.perception.admission import Admission
+  from ei.core.evidence.perception.admission import Admission
+  from ei.core.system.models.status import HealthState
   from ei.io.northbound import MODEL_IO_PATH, NorthboundServer
   from ei.io.state import ServerState
 
@@ -152,8 +150,7 @@ async def test_model_io_ws_stream() -> None:
 @pytest.mark.asyncio
 async def test_model_io_ws_gated_before_ready() -> None:
   import websockets
-
-  from ei.core.perception.admission import Admission
+  from ei.core.evidence.perception.admission import Admission
   from ei.io.northbound import MODEL_IO_PATH, NorthboundServer
   from ei.io.state import ServerState
 
@@ -177,7 +174,7 @@ async def test_model_io_ws_gated_before_ready() -> None:
 
 def test_planner_publishes_exchanges() -> None:
   """The planner forwards each request/response pair to the sink."""
-  from ei.core.decision.planner import DecisionPlanner as P
+  from ei.core.cognition.decision.planner import DecisionPlanner as P
   from ei.lib.vlm import ModelResponse, Usage
 
   planner = P.__new__(P)

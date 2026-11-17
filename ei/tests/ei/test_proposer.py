@@ -6,12 +6,11 @@ import asyncio
 import json
 
 import pytest
-
-from ei.core.context import ContextBuilder
-from ei.core.decision.policy import InvocationPolicy, InvocationTrigger
-from ei.core.decision.proposer import _propose_pass, proposer_entry
-from ei.core.missions import MissionQueue
-from ei.core.perception.admission import Admission
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.decision.policy import InvocationPolicy, InvocationTrigger
+from ei.core.cognition.decision.proposer import _propose_pass, proposer_entry
+from ei.core.cognition.missions import MissionQueue
+from ei.core.evidence.perception.admission import Admission
 from ei.lib.config import (
   DecisionConfig,
   PriorityConfig,

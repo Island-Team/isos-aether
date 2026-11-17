@@ -1,6 +1,6 @@
 # IsOS skill selection cases
 
-[中文](README_cn.md) · [Package contract](../../../../../docs/isos/interfaces/packages/process.md) · [Rust skill contract](../../../../../docs/eos/interfaces/skills/rust.md)
+[中文](README_cn.md) · [Package contract](../../../../../docs/isos/interfaces/package/README.md#process) · [Rust skill contract](../../../../../docs/eos/interfaces.md#skills_rust)
 
 The current selection uses a saved graph in format `0.2.0` with one `isos` core and an EOS process node of type `isos.process.component@v0.2`. Its `settings.skill_executables` entries pin verified `kind:"skill"` packages and exact `.skill` paths. IsOS writes a private, revision-bound selection into the generated manifest and delivers its path only to EOS. EOS verifies and stages each executable before advertising the catalog.
 

@@ -14,11 +14,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from test_stages import _graph
-
 from ei.lib.config import BackendEndpointConfig, GatewayConfig
 from ei.lib.operation_ledger import OperationLedger
 from ei.lib.safety_state import SafetyState, SafetyStateError, runtime_lock
+from test_stages import _graph
+
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 REVISION = "a" * 64
@@ -76,7 +76,7 @@ def _fixture_files(
       "PYTHONPATH": os.pathsep.join(
         (
           str(Path(__file__).resolve().parents[2]),
-          str(Path(__file__).resolve().parents[2] / "src"),
+          str(Path(__file__).resolve().parents[2]),
         )
       ),
     }

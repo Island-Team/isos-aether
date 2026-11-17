@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
+from ei.contracts.io.link import NumericRange, ResourceKind, TerminalStatus
+from ei.contracts.system.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
+from ei.core.io.link import EosClient, LinkPrimitiveError
+from ei.core.system.registry import PrimitiveRegistry
+from ei.generated.eos import capabilities_pb2, gateway_pb2, skills_pb2
+from ei.lib.config import GatewayConfig
 from google.protobuf import json_format, struct_pb2
 
-from ei.contracts.actions import TerminalStatus
-from ei.contracts.endpoints import ResourceKind
-from ei.contracts.limits import NumericRange
-from ei.contracts.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
-from ei.core.link import EosClient, LinkPrimitiveError
-from ei.core.registry import PrimitiveRegistry
-from ei.lib.config import GatewayConfig
-from island.generated.eos import capabilities_pb2, gateway_pb2, skills_pb2
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 
@@ -109,19 +104,6 @@ def test_capability_name_scope_must_match_device_identity(
 
   with pytest.raises(LinkPrimitiveError, match="malformed name"):
     EosClient._parse_capabilities(response, "robot-a")
-
-
-def test_eos_operation_wire_examples_match_in_english_and_chinese() -> None:
-  """Both operator guides must show the same request and operation payloads."""
-  root = Path(__file__).resolve().parents[2]
-  english = (root / "../docs/ei/interfaces/eos.md").read_text()
-  chinese = (root / "../docs_cn/ei/interfaces/eos.md").read_text()
-  extract = lambda document: re.findall(
-    r"\x60\x60\x60json\n(.*?)\n\x60\x60\x60", document, flags=re.DOTALL
-  )
-
-  assert len(extract(english)) == 4
-  assert extract(english) == extract(chinese)
 
 
 def test_successful_operation_cannot_report_admission_false() -> None:

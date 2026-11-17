@@ -12,15 +12,13 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
-from ei.contracts.actions import PrimitiveAck, RejectReason
-from ei.core.link import LinkPrimitiveError
-from ei.core.missions import MissionQueue
-from ei.core.monitor import EstopLatch
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
-from ei.core.safety import SafetyGate
-from ei.internal.decision import ActionInvocation, StepContext
+from ei.contracts.governance.safety import ActionInvocation, StepContext
+from ei.contracts.io.link import PrimitiveAck, RejectReason
+from ei.core.cognition.missions import MissionQueue
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import EstopLatch, SafetyGate
+from ei.core.io.link import LinkPrimitiveError
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.operation_ledger import OperationLedger
 
 

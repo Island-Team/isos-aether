@@ -8,9 +8,16 @@ from datetime import UTC, datetime
 
 import pytest
 import websockets
-
-from ei.api.mission import MissionPriorityBand, MissionState
-from ei.api.plan import (
+from ei.core.cognition.missions import MissionQueue
+from ei.core.cognition.missions.document import (
+  MissionAction,
+  MissionDocument,
+  MissionStep,
+)
+from ei.core.cognition.missions.store import MissionStore, MissionStoreError
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.mission import MissionPriorityBand, MissionState
+from ei.core.system.models.plan import (
   ActionRecord,
   PlanAnnotation,
   PlanRecord,
@@ -19,11 +26,7 @@ from ei.api.plan import (
   StepOutcome,
   StepRecord,
 )
-from ei.api.status import HealthState, SafetyStatus
-from ei.core.missions import MissionQueue
-from ei.core.missions.document import MissionAction, MissionDocument, MissionStep
-from ei.core.missions.store import MissionStore, MissionStoreError
-from ei.core.perception.admission import Admission
+from ei.core.system.models.status import HealthState, SafetyStatus
 from ei.io import NorthboundServer
 from ei.io.northbound import (
   HEALTH_PATH,

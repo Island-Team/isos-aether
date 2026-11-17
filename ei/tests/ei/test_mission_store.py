@@ -6,12 +6,15 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.mission import MissionPriorityBand, MissionState
-from ei.api.plan import PlanRecord, PlanStep, PlanStepStatus, StepOutcome
-from ei.core.missions import MissionQueue, MissionStore
-from ei.core.missions.document import MissionAction, MissionDocument, MissionStep
-from ei.core.missions.store import MissionCheckpointPhase, MissionStoreError
+from ei.core.cognition.missions import MissionQueue, MissionStore
+from ei.core.cognition.missions.document import (
+  MissionAction,
+  MissionDocument,
+  MissionStep,
+)
+from ei.core.cognition.missions.store import MissionCheckpointPhase, MissionStoreError
+from ei.core.system.models.mission import MissionPriorityBand, MissionState
+from ei.core.system.models.plan import PlanRecord, PlanStep, PlanStepStatus, StepOutcome
 
 
 def _plan(mission_id: str, order: str) -> PlanRecord:

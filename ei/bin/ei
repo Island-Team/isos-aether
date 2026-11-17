@@ -23,7 +23,7 @@ for arg in "$@"; do
   fi
 done
 
-if [[ -f "$ROOT/pyproject.toml" && -d "$ROOT/src/ei" ]]; then
+if [[ -f "$ROOT/pyproject.toml" && -f "$ROOT/__init__.py" ]]; then
   VENV="$ROOT/.venv"
   PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-$VENV/bin/python}}"
   if [[ "$CAPABILITY_PROBE" -eq 0 && -z "${EI_PYTHON:-}${ISLAND_PYTHON:-}" && ! -x "$PYTHON" ]]; then
@@ -39,23 +39,21 @@ if [[ -f "$ROOT/pyproject.toml" && -d "$ROOT/src/ei" ]]; then
       "$PYTHON" -m pip install --quiet -e "$ROOT"
     fi
   fi
-  export PYTHONPATH="$ROOT/src:$ROOT/libexec:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH="$ROOT/..:$ROOT/package${PYTHONPATH:+:$PYTHONPATH}"
   export EI_ETC="${EI_ETC:-${ISLAND_ETC:-$ROOT/../config}/ei}"
 else
   PYTHON="${EI_PYTHON:-${ISLAND_PYTHON:-python3.12}}"
   export ISLAND_PREFIX="${ISLAND_PREFIX:-$ROOT}"
-  if [[ -d "$ROOT/share/contracts" && -d "$ROOT/libexec" ]]; then
+  if [[ -d "$ROOT/contract" && -d "$ROOT/pkg" ]]; then
     export ISLAND_MODE="${ISLAND_MODE:-portable}"
     export EI_ETC="${EI_ETC:-${ISLAND_ETC:-$ROOT/etc}/ei}"
-    LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
-    LIBEXEC_ROOT="${ISLAND_LIBEXEC:-$ROOT/libexec}"
+    PKG_ROOT="${ISLAND_PKG:-$ROOT/pkg}"
   else
     export ISLAND_MODE="${ISLAND_MODE:-system}"
     export EI_ETC="${EI_ETC:-${ISLAND_ETC:-/etc/island}/ei}"
-    LIB_ROOT="${ISLAND_LIB:-$ROOT/lib/island}"
-    LIBEXEC_ROOT="${ISLAND_LIBEXEC:-$ROOT/libexec/island}"
+    PKG_ROOT="${ISLAND_PKG:-$ROOT/pkg}"
   fi
-  export PYTHONPATH="$LIB_ROOT:$LIBEXEC_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH="$PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then

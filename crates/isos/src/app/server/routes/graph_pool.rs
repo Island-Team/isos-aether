@@ -6,7 +6,7 @@ const MAX_GRAPH_BYTES: usize = 1024 * 1024;
 const MAX_GRAPHS: usize = 128;
 
 fn editable_shape(graph: &Value) -> bool {
-  graph["version"] == "0.2.0"
+  graph["version"] == "0.2.1"
     && graph["robot"]["id"].is_string()
     && graph["robot"]["name"].is_string()
     && graph["cores"]["isos"]["layers"]
@@ -144,7 +144,7 @@ pub(crate) async fn put(
     if !editable_shape(&edit.graph) {
       return Err(err(
         StatusCode::UNPROCESSABLE_ENTITY,
-        "graph pool requires an editable 0.2.0 graph",
+        "graph pool requires an editable 0.2.1 graph",
       ));
     }
     let bytes = serde_json::to_vec_pretty(&edit.graph)
@@ -198,13 +198,13 @@ mod tests {
     };
     paths.prepare().unwrap();
     let active = paths.node_graph_path("default");
-    let active_bytes = br#"{"version":"0.2.0","robot":{"id":"active","name":"Active"},"cores":{"isos":{"layers":{}}}}"#;
+    let active_bytes = br#"{"version":"0.2.1","robot":{"id":"active","name":"Active"},"cores":{"isos":{"layers":{}}}}"#;
     crate::app::config::atomic_write(&active, active_bytes).unwrap();
     let app = Arc::new(App {
       paths,
       deployment: "default".into(),
     });
-    let graph = json!({"version":"0.2.0","robot":{"id":"robot","name":"Robot"},"cores":{"isos":{"layers":{}}}});
+    let graph = json!({"version":"0.2.1","robot":{"id":"robot","name":"Robot"},"cores":{"isos":{"layers":{}}}});
     let saved = put(
       State(app.clone()),
       HeaderMap::new(),
@@ -273,7 +273,7 @@ mod tests {
       Json(PoolEdit {
         schema_version: json!("0.1.0"),
         revision: String::new(),
-        graph: json!({"version":"0.2.0"}),
+        graph: json!({"version":"0.2.1"}),
       }),
     )
     .await

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import pytest
-
-from ei.contracts.endpoints import ResourceKind
-from ei.contracts.perception.world.detection import DetectionSnapshot
-from ei.contracts.perception.world.state import WorldStateSnapshot
-from ei.contracts.validate import load_resource_schema, validate_resource
+from ei.contracts.evidence.perception import DetectionSnapshot, WorldStateSnapshot
+from ei.contracts.io.link import ResourceKind
+from ei.contracts.system.validate import load_resource_schema, validate_resource
 
 
 def test_world_and_detection_contracts_select_canonical_schema_ids() -> None:

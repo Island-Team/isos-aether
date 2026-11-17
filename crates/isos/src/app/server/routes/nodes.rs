@@ -12,6 +12,164 @@ const ACTIVATION_TYPE: &str = "button_activation@v0.2";
 const MAX_EVENT_BYTES: usize = 2048;
 const MONITOR_TYPE: &str = "arm_monitor_state@v0.2";
 const MONITOR_CACHE_AGE: Duration = Duration::from_millis(200);
+const MAX_EXTERNAL_BYTES: usize = 65536;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalRequest {
+  schema_version: u32,
+  node_path: String,
+  run_id: String,
+  active_revision: String,
+  op: String,
+  port: String,
+  payload: Value,
+}
+
+pub(crate) async fn external_node(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  body: Bytes,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  if body.len() > MAX_EXTERNAL_BYTES {
+    return Err(err(
+      StatusCode::PAYLOAD_TOO_LARGE,
+      "external node request exceeds 64 KiB",
+    ));
+  }
+  let request: ExternalRequest = serde_json::from_slice(&body)
+    .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid external node request"))?;
+  let paths = app.paths.clone();
+  let deployment = app.deployment.clone();
+  tokio::task::spawn_blocking(move || external_node_sync(paths, deployment, request))
+    .await
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?
+}
+
+fn external_node_sync(paths: Paths, deployment: String, request: ExternalRequest) -> ApiResult {
+  if request.schema_version != 1
+    || !matches!(request.op.as_str(), "input" | "read")
+    || !valid_node_path(&request.node_path)
+    || !request.node_path.starts_with("isos/")
+    || request.port.is_empty()
+    || request.port.len() > 48
+    || !request
+      .port
+      .bytes()
+      .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+  {
+    return Err(err(
+      StatusCode::BAD_REQUEST,
+      "invalid external node operation",
+    ));
+  }
+  let status = crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  if status["run_id"] != request.run_id
+    || status["active_revision"] != request.active_revision
+    || status["run_id_state"] != "known"
+    || (request.op == "input" && status["state"] != "running")
+    || !matches!(status["state"].as_str(), Some("running" | "degraded"))
+  {
+    return Err(err(
+      StatusCode::CONFLICT,
+      "external node run fence is stale",
+    ));
+  }
+  let bytes = fs::read(paths.node_graph_path(&deployment))
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  if graph_contract::revision(&bytes) != request.active_revision {
+    return Err(err(
+      StatusCode::CONFLICT,
+      "external node graph fence is stale",
+    ));
+  }
+  let graph: Value = serde_json::from_slice(&bytes)
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  let instance = node(&graph, &request.node_path).ok_or_else(|| {
+    err(
+      StatusCode::UNPROCESSABLE_ENTITY,
+      "external node instance is absent",
+    )
+  })?;
+  let catalog = process::catalog_for_graph(&paths, &graph)
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  let definition = catalog["types"]
+    .as_array()
+    .and_then(|types| {
+      types.iter().find(|entry| {
+        entry["id"] == instance["node_type"] && entry["package"] == instance["package"]
+      })
+    })
+    .ok_or_else(|| {
+      err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "external node type is not selected",
+      )
+    })?;
+  if definition["implementation"]
+    != json!({"kind":"external","interface":"isos.ui.external.v1","version":"1","lifecycle_adapter":"unix-socket-v1"})
+  {
+    return Err(err(
+      StatusCode::UNPROCESSABLE_ENTITY,
+      "external node interface is unsupported",
+    ));
+  }
+  let direction = if request.op == "input" {
+    "inputs"
+  } else {
+    "outputs"
+  };
+  let port = definition[direction]
+    .as_array()
+    .and_then(|ports| ports.iter().find(|port| port["name"] == request.port))
+    .ok_or_else(|| {
+      err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "external node port is not registered",
+      )
+    })?;
+  if request.op == "read" && !request.payload.is_null() {
+    return Err(err(StatusCode::BAD_REQUEST, "read payload must be null"));
+  }
+  let data_type = catalog["data_types"]
+    .as_array()
+    .and_then(|types| types.iter().find(|entry| entry["id"] == port["data_type"]))
+    .ok_or_else(|| {
+      err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "external node data type is unavailable",
+      )
+    })?;
+  let validator = jsonschema::validator_for(&data_type["schema"])
+    .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  if request.op == "input" && !validator.is_valid(&request.payload) {
+    return Err(err(
+      StatusCode::UNPROCESSABLE_ENTITY,
+      "external node input does not match its registered data type",
+    ));
+  }
+  let reply = crate::runtime::manager::isos_external::request(
+    &paths,
+    &deployment,
+    &request.run_id,
+    &request.active_revision,
+    &request.node_path,
+    &request.op,
+    json!({"port":request.port,"value":request.payload}),
+  )
+  .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  if request.op == "read" && !validator.is_valid(&reply["payload"]) {
+    return Err(err(
+      StatusCode::SERVICE_UNAVAILABLE,
+      "external node output does not match its registered data type",
+    ));
+  }
+  ok(
+    json!({"node_path":request.node_path,"port":request.port,"payload":reply["payload"],"run_id":request.run_id,"active_revision":request.active_revision}),
+  )
+}
 
 struct MonitorCache {
   deployment: String,
@@ -52,8 +210,13 @@ const MONITOR_CHAIN: [(&str, &str); 8] = [
   ),
   ("isos/ui/monitor/arm", "isos.ui.monitor.arm@v0.2"),
 ];
-const CHAIN: [(&str, &str, &str); 7] = [
+const CHAIN: [(&str, &str, &str); 8] = [
   ("ei.io.input.trigger@v0.2", "activation", "activation"),
+  (
+    "ei.cognition.intent.context@v0.2",
+    "activation",
+    "activation",
+  ),
   (
     "ei.cognition.intent.forwarder@v0.2",
     "activation",
@@ -252,7 +415,7 @@ fn valid_monitor_observation(value: &Value, run_id: &str, revision: &str, graph:
 }
 
 fn monitor_snapshot(paths: Paths, deployment: String) -> ApiResult {
-  let status = crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+  let status = crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
     .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
   if status["state"] == "stopped" {
     if let Ok(mut cache) = MONITOR_CACHE.lock() {
@@ -686,16 +849,24 @@ mod tests {
         "ei",
         "cognition",
         "intent",
-        "forwarder",
+        "context",
         CHAIN[1].0,
         Some("ei/io/input/trigger"),
+      ),
+      (
+        "ei",
+        "cognition",
+        "intent",
+        "forwarder",
+        CHAIN[2].0,
+        Some("ei/cognition/intent/context"),
       ),
       (
         "ei",
         "governance",
         "safety",
         "gate",
-        CHAIN[2].0,
+        CHAIN[3].0,
         Some("ei/cognition/intent/forwarder"),
       ),
       (
@@ -703,7 +874,7 @@ mod tests {
         "interface",
         "ingress",
         "trigger",
-        CHAIN[3].0,
+        CHAIN[4].0,
         Some("ei/governance/safety/gate"),
       ),
       (
@@ -711,7 +882,7 @@ mod tests {
         "skill",
         "demo",
         "joint_delta",
-        CHAIN[4].0,
+        CHAIN[5].0,
         Some("eos/interface/ingress/trigger"),
       ),
       (
@@ -719,7 +890,7 @@ mod tests {
         "dispatcher",
         "arm",
         "delta",
-        CHAIN[5].0,
+        CHAIN[6].0,
         Some("eos/skill/demo/joint_delta"),
       ),
       (
@@ -727,13 +898,13 @@ mod tests {
         "hardware",
         "mock",
         "arm",
-        CHAIN[6].0,
+        CHAIN[7].0,
         Some("eos/dispatcher/arm/delta"),
       ),
     ];
     for (index, (core, layer, group, id, kind, source)) in nodes.into_iter().enumerate() {
-      let input_name = if index >= 6 { "delta" } else { "activation" };
-      let output_name = if index >= 6 { "delta" } else { "activation" };
+      let input_name = if index >= 7 { "delta" } else { "activation" };
+      let output_name = if index >= 7 { "delta" } else { "activation" };
       graph["cores"][core]["layers"][layer]["groups"][group]["nodes"][id] = json!({"node_type":kind,"inputs":source.map(|source| json!({input_name:{"node":source,"output":output_name}})).unwrap_or_else(|| json!({}))});
     }
     graph

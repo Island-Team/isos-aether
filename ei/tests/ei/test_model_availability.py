@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
-from ei.core.decision.model import ModelAvailabilityGate
+from ei.core.cognition.decision.model import ModelAvailabilityGate
 from ei.lib.vlm import ModelResponse
 
 

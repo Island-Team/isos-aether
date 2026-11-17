@@ -54,7 +54,7 @@ fn failed_cli_apply_is_the_manager_scope_anchor_but_validate_is_not() {
     .iter()
     .find(|line| line["event_code"] == "deployment_preflight_failed")
     .unwrap();
-  assert_eq!(failure["source"], "isos.runtime.isos.event@aether-v0.2.1");
+  assert_eq!(failure["source"], "isos.runtime.isos.event@aether-v0.2.3");
   let status = isos(&home, &["status", "--json"]);
   assert!(status.status.success());
   let body: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
@@ -129,6 +129,6 @@ fn doctor_reports_local_readiness_as_json() {
   assert!(report.get("graph").is_none());
   assert!(report.get("owners").is_none());
   assert_eq!(report["mode"], "product");
-  assert_eq!(report["interfaces"]["product_version"], "0.2.1");
-  assert_eq!(report["interfaces"]["target_graph_format"], "0.2.0");
+  assert_eq!(report["interfaces"]["product_version"], "0.2.3");
+  assert_eq!(report["interfaces"]["target_graph_format"], "0.2.1");
 }

@@ -1,7 +1,7 @@
 # Complete IsOS defaults. config/isos/isos.toml overrides selected fields.
 # Comments are guidance only. Relative paths resolve from the IsOS checkout.
 # Process environment overrides matching values; active.env is retired.
-# See docs/isos/design/app/configuration.md for the explicit environment names.
+# See docs/isos/core/config.md for the explicit environment names.
 [server]
 http_port = 16000
 ui_port = 16001
@@ -10,7 +10,7 @@ ui_port = 16001
 aether_bin_dir = "../../target/debug"
 ei_bin_dir = "../../ei/bin"
 ei_defaults_dir = "../../config/ei"
-ei_factory_defaults_dir = "../../share/ei/defaults/ei"
+ei_factory_defaults_dir = "../../config/defaults/ei"
 ui_dist = "../../ui/dist/local"
 # Only for explicit `isos serve --ui-live` frontend development.
 # ui_repo = "../../ui"
@@ -19,10 +19,6 @@ ui_dist = "../../ui/dist/local"
 name = "default"
 stop_timeout_ms = 30000 # milliseconds; 5000..120000
 eos_stop_grace_ms = 20000 # milliseconds; 1000..stop_timeout_ms-3000
-
-# Optional read-only vision evidence gate.
-# [vision_evidence]
-# gate_path = "eos/interface/gate/front"
 
 # Optional host paths required by a verified package contribution.
 # Names must be uppercase environment identifiers; values must be absolute.

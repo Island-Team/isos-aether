@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from island.path import Layout, Mode
+from ei.lib.layout import Layout, Mode
 
 
 def test_source_layout_is_checkout_relative_not_cwd(
@@ -19,11 +18,11 @@ def test_source_layout_is_checkout_relative_not_cwd(
   root = Path(__file__).resolve().parents[2]
   assert layout.mode is Mode.SOURCE
   assert layout.prefix == root
-  assert layout.share == root.parent / "share"
-  assert layout.ei_defaults == root.parent / "share/ei/defaults/ei"
+  assert layout.share == root.parent / "contract"
+  assert layout.ei_defaults == root.parent / "config/defaults/ei"
   assert layout.etc == root / "etc"
   assert layout.component_etc("ei") == root.parent / "config/ei"
-  assert layout.contracts == root.parent / "share/contracts"
+  assert layout.contracts == root.parent / "contract"
   assert layout.doc == root.parent / "docs"
   assert (layout.doc / "ei").is_dir()
   assert layout.component_state("ei") == root.parent / "data/ei/state"
@@ -47,7 +46,6 @@ def test_system_layout_maps_each_unix_role() -> None:
   assert layout.tmp == Path("/var/lib/island")
   assert layout.component_state("ei") == Path("/var/lib/island/ei/state")
   assert layout.component_run("ei") == Path("/run/island/ei")
-  assert layout.src is None
 
 
 def test_portable_layout_keeps_every_role_below_prefix(tmp_path: Path) -> None:
@@ -60,12 +58,11 @@ def test_portable_layout_keeps_every_role_below_prefix(tmp_path: Path) -> None:
   assert layout.doc == tmp_path / "share/doc"
   assert layout.state == tmp_path / "data"
   assert layout.component_cache("ei") == tmp_path / "data/ei/cache"
-  assert layout.src is None
 
 
 def test_unrelated_source_layout_keeps_its_own_share_root(tmp_path: Path) -> None:
   prefix = tmp_path / "ei"
-  (prefix / "src/ei").mkdir(parents=True)
+  (prefix / "ei").mkdir(parents=True)
   (prefix / "pyproject.toml").write_text("[project]\n")
 
   layout = Layout.resolve(mode=Mode.SOURCE, prefix=prefix, environ={})

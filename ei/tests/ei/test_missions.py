@@ -6,20 +6,19 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-from structlog.testing import capture_logs
-
-from ei.api.mission import MissionPriorityBand, MissionState
-from ei.api.plan import PlanRecord, PlanStep, PlanStepStatus, StepOutcome
-from ei.core.decision import MissionFailedError, decision_entry
-from ei.core.missions import (
+from ei.core.cognition.decision import MissionFailedError, decision_entry
+from ei.core.cognition.missions import (
   MissionConflictError,
   MissionNotFoundError,
   MissionNotPendingError,
   MissionQueue,
   MissionStartedError,
 )
-from ei.core.missions.document import MissionDocument, MissionPlan
-from ei.internal.backend import BackendSessionHandoff
+from ei.core.cognition.missions.document import MissionDocument, MissionPlan
+from ei.core.system.backend_handoff import BackendSessionHandoff
+from ei.core.system.models.mission import MissionPriorityBand, MissionState
+from ei.core.system.models.plan import PlanRecord, PlanStep, PlanStepStatus, StepOutcome
+from structlog.testing import capture_logs
 
 
 @pytest.mark.asyncio

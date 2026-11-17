@@ -6,18 +6,16 @@ import json
 from pathlib import Path
 
 import pytest
-
-from ei.contracts.actions import TerminalStatus
-from ei.contracts.endpoints import PrimitiveKind, ResourceKind
-from ei.contracts.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
-from ei.contracts.validate import validate_primitive, validate_primitive_ack
-from island.generated.eos import capabilities_pb2, gateway_pb2, skills_pb2
-from island.generated.eos.robot import descriptor_pb2
-from island.share import repository_resources
+from ei.contracts.io.link import PrimitiveKind, ResourceKind, TerminalStatus
+from ei.contracts.system.registry import ACTION_CONTRACTS, RESOURCE_CONTRACTS
+from ei.contracts.system.validate import validate_primitive, validate_primitive_ack
+from ei.generated.eos import capabilities_pb2, gateway_pb2, skills_pb2
+from ei.generated.eos.robot import descriptor_pb2
+from ei.lib.resources import repository_resources
 
 ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = repository_resources(ROOT)
-PRIMITIVES = RESOURCES.directory("eos/schemas/eos/actions")
+PRIMITIVES = RESOURCES.directory("schemas/actions")
 
 
 def test_gateway_capability_and_skill_services_have_canonical_rpcs() -> None:

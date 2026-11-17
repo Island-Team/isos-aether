@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::{
   fs::{self, File, OpenOptions},
   io::{Read, Write},
-  os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+  os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
   path::{Path, PathBuf},
 };
 
@@ -17,27 +17,11 @@ const GRANT_NAMES: [&str; 3] = [
   "operator-control.grant",
   "verifier.json",
 ];
-pub const RESERVED_ENVS: [&str; 8] = [
+
+pub const RESERVED_ENVS: [&str; 3] = [
   "EOS_CONTROL_GRANTS_FILE",
   "EI_EOS_CONTROL_GRANT_FILE",
   "AETHER_BRIDGE_CONTROL_GRANT_FILE",
-  "AETHER_BRIDGE_VISION_VERIFIER_FILE",
-  "EI_VISION_BINDING_FILE",
-  "EI_EOS_VISION_GRANT_FILE",
-  "EI_VISION_INSPECTION_SOCKET",
-  "EI_VISION_INSPECTION_VERIFIER_FILE",
-];
-const VISION_FILES: [&str; 4] = [
-  "ei-vision.grant",
-  "vision-inspection.grant",
-  "vision-verifier.json",
-  "ei-vision-inspection-verifier.json",
-];
-const ENDPOINT_FILES: [&str; 4] = [
-  "eos-vision-owner.sock",
-  "ei-vision-inspection.sock",
-  "vision-verifier.json",
-  "ei-vision-inspection-verifier.json",
 ];
 
 #[derive(Debug, Serialize)]
@@ -72,11 +56,8 @@ fn failure(code: &'static str) -> anyhow::Error {
 #[derive(Debug, Clone)]
 pub struct Bundle {
   root: PathBuf,
-  runtime_root: PathBuf,
-  endpoint_root: Option<PathBuf>,
   run_id: String,
   revision: String,
-  vision: Option<crate::runtime::process::vision_binding::Template>,
 }
 
 fn valid_hash(value: &str) -> bool {
@@ -214,97 +195,6 @@ fn decoded_grant(bytes: &[u8]) -> Result<Vec<u8>> {
   hex::decode(text).map_err(|_| failure("control_grant_invalid_file"))
 }
 
-fn endpoint_name(deployment: &str, run_id: &str) -> String {
-  let digest = Sha256::digest(format!("{deployment}\0{run_id}").as_bytes());
-  hex::encode(&digest[..16])
-}
-
-fn socket_path(root: &Path, name: &str) -> Result<PathBuf> {
-  let path = root.join(name);
-  ensure!(
-    path.as_os_str().as_encoded_bytes().len() <= 107,
-    failure("vision_endpoint_unavailable")
-  );
-  Ok(path)
-}
-
-fn verify_endpoint_dir(root: &Path) -> Result<()> {
-  no_symlink_ancestors(root)?;
-  inspect_dir(root)?;
-  inspect_dir(
-    root
-      .parent()
-      .ok_or_else(|| failure("control_grant_unsafe_path"))?,
-  )?;
-  let actual = fs::read_dir(root)
-    .map_err(|_| failure("vision_endpoint_unavailable"))?
-    .map(|entry| {
-      entry
-        .map(|entry| entry.file_name())
-        .map_err(|_| failure("vision_endpoint_unavailable"))
-    })
-    .collect::<Result<std::collections::BTreeSet<_>>>()?;
-  let mut expected: std::collections::BTreeSet<_> = ENDPOINT_FILES[2..]
-    .iter()
-    .map(std::ffi::OsStr::new)
-    .map(std::ffi::OsStr::to_os_string)
-    .collect();
-  for name in &ENDPOINT_FILES[..2] {
-    let path = socket_path(root, name)?;
-    if let Ok(metadata) = fs::symlink_metadata(&path) {
-      ensure!(
-        metadata.file_type().is_socket()
-          && metadata.uid() == unsafe { libc::geteuid() }
-          && metadata.permissions().mode() & 0o7777 == 0o600,
-        failure("vision_endpoint_unavailable")
-      );
-      expected.insert(std::ffi::OsStr::new(name).to_os_string());
-    }
-  }
-  ensure!(actual == expected, failure("vision_endpoint_unavailable"));
-  Ok(())
-}
-
-pub fn check_endpoint_orphans<'a>(
-  paths: &Paths,
-  active_runs: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
-) -> Result<()> {
-  let root = paths.runtime.join("v");
-  match fs::symlink_metadata(&root) {
-    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-    Err(_) => return Err(failure("vision_endpoint_unavailable")),
-    Ok(_) => {}
-  }
-  no_symlink_ancestors(&root)?;
-  inspect_dir(&root)?;
-  let allowed: std::collections::BTreeMap<_, _> = active_runs
-    .into_iter()
-    .map(|(deployment, run_id, revision)| (endpoint_name(deployment, run_id), (run_id, revision)))
-    .collect();
-  for entry in fs::read_dir(&root).map_err(|_| failure("vision_endpoint_unavailable"))? {
-    let entry = entry.map_err(|_| failure("vision_endpoint_unavailable"))?;
-    let name = entry.file_name();
-    let (run_id, revision) = name
-      .to_str()
-      .and_then(|name| allowed.get(name))
-      .ok_or_else(|| failure("vision_endpoint_unavailable"))?;
-    verify_endpoint_dir(&entry.path())?;
-    for (verifier_name, revision_field) in [
-      (VISION_FILES[2], "active_revision"),
-      (VISION_FILES[3], "graph_revision"),
-    ] {
-      let value: serde_json::Value =
-        serde_json::from_slice(&read_file(&entry.path().join(verifier_name), 4096)?)
-          .map_err(|_| failure("vision_grant_invalid"))?;
-      ensure!(
-        value["run_id"] == **run_id && value[revision_field] == **revision,
-        failure("vision_graph_stale")
-      );
-    }
-  }
-  Ok(())
-}
-
 impl Bundle {
   pub fn issue(paths: &Paths, deployment: &str, run_id: &str, revision: &str) -> Result<Self> {
     Self::issue_with(paths, deployment, run_id, revision, random_grant)
@@ -369,11 +259,8 @@ impl Bundle {
     }
     let bundle = Self {
       root,
-      runtime_root: paths.runtime.clone(),
-      endpoint_root: None,
       run_id: run_id.to_owned(),
       revision: revision.to_owned(),
-      vision: None,
     };
     if let Err(error) = bundle.verify() {
       for name in GRANT_NAMES {
@@ -415,20 +302,11 @@ impl Bundle {
           .map_err(|_| failure("control_grant_unsafe_path"))
       })
       .collect::<Result<std::collections::BTreeSet<_>>>()?;
-    let mut expected: std::collections::BTreeSet<_> = GRANT_NAMES
+    let expected: std::collections::BTreeSet<_> = GRANT_NAMES
       .iter()
       .map(std::ffi::OsStr::new)
       .map(std::ffi::OsStr::to_os_string)
       .collect();
-    if self.vision.is_some() {
-      expected.extend(
-        VISION_FILES[..2]
-          .iter()
-          .map(std::ffi::OsStr::new)
-          .map(std::ffi::OsStr::to_os_string),
-      );
-      expected.insert(std::ffi::OsStr::new("ei").to_os_string());
-    }
     ensure!(actual == expected, failure("control_grant_unsafe_path"));
     let ei = decoded_grant(&read_file(&run_dir.join(GRANT_NAMES[0]), 65)?)?;
     let operator = decoded_grant(&read_file(&run_dir.join(GRANT_NAMES[1]), 65)?)?;
@@ -443,207 +321,7 @@ impl Bundle {
         && verifier.operator_control_sha256 == hex::encode(Sha256::digest(&operator)),
       failure("control_grant_mismatch")
     );
-    if let Some(template) = &self.vision {
-      let endpoint_root = self
-        .endpoint_root
-        .as_deref()
-        .ok_or_else(|| failure("vision_endpoint_unavailable"))?;
-      let deployment = run_dir
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(std::ffi::OsStr::to_str)
-        .ok_or_else(|| failure("vision_endpoint_unavailable"))?;
-      ensure!(
-        endpoint_root
-          == self
-            .runtime_root
-            .join("v")
-            .join(endpoint_name(deployment, &self.run_id)),
-        failure("vision_endpoint_unavailable")
-      );
-      verify_endpoint_dir(endpoint_root)?;
-      inspect_dir(&run_dir.join("ei"))?;
-      let ei_entries = fs::read_dir(run_dir.join("ei"))?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
-      ensure!(
-        ei_entries == [std::ffi::OsStr::new("vision-binding.json").to_os_string()].into(),
-        failure("vision_grant_invalid")
-      );
-      let binding_bytes = read_file(&run_dir.join("ei/vision-binding.json"), 4096)?;
-      let binding: serde_json::Value =
-        serde_json::from_slice(&binding_bytes).map_err(|_| failure("vision_grant_invalid"))?;
-      ensure!(
-        binding
-          == crate::runtime::process::vision_binding::binding(
-            template,
-            &self.run_id,
-            run_dir,
-            endpoint_root
-          ),
-        failure("vision_binding_changed")
-      );
-      let vision = decoded_grant(&read_file(&run_dir.join(VISION_FILES[0]), 65)?)?;
-      let inspection = decoded_grant(&read_file(&run_dir.join(VISION_FILES[1]), 65)?)?;
-      ensure!(
-        vision != inspection
-          && vision != ei
-          && inspection != ei
-          && vision != operator
-          && inspection != operator,
-        failure("vision_grant_invalid")
-      );
-      let bridge: serde_json::Value =
-        serde_json::from_slice(&read_file(&endpoint_root.join(VISION_FILES[2]), 4096)?)
-          .map_err(|_| failure("vision_grant_invalid"))?;
-      ensure!(
-        bridge
-          == serde_json::json!({"schema_version":1,"run_id":self.run_id,
-                "active_revision":self.revision,"projection_revision":template.projection_revision,
-                "source_path":template.source_path,"gate_path":template.gate_path,
-                "ei_vision_sha256":hex::encode(Sha256::digest(&vision))}),
-        failure("vision_grant_invalid")
-      );
-      let inspect: serde_json::Value =
-        serde_json::from_slice(&read_file(&endpoint_root.join(VISION_FILES[3]), 4096)?)
-          .map_err(|_| failure("vision_grant_invalid"))?;
-      ensure!(
-        inspect
-          == serde_json::json!({"schema_version":1,"run_id":self.run_id,
-                "graph_revision":self.revision,"inspection_sha256":hex::encode(Sha256::digest(&inspection))}),
-        failure("vision_grant_invalid")
-      );
-    }
     Ok(())
-  }
-
-  pub fn attach_vision(
-    &mut self,
-    template: crate::runtime::process::vision_binding::Template,
-  ) -> Result<()> {
-    ensure!(
-      self.vision.is_none() && template.graph_revision == self.revision,
-      failure("vision_binding_changed")
-    );
-    self.verify()?;
-    let deployment = self
-      .root
-      .parent()
-      .and_then(Path::file_name)
-      .and_then(std::ffi::OsStr::to_str)
-      .ok_or_else(|| failure("vision_endpoint_unavailable"))?;
-    let endpoints = require_dir(&self.runtime_root, "v")?;
-    let endpoint_root = endpoints.join(endpoint_name(deployment, &self.run_id));
-    socket_path(&endpoint_root, &template.endpoint_name)?;
-    socket_path(&endpoint_root, "ei-vision-inspection.sock")?;
-    // Existing names are never reused, even if an orphan has valid-looking
-    // verifier bytes. This also makes a truncated digest collision closed.
-    let vision = random_grant()?;
-    let inspection = random_grant()?;
-    ensure!(vision != inspection, failure("vision_grant_invalid"));
-    let endpoint_root = create_dir(&endpoints, &endpoint_name(deployment, &self.run_id))?;
-    let ei_dir = match create_dir(&self.root, "ei") {
-      Ok(dir) => dir,
-      Err(error) => {
-        let _ = fs::remove_dir(&endpoint_root);
-        return Err(error);
-      }
-    };
-    let issue = (|| {
-      write_new(
-        &self.root.join(VISION_FILES[0]),
-        format!("{}\n", hex::encode(vision)).as_bytes(),
-      )?;
-      write_new(
-        &self.root.join(VISION_FILES[1]),
-        format!("{}\n", hex::encode(inspection)).as_bytes(),
-      )?;
-      let bridge = serde_json::json!({"schema_version":1,"run_id":self.run_id,
-                "active_revision":self.revision,"projection_revision":template.projection_revision,
-                "source_path":template.source_path,"gate_path":template.gate_path,
-                "ei_vision_sha256":hex::encode(Sha256::digest(vision))});
-      write_new(
-        &endpoint_root.join(VISION_FILES[2]),
-        &serde_json::to_vec(&bridge)?,
-      )?;
-      let inspect = serde_json::json!({"schema_version":1,"run_id":self.run_id,
-                "graph_revision":self.revision,"inspection_sha256":hex::encode(Sha256::digest(inspection))});
-      write_new(
-        &endpoint_root.join(VISION_FILES[3]),
-        &serde_json::to_vec(&inspect)?,
-      )?;
-      write_new(
-        &ei_dir.join("vision-binding.json"),
-        &serde_json::to_vec(&crate::runtime::process::vision_binding::binding(
-          &template,
-          &self.run_id,
-          &self.root,
-          &endpoint_root,
-        ))?,
-      )?;
-      File::open(&self.root)?.sync_all()?;
-      File::open(&endpoint_root)?.sync_all()?;
-      Ok::<(), anyhow::Error>(())
-    })();
-    if issue.is_err() {
-      for name in &VISION_FILES[..2] {
-        let _ = fs::remove_file(self.root.join(name));
-      }
-      for name in &VISION_FILES[2..] {
-        let _ = fs::remove_file(endpoint_root.join(name));
-      }
-      let _ = fs::remove_file(ei_dir.join("vision-binding.json"));
-      let _ = fs::remove_dir(ei_dir);
-      let _ = fs::remove_dir(&endpoint_root);
-      return issue;
-    }
-    self.endpoint_root = Some(endpoint_root);
-    self.vision = Some(template);
-    self.verify()
-  }
-
-  pub fn vision_env(&self, id: &str) -> Vec<(&'static str, PathBuf)> {
-    if self.vision.is_none() {
-      return Vec::new();
-    }
-    match id {
-      "bridge" => vec![(
-        "AETHER_BRIDGE_VISION_VERIFIER_FILE",
-        self.endpoint_root.as_ref().unwrap().join(VISION_FILES[2]),
-      )],
-      "ei" => vec![
-        (
-          "EI_VISION_BINDING_FILE",
-          self.root.join("ei/vision-binding.json"),
-        ),
-        ("EI_EOS_VISION_GRANT_FILE", self.root.join(VISION_FILES[0])),
-        (
-          "EI_VISION_INSPECTION_SOCKET",
-          self
-            .endpoint_root
-            .as_ref()
-            .unwrap()
-            .join("ei-vision-inspection.sock"),
-        ),
-        (
-          "EI_VISION_INSPECTION_VERIFIER_FILE",
-          self.endpoint_root.as_ref().unwrap().join(VISION_FILES[3]),
-        ),
-      ],
-      _ => Vec::new(),
-    }
-  }
-  pub fn vision_socket(&self) -> Option<PathBuf> {
-    self.vision.as_ref().map(|template| {
-      self
-        .endpoint_root
-        .as_ref()
-        .unwrap()
-        .join(&template.endpoint_name)
-    })
-  }
-  pub fn vision_template(&self) -> Option<&crate::runtime::process::vision_binding::Template> {
-    self.vision.as_ref()
   }
 
   pub fn launch_env(&self, id: &str) -> Option<(&'static str, PathBuf)> {
@@ -657,10 +335,6 @@ impl Bundle {
 
   pub fn retire(&self) -> Result<()> {
     self.verify()?;
-    if self.vision.is_some() {
-      self.revoke_vision()?;
-    }
-    self.remove_endpoint_dir()?;
     for name in GRANT_NAMES {
       fs::remove_file(self.root.join(name)).map_err(|_| failure("control_grant_unsafe_path"))?;
     }
@@ -684,10 +358,6 @@ impl Bundle {
   )]
   pub fn revoke_keep_directory(&self) -> Result<()> {
     self.verify()?;
-    if self.vision.is_some() {
-      self.revoke_vision()?;
-    }
-    self.remove_endpoint_dir()?;
     for name in GRANT_NAMES {
       fs::remove_file(self.root.join(name)).map_err(|_| failure("control_grant_unsafe_path"))?;
     }
@@ -703,107 +373,6 @@ impl Bundle {
         .ok_or_else(|| failure("control_grant_unsafe_path"))?,
     )?
     .sync_all()?;
-    Ok(())
-  }
-
-  fn revoke_vision(&self) -> Result<()> {
-    for name in &VISION_FILES[..2] {
-      fs::remove_file(self.root.join(name))?;
-    }
-    let endpoint_root = self
-      .endpoint_root
-      .as_deref()
-      .ok_or_else(|| failure("vision_endpoint_unavailable"))?;
-    for name in &VISION_FILES[2..] {
-      fs::remove_file(endpoint_root.join(name))?;
-    }
-    fs::remove_file(self.root.join("ei/vision-binding.json"))?;
-    fs::remove_dir(self.root.join("ei"))?;
-    Ok(())
-  }
-
-  fn remove_endpoint_dir(&self) -> Result<()> {
-    let Some(root) = &self.endpoint_root else {
-      return Ok(());
-    };
-    no_symlink_ancestors(root)?;
-    inspect_dir(root)?;
-    for name in &ENDPOINT_FILES[..2] {
-      let path = socket_path(root, name)?;
-      match fs::symlink_metadata(&path) {
-        Ok(meta) => {
-          ensure!(
-            meta.file_type().is_socket()
-              && meta.uid() == unsafe { libc::geteuid() }
-              && meta.permissions().mode() & 0o7777 == 0o600,
-            failure("vision_endpoint_unavailable")
-          );
-          fs::remove_file(&path).map_err(|_| failure("vision_endpoint_unavailable"))?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(failure("vision_endpoint_unavailable")),
-      }
-    }
-    ensure!(
-      fs::read_dir(root)?.next().is_none(),
-      failure("vision_endpoint_unavailable")
-    );
-    fs::remove_dir(root).map_err(|_| failure("vision_endpoint_unavailable"))?;
-    File::open(
-      root
-        .parent()
-        .ok_or_else(|| failure("vision_endpoint_unavailable"))?,
-    )?
-    .sync_all()
-    .map_err(|_| failure("vision_endpoint_unavailable"))?;
-    Ok(())
-  }
-
-  pub fn revoke_vision_for_stop(&mut self) -> Result<()> {
-    if self.vision.is_none() {
-      return Ok(());
-    }
-    // A corrupt grant must never keep the other read authority live. Unlink
-    // both verifier paths independently before touching bindings or children.
-    let intact = self.verify().is_ok();
-    let mut removed = true;
-    let endpoint_root = self.endpoint_root.as_deref();
-    for (path_root, name) in [
-      (endpoint_root, VISION_FILES[2]),
-      (endpoint_root, VISION_FILES[3]),
-      (Some(self.root.as_path()), VISION_FILES[0]),
-      (Some(self.root.as_path()), VISION_FILES[1]),
-    ] {
-      let Some(path_root) = path_root else {
-        removed = false;
-        continue;
-      };
-      match fs::remove_file(path_root.join(name)) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => removed = false,
-      }
-    }
-    match fs::remove_file(self.root.join("ei/vision-binding.json")) {
-      Ok(()) => {}
-      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-      Err(_) => removed = false,
-    }
-    match fs::remove_dir(self.root.join("ei")) {
-      Ok(()) => {}
-      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-      Err(_) => removed = false,
-    }
-    if File::open(&self.root)
-      .and_then(|file| file.sync_all())
-      .is_err()
-    {
-      removed = false;
-    }
-    if removed {
-      self.vision = None;
-    }
-    ensure!(intact && removed, failure("vision_grant_invalid"));
     Ok(())
   }
 }
@@ -836,14 +405,9 @@ pub fn validate_plan(specs: &[process::ProcessSpec]) -> Result<()> {
     );
     if matches!(spec.id.as_str(), "eos" | "bridge" | "config") {
       for (index, arg) in spec.settings.args.iter().enumerate() {
-        if [
-          "--run-id",
-          "--package-process",
-          "--log-dir",
-          "--owner-vision-socket",
-        ]
-        .iter()
-        .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+        if ["--run-id", "--package-process", "--log-dir"]
+          .iter()
+          .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
         {
           return Err(
             Diagnostic {
@@ -883,301 +447,6 @@ mod tests {
 
   fn revision() -> String {
     "a".repeat(64)
-  }
-
-  fn vision_template() -> crate::runtime::process::vision_binding::Template {
-    crate::runtime::process::vision_binding::Template {
-      schema_version: 1,
-      graph_revision: revision(),
-      projection_revision: "b".repeat(64),
-      source_path: "eos/hardware/camera/front".into(),
-      gate_path: "eos/interface/gate/front".into(),
-      ingress_type: "ei.vision.ingress@v0.1.frame".into(),
-      render: crate::runtime::process::vision_binding::Render {
-        max_width_px: 1280,
-        jpeg_quality: 80,
-      },
-      target_fps: 30,
-      endpoint_kind: "uds".into(),
-      endpoint_name: "eos-vision-owner.sock".into(),
-    }
-  }
-
-  #[test]
-  fn selected_vision_grants_are_private_distinct_and_revoked_before_retirement() {
-    let (_temp, paths) = paths();
-    let mut bundle = Bundle::issue(&paths, "default", "r-one", &revision()).unwrap();
-    bundle.attach_vision(vision_template()).unwrap();
-    bundle.verify().unwrap();
-    let root = bundle.root.clone();
-    let binding = root.join("ei/vision-binding.json");
-    assert_eq!(
-      fs::symlink_metadata(&binding).unwrap().permissions().mode() & 0o7777,
-      0o600
-    );
-    let vision = fs::read(root.join("ei-vision.grant")).unwrap();
-    let inspection = fs::read(root.join("vision-inspection.grant")).unwrap();
-    assert_ne!(vision, inspection);
-    let endpoint_root = bundle.endpoint_root.clone().unwrap();
-    let inspection_verifier = endpoint_root.join("ei-vision-inspection-verifier.json");
-    assert!(inspection_verifier.is_file());
-    assert_eq!(
-      bundle.vision_env("bridge"),
-      vec![(
-        "AETHER_BRIDGE_VISION_VERIFIER_FILE",
-        endpoint_root.join("vision-verifier.json")
-      )]
-    );
-    assert!(
-      bundle
-        .vision_env("ei")
-        .iter()
-        .any(|(name, path)| *name == "EI_VISION_INSPECTION_VERIFIER_FILE"
-          && path == &inspection_verifier)
-    );
-    assert!(
-      !fs::read(&binding)
-        .unwrap()
-        .windows(vision.len())
-        .any(|bytes| bytes == vision)
-    );
-    let socket = bundle.vision_socket().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-    let established_client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-    let (established_server, _) = listener.accept().unwrap();
-    bundle.verify().unwrap();
-    bundle.revoke_vision_for_stop().unwrap();
-    assert!(!endpoint_root.join("vision-verifier.json").exists());
-    assert!(!inspection_verifier.exists());
-    assert!(!binding.exists());
-    assert!(established_client.peer_addr().is_ok());
-    drop(established_server);
-    drop(established_client);
-    drop(listener);
-    fs::remove_file(socket).unwrap();
-    bundle.retire().unwrap();
-  }
-
-  #[test]
-  fn vision_grant_mode_or_verifier_tamper_fails_closed() {
-    let (_temp, paths) = paths();
-    let mut bundle = Bundle::issue(&paths, "default", "r-two", &revision()).unwrap();
-    bundle.attach_vision(vision_template()).unwrap();
-    let grant = bundle.root.join("ei-vision.grant");
-    fs::set_permissions(&grant, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(bundle.verify().is_err());
-    fs::set_permissions(&grant, fs::Permissions::from_mode(0o600)).unwrap();
-    fs::write(
-      bundle
-        .endpoint_root
-        .as_ref()
-        .unwrap()
-        .join("vision-verifier.json"),
-      b"{}\n",
-    )
-    .unwrap();
-    assert!(bundle.verify().is_err());
-  }
-
-  #[test]
-  fn stop_revokes_both_authorities_when_one_verifier_is_tampered_or_missing() {
-    for missing in [false, true] {
-      let (_temp, paths) = paths();
-      let mut bundle = Bundle::issue(&paths, "default", "r-stop", &revision()).unwrap();
-      bundle.attach_vision(vision_template()).unwrap();
-      let endpoint_root = bundle.endpoint_root.as_ref().unwrap();
-      let damaged = endpoint_root.join("ei-vision-inspection-verifier.json");
-      if missing {
-        fs::remove_file(&damaged).unwrap();
-      } else {
-        fs::write(&damaged, b"{}\n").unwrap();
-      }
-      let surviving = endpoint_root.join("vision-verifier.json");
-      assert!(surviving.exists());
-      let error = bundle.revoke_vision_for_stop().unwrap_err();
-      assert_eq!(
-        error.downcast_ref::<Diagnostic>().unwrap().code,
-        "vision_grant_invalid"
-      );
-      assert!(!surviving.exists());
-      assert!(!damaged.exists());
-      assert!(!bundle.root.join("ei-vision.grant").exists());
-      assert!(!bundle.root.join("vision-inspection.grant").exists());
-      assert!(!bundle.root.join("ei/vision-binding.json").exists());
-      bundle.retire().unwrap();
-    }
-  }
-
-  #[test]
-  fn stop_revokes_inspection_authority_when_owner_grant_is_missing() {
-    let (_temp, paths) = paths();
-    let mut bundle = Bundle::issue(&paths, "default", "r-stop", &revision()).unwrap();
-    bundle.attach_vision(vision_template()).unwrap();
-    fs::remove_file(bundle.root.join("ei-vision.grant")).unwrap();
-    assert!(bundle.revoke_vision_for_stop().is_err());
-    assert!(
-      !bundle
-        .endpoint_root
-        .as_ref()
-        .unwrap()
-        .join("ei-vision-inspection-verifier.json")
-        .exists()
-    );
-    bundle.retire().unwrap();
-  }
-
-  #[test]
-  fn long_private_home_uses_short_distinct_endpoints_and_cleans_after_stop() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("long-private-home-1");
-    let paths = Paths {
-      config: home.join("config"),
-      data: home.join("data"),
-      runtime: home.join("run"),
-    };
-    paths.prepare().unwrap();
-    let run = "r-long-deployment-run-12345";
-    let mut first = Bundle::issue(&paths, "default", run, &revision()).unwrap();
-    assert!(
-      first
-        .root
-        .join("ei-vision-inspection.sock")
-        .as_os_str()
-        .as_encoded_bytes()
-        .len()
-        > 107
-    );
-    first.attach_vision(vision_template()).unwrap();
-    let endpoint = first.endpoint_root.clone().unwrap();
-    assert!(
-      first
-        .vision_socket()
-        .unwrap()
-        .as_os_str()
-        .as_encoded_bytes()
-        .len()
-        <= 107
-    );
-    assert!(endpoint.starts_with(paths.runtime.join("v")));
-    assert_eq!(
-      fs::symlink_metadata(&endpoint)
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o7777,
-      0o700
-    );
-    check_endpoint_orphans(&paths, [("default", run, revision().as_str())]).unwrap();
-    assert!(check_endpoint_orphans(&paths, [("default", run, "b".repeat(64).as_str())]).is_err());
-    assert!(check_endpoint_orphans(&paths, []).is_err());
-    let binding: serde_json::Value =
-      serde_json::from_slice(&fs::read(first.root.join("ei/vision-binding.json")).unwrap())
-        .unwrap();
-    assert_eq!(
-      binding["eos_endpoint"]["path"],
-      first.vision_socket().unwrap().to_str().unwrap()
-    );
-    first.revoke_vision_for_stop().unwrap();
-    assert!(!endpoint.join(VISION_FILES[2]).exists());
-    assert!(!endpoint.join(VISION_FILES[3]).exists());
-    first.retire().unwrap();
-    assert!(!endpoint.exists());
-    check_endpoint_orphans(&paths, []).unwrap();
-    let mut second = Bundle::issue(
-      &paths,
-      "default",
-      "r-long-deployment-run-12346",
-      &revision(),
-    )
-    .unwrap();
-    second.attach_vision(vision_template()).unwrap();
-    assert_ne!(second.endpoint_root.as_ref(), Some(&endpoint));
-    second.revoke_vision_for_stop().unwrap();
-    second.retire().unwrap();
-  }
-
-  #[test]
-  fn endpoint_tamper_and_orphan_block_replacement() {
-    let (_temp, paths) = paths();
-    let mut bundle = Bundle::issue(&paths, "default", "r-one", &revision()).unwrap();
-    bundle.attach_vision(vision_template()).unwrap();
-    let endpoint = bundle.endpoint_root.clone().unwrap();
-    let verifier = endpoint.join(VISION_FILES[2]);
-    let bytes = fs::read(&verifier).unwrap();
-    fs::remove_file(&verifier).unwrap();
-    symlink(bundle.root.join(VISION_FILES[0]), &verifier).unwrap();
-    assert_eq!(
-      code(&bundle.verify().unwrap_err()),
-      "control_grant_unsafe_path"
-    );
-    fs::remove_file(&verifier).unwrap();
-    write_new(&verifier, &bytes).unwrap();
-    bundle.verify().unwrap();
-    bundle.revoke_vision_for_stop().unwrap();
-    assert!(check_endpoint_orphans(&paths, []).is_err());
-    bundle.retire().unwrap();
-    check_endpoint_orphans(&paths, []).unwrap();
-  }
-
-  #[test]
-  fn maximum_deployment_name_does_not_lengthen_endpoint_and_overlong_home_fails_preflight() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("private-home-1234567890");
-    let paths = Paths {
-      config: home.join("config"),
-      data: home.join("data"),
-      runtime: home.join("run"),
-    };
-    paths.prepare().unwrap();
-    let deployment = "d".repeat(48);
-    let mut bundle = Bundle::issue(&paths, &deployment, "r-max-name", &revision()).unwrap();
-    assert!(
-      bundle
-        .root
-        .join("ei-vision-inspection.sock")
-        .as_os_str()
-        .as_encoded_bytes()
-        .len()
-        > 107
-    );
-    bundle.attach_vision(vision_template()).unwrap();
-    assert!(
-      bundle
-        .vision_env("ei")
-        .iter()
-        .find(|(name, _)| *name == "EI_VISION_INSPECTION_SOCKET")
-        .unwrap()
-        .1
-        .as_os_str()
-        .as_encoded_bytes()
-        .len()
-        <= 107
-    );
-    bundle.revoke_vision_for_stop().unwrap();
-    bundle.retire().unwrap();
-
-    let too_long_home = temp
-      .path()
-      .join("private-home-prefix-0123456789012345678901234567890123456789");
-    let long_paths = Paths {
-      config: too_long_home.join("config"),
-      data: too_long_home.join("data"),
-      runtime: too_long_home.join("run"),
-    };
-    long_paths.prepare().unwrap();
-    let mut blocked = Bundle::issue(&long_paths, "default", "r-overlong", &revision()).unwrap();
-    assert_eq!(
-      code(&blocked.attach_vision(vision_template()).unwrap_err()),
-      "vision_endpoint_unavailable"
-    );
-    assert!(
-      fs::read_dir(long_paths.runtime.join("v"))
-        .unwrap()
-        .next()
-        .is_none()
-    );
-    blocked.retire().unwrap();
   }
 
   fn spec(id: &str, role: &str, args: Vec<&str>) -> process::ProcessSpec {

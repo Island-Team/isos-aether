@@ -23,8 +23,38 @@ fi
 export ISOS_LAUNCH_LOG_ROOT="$LOG_ROOT"
 mkdir -p "$(dirname "$LAUNCH_LOG")"
 chmod 700 "$(dirname "$LAUNCH_LOG")"
-python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.1 "launcher_starting command=${1:-default}"
-trap 'status=$?; python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" error isos.launcher@aether-v0.2.1 "launcher_failed status=$status"' ERR
+python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.3 "launcher_starting command=${1:-default}"
+trap 'status=$?; python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" error isos.launcher@aether-v0.2.3 "launcher_failed status=$status"' ERR
+relay_stderr() {
+  while IFS= read -r line; do
+    python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" error isos.launcher@aether-v0.2.3 "child_stderr $line"
+    printf '%s\n' "$line" >&2
+  done
+}
+
+run_stop() {
+  local status relay_status relay_dir relay_pid
+  relay_dir=$(mktemp -d)
+  mkfifo "$relay_dir/stderr"
+  relay_stderr < "$relay_dir/stderr" &
+  relay_pid=$!
+  if "$@" 2> "$relay_dir/stderr"; then
+    status=0
+  else
+    status=$?
+  fi
+  if wait "$relay_pid"; then
+    relay_status=0
+  else
+    relay_status=$?
+  fi
+  rm -r -- "$relay_dir"
+  if (( status == 0 )); then
+    return "$relay_status"
+  fi
+  return "$status"
+}
+
 case "$MODE" in
   dev)
     BIN="${CARGO_TARGET_DIR:-$ROOT/target}"
@@ -38,11 +68,12 @@ case "$MODE" in
     export ISOS_EI_BIN_DIR="${ISOS_EI_BIN_DIR:-$ROOT/ei/bin}"
     export ISOSUI_DIST_DIR="${ISOSUI_DIST_DIR:-$ROOT/ui/dist/local}"
     export ISOSUI_TUI_ENTRY="${ISOSUI_TUI_ENTRY:-$ROOT/ui/dist/tui/index.js}"
-    python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.1 "launcher_exec mode=dev binary=$BIN"
-    exec "$BIN" "$@" 2> >(while IFS= read -r line; do
-      python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" error isos.launcher@aether-v0.2.1 "child_stderr $line"
-      printf '%s\n' "$line" >&2
-    done)
+    python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.3 "launcher_exec mode=dev binary=$BIN"
+    if [[ "${1:-}" == stop ]]; then
+      run_stop "$BIN" "$@"
+      exit $?
+    fi
+    exec "$BIN" "$@" 2> >(relay_stderr)
     ;;
   product) export ISOS_MODE=product ;;
   *) echo 'IsOS mode must be dev or product' >&2; exit 2 ;;
@@ -75,8 +106,9 @@ if [[ "${ISLAND_MODE:-}" != system && -z "${ISOS_HOME:-}" ]]; then
   export ISOS_CONFIG="${ISOS_CONFIG:-$ROOT/config/isos/isos.toml}"
   export ISOSUI_CONFIG="${ISOSUI_CONFIG:-$ROOT/config/isosui.toml}"
 fi
-python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.1 "launcher_exec binary=$LAUNCHER"
-exec "$LAUNCHER" "$@" 2> >(while IFS= read -r line; do
-  python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" error isos.launcher@aether-v0.2.1 "child_stderr $line"
-  printf '%s\n' "$line" >&2
-done)
+python3 "$ROOT/scripts/jsonl_log.py" "$LAUNCH_LOG" info isos.launcher@aether-v0.2.3 "launcher_exec binary=$LAUNCHER"
+if [[ "${1:-}" == stop ]]; then
+  run_stop "$LAUNCHER" "$@"
+  exit $?
+fi
+exec "$LAUNCHER" "$@" 2> >(relay_stderr)

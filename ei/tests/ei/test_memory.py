@@ -6,15 +6,14 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
-from ei.core.memory import (
+from ei.core.cognition.memory import (
   EpisodicStore,
   ReferenceStore,
   WorkingStore,
   memory_consolidation_entry,
 )
-from ei.core.perception.admission import Admission
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
 
 
 @pytest.mark.asyncio

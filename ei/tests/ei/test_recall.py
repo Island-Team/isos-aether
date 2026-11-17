@@ -5,13 +5,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ei.api.mission import MissionRecord
-from ei.api.plan import ActionRecord, PlanRecord, PlanStep, StepOutcome, StepRecord
-from ei.core.context import ContextBuilder
-from ei.core.decision import DecisionPlanner
-from ei.core.memory import EpisodicStore, RecallService, ReferenceStore
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.decision import DecisionPlanner
+from ei.core.cognition.memory import EpisodicStore, RecallService, ReferenceStore
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.mission import MissionRecord
+from ei.core.system.models.plan import (
+  ActionRecord,
+  PlanRecord,
+  PlanStep,
+  StepOutcome,
+  StepRecord,
+)
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import DecisionConfig, load_prompt_config
 
 

@@ -1,6 +1,13 @@
-import { catalogTypeKey, type ConnectionPreviewResult, type NodeGraph, type NodeInstance, type NodeSource, type NodeTypeDefinition } from '../../services/isos/node-graph';
+import { catalogTypeKey, type ConnectionPreviewResult, type DesiredRate, type InputBinding, type NodeGraph, type NodeInstance, type NodeSource, type NodeTypeDefinition } from '../../services/isos/node-graph';
 
 export interface GraphNode { path: string; node: NodeInstance; definition?: NodeTypeDefinition }
+/** Start a package draft without inheriting the built-in demo's execution chain. */
+export function packageGraphDraft(starter: NodeGraph): NodeGraph {
+  return {
+    ...starter,
+    cores: Object.fromEntries(Object.entries(starter.cores).map(([core]) => [core, { layers: {} }])),
+  };
+}
 export function addableTypes(types: NodeTypeDefinition[]): NodeTypeDefinition[] { return types.filter((type) => !type.deprecated); }
 export const nodeIdPattern = /^[a-z][a-z0-9_-]{0,47}$/;
 
@@ -11,7 +18,19 @@ export function canonicalNodePath(path: string): string {
   return path;
 }
 export function sameNodePath(left: string, right: string): boolean { return canonicalNodePath(left) === canonicalNodePath(right); }
-export function inputSources(source: NodeSource | NodeSource[]): NodeSource[] { return Array.isArray(source) ? source : [source]; }
+export function portInput(source: InputBinding): { sources: NodeSource | NodeSource[]; desired_rate_hz?: DesiredRate } { return !Array.isArray(source) && 'sources' in source ? source as { sources: NodeSource | NodeSource[]; desired_rate_hz?: DesiredRate } : { sources: source as NodeSource | NodeSource[] }; }
+export function inputSources(source: InputBinding): NodeSource[] { const raw = portInput(source).sources; return Array.isArray(raw) ? raw : [raw]; }
+function replaceSources(binding: InputBinding, sources: NodeSource[]): InputBinding {
+  const raw = portInput(binding).sources;
+  const next = Array.isArray(raw) ? sources : sources[0];
+  return 'sources' in binding ? { ...binding, sources: next } : next;
+}
+export function updateDesiredRate(graph: NodeGraph, target: string, input: string, rate: DesiredRate): NodeGraph {
+  const next = graphCopy(graph); const slot = nodeSlot(next, target); const node = slot?.nodes[slot.id];
+  const current = node?.inputs?.[input]; if (!node?.inputs || !current) return graph;
+  node.inputs[input] = { sources: portInput(current).sources, ...(Object.keys(rate).length ? { desired_rate_hz: rate } : {}) };
+  return next;
+}
 
 /** Choose a stable type-and-index default without colliding with any graph node. */
 export function nextNodeId(graph: NodeGraph, definition: NodeTypeDefinition): string {
@@ -35,7 +54,7 @@ export function graphNodes(graph: NodeGraph, types: NodeTypeDefinition[]): Graph
     Object.entries(layer.groups).flatMap(([groupId, group]) => Object.entries(group.nodes).map(([id, node]) => ({
       path: `${coreId}/${layerId}/${groupId}/${id}`,
       node,
-      definition: definitions.get(catalogTypeKey({ core: coreId, layer: layerId, group: groupId, id: node.node_type })),
+      definition: definitions.get(catalogTypeKey({ core: coreId, layer: layerId, group: groupId, id: node.node_type, package: node.package })),
     })))));
 }
 
@@ -56,6 +75,7 @@ function nodeSlot(graph: NodeGraph, path: string): { nodes: Record<string, NodeI
 
 export function makeNode(id: string, definition: NodeTypeDefinition): NodeInstance {
   const node: NodeInstance = { id, node_type: definition.id, label: id, description: '' };
+  if (definition.package) node.package = { ...definition.package };
   // Target types receive required values from the operator or a verified node set.
   if (definition.id.endsWith('@v0.2')) return node;
   node.capabilities = [];
@@ -101,7 +121,7 @@ export function removeNode(graph: NodeGraph, path: string): NodeGraph {
   for (const entry of graphNodes(next, [])) {
     entry.node.inputs = Object.fromEntries(Object.entries(entry.node.inputs || {}).flatMap(([input, source]) => {
       const remaining = inputSources(source).filter((item) => !sameNodePath(item.node, path));
-      return remaining.length ? [[input, Array.isArray(source) ? remaining : remaining[0]]] : [];
+      return remaining.length ? [[input, replaceSources(source, remaining)]] : [];
     }));
     entry.node.references = entry.node.references?.filter((reference) => !sameNodePath(reference, path));
     if (entry.node.service_bindings) entry.node.service_bindings = Object.fromEntries(Object.entries(entry.node.service_bindings).filter(([, binding]) => !binding.node || !sameNodePath(binding.node, path)));
@@ -112,7 +132,7 @@ export function removeNode(graph: NodeGraph, path: string): NodeGraph {
   const group = layer.groups[parts[2]];
   if (!Object.keys(group.nodes).length) delete layer.groups[parts[2]];
   if (!Object.keys(layer.groups).length) delete core.layers[parts[1]];
-  // Core identity is part of the 0.2.0 graph even when its last node is removed.
+  // Core identity is part of the 0.2.1 graph even when its last node is removed.
   return next;
 }
 
@@ -160,7 +180,7 @@ export function connectNodes(graph: NodeGraph, types: NodeTypeDefinition[], prov
   const slot = nodeSlot(next, consumerPath)!;
   const target = slot.nodes[slot.id];
   const source: NodeSource = { node: canonicalNodePath(providerPath), output };
-  target.inputs = { ...target.inputs, [input]: inputPort?.cardinality === 'many' ? [...(existing ? inputSources(existing) : []), source] : source };
+  target.inputs = { ...target.inputs, [input]: inputPort?.cardinality === 'many' ? existing ? replaceSources(existing, [...inputSources(existing), source]) : [source] : source };
   return next;
 }
 
@@ -178,7 +198,7 @@ export function disconnectInput(graph: NodeGraph, consumerPath: string, input: s
   if (providerPath) {
     const remaining = inputSources(current).filter((item) => !(sameNodePath(item.node, providerPath) && (!output || item.output === output)));
     if (remaining.length === inputSources(current).length) return graph;
-    if (remaining.length) slot.nodes[slot.id].inputs![input] = Array.isArray(current) ? remaining : remaining[0];
+    if (remaining.length) slot.nodes[slot.id].inputs![input] = replaceSources(current, remaining);
     else delete slot.nodes[slot.id].inputs![input];
   } else delete slot.nodes[slot.id].inputs![input];
   return next;

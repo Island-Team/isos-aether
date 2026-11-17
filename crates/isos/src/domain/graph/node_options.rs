@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 fn device_kind<'a>(catalog: &'a Value, node_type: &str) -> Option<&'a str> {
   catalog["types"].as_array()?.iter().find(|entry| {
@@ -16,8 +16,8 @@ fn device_kind<'a>(catalog: &'a Value, node_type: &str) -> Option<&'a str> {
 
 pub fn compose(graph: &Value, catalog: &Value) -> Result<Value> {
   ensure!(
-    graph["version"] == "0.2.0",
-    "node graph must be version 0.2.0"
+    graph["version"] == "0.2.1",
+    "node graph must be version 0.2.1"
   );
   let families = catalog["adapter_families"]
     .as_array()
@@ -326,10 +326,7 @@ fn graph_selector_rows(graph: &Value, catalog: &Value, filter: &Value) -> Vec<Va
           continue;
         };
         for (node_id, node) in nodes {
-          let Some(definition) = catalog["types"]
-            .as_array()
-            .and_then(|types| types.iter().find(|entry| entry["id"] == node["node_type"]))
-          else {
+          let Some(definition) = graph_contract::type_for_node(catalog, node) else {
             continue;
           };
           if filter["capability"].as_str().is_some_and(|value| {
@@ -364,13 +361,53 @@ fn graph_selector_rows(graph: &Value, catalog: &Value, filter: &Value) -> Vec<Va
 }
 
 /// Project selectors from the current exact draft and exact verified package pins.
+fn needs_owner_options(graph: &Value, catalog: &Value, role: &str) -> bool {
+  let prefix = if role == "eos" { "eos_" } else { "ei_" };
+  graph["cores"]
+    .as_object()
+    .into_iter()
+    .flat_map(|cores| cores.iter())
+    .any(|(core_id, core)| {
+      core["layers"]
+        .as_object()
+        .into_iter()
+        .flat_map(|layers| layers.iter())
+        .any(|(layer_id, layer)| {
+          if core_id != role && !(core_id == "isos" && layer_id.starts_with(prefix)) {
+            return false;
+          }
+          layer["groups"]
+            .as_object()
+            .into_iter()
+            .flat_map(|groups| groups.values())
+            .any(|group| {
+              group["nodes"]
+                .as_object()
+                .into_iter()
+                .flat_map(|nodes| nodes.values())
+                .any(|node| {
+                  let Some(definition) = graph_contract::type_for_node(catalog, node) else {
+                    return false;
+                  };
+                  (role == "eos" && definition["lifecycle"] == "adapter")
+                    || definition["settings"].as_array().is_some_and(|settings| {
+                      settings
+                        .iter()
+                        .any(|field| field["selector"]["provider"] == "owner")
+                    })
+                })
+            })
+        })
+    })
+}
+
 pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Result<Value> {
   if let Some(diagnostic) = graph_contract::admission_diagnostic(graph, Some(catalog)) {
     anyhow::bail!(diagnostic);
   }
   let mut data = compose(graph, catalog)?;
   let mut groups: BTreeMap<(String, String), Value> = BTreeMap::new();
-  if graph["version"] == "0.2.0" {
+  if graph["version"] == "0.2.1" {
     let mut nodes = Vec::new();
     if let Some(cores) = graph["cores"].as_object() {
       for (core_id, core) in cores {
@@ -400,10 +437,7 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
     // The process type is package-contributed. A damaged exact pin still
     // produces a repairable unavailable selected row.
     for (short, pointer, _kind, node) in nodes {
-      if let Some(definition) = catalog["types"]
-        .as_array()
-        .and_then(|types| types.iter().find(|entry| entry["id"] == node["node_type"]))
-      {
+      if let Some(definition) = graph_contract::type_for_node(catalog, node) {
         check_selectors(definition, node, &pointer)?;
         for setting in definition["settings"].as_array().into_iter().flatten() {
           let selector = &setting["selector"];
@@ -475,13 +509,21 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
       || graph["cores"][role]["layers"]
         .as_object()
         .is_some_and(|layers| !layers.is_empty());
-    if !selected {
+    if !selected || !needs_owner_options(graph, catalog, role) {
       continue;
     }
     let revision = graph_contract::revision(&serde_json::to_vec(graph)?);
-    let reply = crate::runtime::owners::core_setup::preview_options(
-      paths, "default", role, graph, &revision,
-    )?;
+    let owner_started = Instant::now();
+    let reply =
+      crate::runtime::owners::core_setup::preview_options(paths, "default", role, graph, &revision);
+    tracing::debug!(
+      event_code = "node_options_stage",
+      stage = "owner_preview",
+      owner = role,
+      success = reply.is_ok(),
+      elapsed_ms = owner_started.elapsed().as_millis() as u64
+    );
+    let reply = reply?;
     ensure!(
       reply["ok"] == true,
       "{role} owner options rejected the draft"
@@ -516,10 +558,7 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
           parts[0], parts[1], parts[2], parts[3]
         ))
         .context("owner option node is absent from draft")?;
-      let selected = if setting == "adapter.type"
-        || setting == "adapter.settings.device_id"
-        || setting == "adapter.settings.simulator_node"
-      {
+      let selected = if setting == "adapter.type" || setting == "adapter.settings.device_id" {
         ensure!(
           role == "eos"
             && ((parts[0] == "isos" && parts[1] == "eos_hardware")
@@ -529,12 +568,10 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
         match setting {
           "adapter.type" => node["adapter"]["type"].as_str(),
           "adapter.settings.device_id" => node["adapter"]["settings"]["device_id"].as_str(),
-          _ => node["adapter"]["settings"]["simulator_node"].as_str(),
+          _ => unreachable!("only adapter type and device ID are special-cased"),
         }
       } else {
-        let definition = catalog["types"]
-          .as_array()
-          .and_then(|types| types.iter().find(|item| item["id"] == node["node_type"]))
+        let definition = graph_contract::type_for_node(catalog, node)
           .context("owner selector type is not registered")?;
         ensure!(
           definition["settings"]
@@ -588,6 +625,94 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
       );
     }
   }
+  // Verified package node sets are the package's camera inventory. Keep the
+  // service and device choices separate so a new camera has no implicit source.
+  for instance in super::graph_contract::instances(graph) {
+    let path = instance.path;
+    let node = instance.node;
+    if node["node_type"] != "eos.hardware.camera.device@v0.2" {
+      continue;
+    }
+    let (Some(id), Some(version)) = (
+      node["package"]["id"].as_str(),
+      node["package"]["version"].as_str(),
+    ) else {
+      continue;
+    };
+    let Ok(verified) = packages::verify(paths, id, version) else {
+      continue;
+    };
+    let Some(contributions) = verified.release.node_contributions.as_ref() else {
+      continue;
+    };
+    let mut services = BTreeMap::<String, Value>::new();
+    let mut devices = Vec::new();
+    for set in &contributions.node_sets {
+      for template in &set.nodes {
+        if template.profile["node_type"] != node["node_type"] {
+          continue;
+        }
+        let profile = &template.profile;
+        let (Some(service), Some(device)) = (
+          profile["adapter"]["settings"]["service_instance"].as_str(),
+          profile["adapter"]["settings"]["device_id"].as_str(),
+        ) else {
+          continue;
+        };
+        let available = contributions
+          .runtime_services
+          .iter()
+          .find(|entry| entry.id == service)
+          .is_some_and(|entry| {
+            packages::package_config::selected(paths, "default", id, version, &[service.to_owned()])
+              .and_then(|saved| packages::package_config::external_inputs(entry, &saved, service))
+              .is_ok()
+          });
+        services.entry(service.to_owned()).or_insert_with(|| json!({"value":service,"label":service,
+          "description":set.description.as_ref().map(|text| text.en.as_str()).unwrap_or(service),
+          "available":available,"reason_code":if available {Value::Null} else {json!("service_unavailable")},
+          "reason":if available {Value::Null} else {json!("Package service is unavailable")}}));
+        if node["adapter"]["settings"]["service_instance"] == service
+          && (node["adapter"]["type"].as_str().is_none_or(str::is_empty)
+            || node["adapter"]["type"] == profile["adapter"]["type"])
+        {
+          devices.push(
+            json!({"value":device,"label":profile["label"].as_str().unwrap_or(device),
+            "description":profile["description"].as_str().unwrap_or(""),"available":available,
+            "reason_code":if available {Value::Null} else {json!("service_unavailable")},
+            "reason":if available {Value::Null} else {json!("Package service is unavailable")},
+            "profile":profile}),
+          );
+        }
+      }
+    }
+    if !services.is_empty() {
+      groups.insert(
+        (path.clone(), "adapter.settings.service_instance".into()),
+        group(
+          &path,
+          "adapter.settings.service_instance",
+          node["adapter"]["settings"]["service_instance"]
+            .as_str()
+            .map(str::to_owned),
+          services.into_values().collect(),
+          "package_service_unavailable",
+        ),
+      );
+      groups.insert(
+        (path.clone(), "adapter.settings.device_id".into()),
+        group(
+          &path,
+          "adapter.settings.device_id",
+          node["adapter"]["settings"]["device_id"]
+            .as_str()
+            .map(str::to_owned),
+          devices,
+          "package_camera_unavailable",
+        ),
+      );
+    }
+  }
   data["setting_options"] = json!(groups.into_values().collect::<Vec<_>>());
   Ok(data)
 }
@@ -596,8 +721,22 @@ pub fn for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
   if let Some(diagnostic) = graph_contract::version_diagnostic(graph) {
     anyhow::bail!(diagnostic);
   }
-  let catalog = process::catalog_for_option_graph(paths, graph)?;
-  compose_with_paths(paths, graph, &catalog)
+  let started = Instant::now();
+  let catalog_started = Instant::now();
+  let catalog = process::catalog_for_option_graph(paths, graph);
+  tracing::debug!(
+    event_code = "node_options_stage",
+    stage = "catalog",
+    success = catalog.is_ok(),
+    elapsed_ms = catalog_started.elapsed().as_millis() as u64
+  );
+  let result = compose_with_paths(paths, graph, &catalog?);
+  tracing::debug!(
+    event_code = "node_options_stage",
+    stage = "total",
+    elapsed_ms = started.elapsed().as_millis() as u64
+  );
+  result
 }
 
 #[cfg(test)]
@@ -616,8 +755,30 @@ mod tests {
   }
 
   #[test]
+  fn owner_preview_is_skipped_without_an_owner_selector() {
+    let graph = json!({"version":"0.2.1","cores":{"ei":{"layers":{"cognition":{"groups":{"planner":{"nodes":{"main":{"node_type":"ei.cognition.planner.main@v0.2"}}}}}}},"eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"eos.hardware.camera.device@v0.2"}}}}}}}}});
+    let catalog = json!({"types":[
+      {"id":"ei.cognition.planner.main@v0.2","core":"ei","layer":"cognition","lifecycle":"internal","settings":[]},
+      {"id":"eos.hardware.camera.device@v0.2","core":"eos","layer":"hardware","lifecycle":"internal","settings":[]}
+    ]});
+    assert!(!needs_owner_options(&graph, &catalog, "ei"));
+    assert!(!needs_owner_options(&graph, &catalog, "eos"));
+  }
+
+  #[test]
+  fn owner_preview_runs_for_adapter_or_declared_owner_selector() {
+    let graph = json!({"version":"0.2.1","cores":{"ei":{"layers":{"cognition":{"groups":{"planner":{"nodes":{"main":{"node_type":"ei.cognition.planner.main@v0.2"}}}}}}},"eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"eos.hardware.camera.device@v0.2"}}}}}}}}});
+    let catalog = json!({"types":[
+      {"id":"ei.cognition.planner.main@v0.2","core":"ei","layer":"cognition","lifecycle":"internal","settings":[{"name":"model","selector":{"provider":"owner"}}]},
+      {"id":"eos.hardware.camera.device@v0.2","core":"eos","layer":"hardware","lifecycle":"adapter","settings":[]}
+    ]});
+    assert!(needs_owner_options(&graph, &catalog, "ei"));
+    assert!(needs_owner_options(&graph, &catalog, "eos"));
+  }
+
+  #[test]
   fn selector_uses_short_paths_and_availability() {
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"isos.eos_hardware.base@v0.2","adapter":{"type":"vendor-v1"}}}}}}}}}});
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"isos.eos_hardware.base@v0.2","adapter":{"type":"vendor-v1"}}}}}}}}}});
     let catalog = json!({"types":[{"id":"isos.eos_dispatcher.primitive_base@v0.2"},{"id":"isos.eos_hardware.base@v0.2","core":"isos","layer":"eos_hardware","kind":"base"}],"adapter_families":[{"id":"vendor-v1","device_kinds":["base"],"transport":"unix_socket","description":"sim","compiled":true}],"primitive_specs":[{"name":"base.velocity","version":"1.0.0","device_class":"base","movement_type":"body_velocity","description":"velocity"}]});
     let options = compose(&graph, &catalog).unwrap();
     assert_eq!(
@@ -633,7 +794,7 @@ mod tests {
 
   #[test]
   fn selector_declaration_and_ids_fail_at_exact_pointer() {
-    let pointer = "/cores/isos/layers/process/groups/demo/nodes/simulator";
+    let pointer = "/cores/isos/layers/process/groups/demo/nodes/service";
     let node = json!({"node_type":"vendor.process.demo@v0.2","package":{"id":"vendor/demo","version":"1.0.0"},"settings":{"model":"small"}});
     let invalid = json!({"settings":[{"name":"model","selector":{"provider":"package","resource":"other","package_from":"node.package"}}]});
     let failure = check_selectors(&invalid, &node, pointer).unwrap_err();

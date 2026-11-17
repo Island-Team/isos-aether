@@ -24,22 +24,22 @@ fn selected_eos_stop_parts(graph: &Value, backend: &str) -> Vec<(String, String)
   if backend.is_empty() {
     return parts;
   }
-  let hardware = "/cores/isos/layers/eos_hardware/groups";
-  let Some(groups) = graph.pointer(hardware).and_then(Value::as_object) else {
-    return parts;
-  };
-  for (group, family) in groups {
-    let Some(nodes) = family.get("nodes").and_then(Value::as_object) else {
-      continue;
-    };
-    for (id, node) in nodes {
-      if node["movement"].is_object()
-        && node["adapter"]["settings"]["backend"] == backend
-        && node["references"]
-          .as_array()
-          .is_some_and(|references| references.iter().any(|reference| reference == backend))
-      {
-        parts.push((format!("isos/eos_hardware/{group}/{id}"), group.clone()));
+  for (core, layer) in [("isos", "eos_hardware"), ("eos", "hardware")] {
+    let hardware = format!("/cores/{core}/layers/{layer}/groups");
+    if let Some(groups) = graph.pointer(&hardware).and_then(Value::as_object) {
+      for (group, family) in groups {
+        if let Some(nodes) = family.get("nodes").and_then(Value::as_object) {
+          for (id, node) in nodes {
+            if node["movement"].is_object()
+              && node["adapter"]["settings"]["backend"] == backend
+              && node["references"]
+                .as_array()
+                .is_some_and(|references| references.iter().any(|reference| reference == backend))
+            {
+              parts.push((format!("{core}/{layer}/{group}/{id}"), group.clone()));
+            }
+          }
+        }
       }
     }
   }
@@ -335,13 +335,15 @@ impl Supervisor {
     if let Ok(bytes) = fs::read(self.paths.node_graph_path(&self.deployment))
       && let Ok(graph) = serde_json::from_slice::<Value>(&bytes)
     {
-      let process = "/cores/isos/layers/eos_process/groups";
-      if let Some(groups) = graph.pointer(process).and_then(Value::as_object) {
-        for (group, family) in groups {
-          if let Some(nodes) = family.get("nodes").and_then(Value::as_object) {
-            for (id, node) in nodes {
-              if node.get("package").is_some() {
-                self.eos_backend = format!("isos/eos_process/{group}/{id}");
+      for (core, layer) in [("isos", "eos_process"), ("eos", "process")] {
+        let process = format!("/cores/{core}/layers/{layer}/groups");
+        if let Some(groups) = graph.pointer(&process).and_then(Value::as_object) {
+          for (group, family) in groups {
+            if let Some(nodes) = family.get("nodes").and_then(Value::as_object) {
+              for (id, node) in nodes {
+                if node.get("package").is_some() {
+                  self.eos_backend = format!("{core}/{layer}/{group}/{id}");
+                }
               }
             }
           }
@@ -364,41 +366,6 @@ impl Supervisor {
       revision,
     )?);
     Ok(())
-  }
-  pub fn prepare_vision(&mut self, revision: &str) -> Result<()> {
-    if crate::runtime::process::vision_binding::selected_gate()?.is_none()
-      && !crate::domain::graph::graph_contract::read(&self.paths.node_graph_path(&self.deployment))
-        .ok()
-        .is_some_and(|saved| saved.value["version"] == "0.2.0")
-    {
-      return Ok(());
-    }
-    if let Some(template) = crate::runtime::process::vision_binding::selected_template(
-      &self.paths,
-      &self.deployment,
-      revision,
-    )? {
-      self.attach_verified_vision_template(template)?;
-    }
-    Ok(())
-  }
-  pub fn attach_verified_vision_template(
-    &mut self,
-    template: crate::runtime::process::vision_binding::Template,
-  ) -> Result<()> {
-    self
-      .control_grants
-      .as_mut()
-      .context("managed grant bundle missing")?
-      .attach_vision(template)
-  }
-  pub fn admitted_vision_template(
-    &self,
-  ) -> Option<&crate::runtime::process::vision_binding::Template> {
-    self
-      .control_grants
-      .as_ref()
-      .and_then(crate::runtime::owners::control_grants::Bundle::vision_template)
   }
   pub fn verify_control_grants(&self, required: bool) -> Result<()> {
     if let Some(bundle) = &self.control_grants {
@@ -469,7 +436,6 @@ impl Supervisor {
     secrets: &BTreeMap<String, std::ffi::OsString>,
     secret_sources: &BTreeSet<String>,
   ) -> Result<(Child, Option<Receiver<log_store::EosStdout>>)> {
-    crate::runtime::owners::ei_state::reject_test_env_spec(spec)?;
     if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
       if let Some(inputs) = &self.candidate_skill_inputs {
         inputs.launch_recheck(&self.paths, &self.deployment)?;
@@ -633,14 +599,6 @@ impl Supervisor {
       if let Some((key, path)) = bundle.launch_env(&spec.id) {
         command.env(key, path);
       }
-      for (key, path) in bundle.vision_env(&spec.id) {
-        command.env(key, path);
-      }
-      if spec.id == "bridge"
-        && let Some(socket) = bundle.vision_socket()
-      {
-        command.arg("--owner-vision-socket").arg(socket);
-      }
     }
     if matches!(spec.id.as_str(), "eos" | "bridge" | "config") {
       command.env("ISOS_RUN_ID", &self.run_id);
@@ -759,15 +717,7 @@ impl Supervisor {
   }
 
   fn wait_ready(&self, spec: &ProcessSpec, child: &mut Child) -> Result<()> {
-    let vision = self
-      .control_grants
-      .as_ref()
-      .and_then(|bundle| bundle.vision_template());
-    let timeout = if vision.is_some() && spec.id == "eos" {
-      spec.settings.start_timeout_ms.min(5_000)
-    } else {
-      spec.settings.start_timeout_ms
-    };
+    let timeout = spec.settings.start_timeout_ms;
     let deadline = Instant::now() + Duration::from_millis(timeout);
     let no_probe_grace = Instant::now() + Duration::from_millis(50);
     loop {
@@ -785,20 +735,7 @@ impl Supervisor {
       } else {
         Instant::now() >= no_probe_grace
       };
-      let vision_ready = if let Some(bundle) = &self.control_grants {
-        match spec.id.as_str() {
-          "eos" => bundle.vision_template().is_none_or(|template| {
-            crate::runtime::process::vision_binding::attest_eos(spec, template, &self.run_id)
-          }),
-          "bridge" => bundle.vision_socket().as_deref().is_none_or(|socket| {
-            crate::runtime::process::vision_binding::bridge_ready(spec, socket)
-          }),
-          _ => true,
-        }
-      } else {
-        true
-      };
-      if ready && vision_ready {
+      if ready {
         return Ok(());
       }
       ensure!(
@@ -812,14 +749,14 @@ impl Supervisor {
 
   #[cfg(test)]
   pub fn start(&mut self, specs: &[ProcessSpec]) -> Result<Vec<String>> {
-    let plan = crate::domain::graph::generated_v2::secret_plan(specs)?;
+    let plan = crate::domain::graph::generated::secret_plan(specs)?;
     self.start_with_secrets(specs, &plan)
   }
 
   pub fn start_with_secrets(
     &mut self,
     specs: &[ProcessSpec],
-    secrets: &crate::domain::graph::generated_v2::SecretPlan,
+    secrets: &crate::domain::graph::generated::SecretPlan,
   ) -> Result<Vec<String>> {
     ensure!(
       self.terminal().is_none(),
@@ -986,12 +923,6 @@ impl Supervisor {
     } else {
       None
     };
-    // Revoke both read authorities before any selected child is terminated.
-    if let Some(bundle) = self.control_grants.as_mut()
-      && bundle.revoke_vision_for_stop().is_err()
-    {
-      first_reason.get_or_insert("vision_grant_invalid");
-    }
     for id in &ids {
       let Some(mut running) = self.running.remove(id) else {
         continue;
@@ -1339,8 +1270,8 @@ mod tests {
     fs::write(
       paths.node_graph_path("test"),
       serde_json::json!({
-        "version":"0.2.0", "cores":{"isos":{"layers":{
-          "eos_process":{"groups":{"mujoco":{"nodes":{"simulator":{}}}}},
+        "version":"0.2.1", "cores":{"isos":{"layers":{
+          "eos_process":{"groups":{"driver":{"nodes":{"service":{}}}}},
           "ei_cognition":{"groups":{"context":{"nodes":{"builder":{}}}}},
           "ui":{"groups":{"keyboard":{"nodes":{"drive":{}}}}}
         }}}
@@ -1352,7 +1283,7 @@ mod tests {
       .unwrap()
       .admitted_nodes
       .clone();
-    assert!(admitted.contains("/cores/isos/layers/eos_process/groups/mujoco/nodes/simulator"));
+    assert!(admitted.contains("/cores/isos/layers/eos_process/groups/driver/nodes/service"));
     assert!(admitted.contains("/cores/isos/layers/ei_cognition/groups/context/nodes/builder"));
     assert!(!admitted.contains("/cores/isos/layers/ui/groups/keyboard/nodes/drive"));
   }
@@ -1364,13 +1295,13 @@ mod tests {
   #[test]
   fn stop_parts_follow_declared_backend_and_hardware_groups() {
     let graph = json!({"cores":{"isos":{"layers":{"eos_hardware":{"groups":{
-      "base":{"nodes":{"drive":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}},"references":["isos/eos_process/simulator/main"],"movement":{}}}},
-      "manipulator":{"nodes":{"arm":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}},"references":["isos/eos_process/simulator/main"],"movement":{}}}},
-      "camera":{"nodes":{"front":{"adapter":{"settings":{"backend":"isos/eos_process/simulator/main"}}}}},
+      "base":{"nodes":{"drive":{"adapter":{"settings":{"backend":"isos/eos_process/service/main"}},"references":["isos/eos_process/service/main"],"movement":{}}}},
+      "manipulator":{"nodes":{"arm":{"adapter":{"settings":{"backend":"isos/eos_process/service/main"}},"references":["isos/eos_process/service/main"],"movement":{}}}},
+      "camera":{"nodes":{"front":{"adapter":{"settings":{"backend":"isos/eos_process/service/main"}}}}},
       "other":{"nodes":{"elsewhere":{"adapter":{"settings":{"backend":"isos/eos_process/other/main"}},"movement":{}}}}
     }}}}}});
     assert_eq!(
-      selected_eos_stop_parts(&graph, "isos/eos_process/simulator/main"),
+      selected_eos_stop_parts(&graph, "isos/eos_process/service/main"),
       vec![
         ("isos/eos_hardware/base/drive".into(), "base".into()),
         (
@@ -1378,6 +1309,19 @@ mod tests {
           "manipulator".into()
         )
       ]
+    );
+  }
+
+  #[test]
+  fn stop_parts_follow_eos_owned_process_and_hardware() {
+    let backend = "eos/process/driver/service";
+    let graph = json!({"cores":{"eos":{"layers":{"hardware":{"groups":{
+      "base":{"nodes":{"drive":{"adapter":{"settings":{"backend":backend}},"references":[backend],"movement":{}}}},
+      "camera":{"nodes":{"front":{"adapter":{"settings":{"backend":backend}}}}}
+    }}}}}});
+    assert_eq!(
+      selected_eos_stop_parts(&graph, backend),
+      vec![("eos/hardware/base/drive".into(), "base".into())]
     );
   }
 
@@ -1470,7 +1414,7 @@ mod tests {
     fs::write(
       paths.node_graph_path("test"),
       serde_json::json!({
-          "version":"0.2.0","cores": {"isos": {"layers": {"eos_process": {"groups": {"worker": {
+          "version":"0.2.1","cores": {"isos": {"layers": {"eos_process": {"groups": {"worker": {
               "nodes": {"sim": {"id": "sim", "package": {"id":"sample/worker","version":"0.1.0"}}}
           }}}}}}
       })
@@ -1708,54 +1652,6 @@ sleep 10
   }
 
   #[test]
-  fn ei_spawn_rechecks_q01_test_env_targets() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = Paths {
-      config: temp.path().join("config"),
-      data: temp.path().join("data"),
-      runtime: temp.path().join("run"),
-    };
-    paths.prepare().unwrap();
-    let supervisor = Supervisor::new(&paths, "q01-env-guard").unwrap();
-    for field in ["env", "env_from"] {
-      let mut spec = ProcessSpec {
-        id: "ei".into(),
-        path: "isos/process/component/ei".into(),
-        settings: serde_json::from_value(serde_json::json!({
-            "command":["/bin/true"], "role":"ei"
-        }))
-        .unwrap(),
-        package: None,
-        fingerprint: None,
-      };
-      if field == "env" {
-        spec
-          .settings
-          .env
-          .insert("EI_Q01_STALE_TEST".into(), "1".into());
-      } else {
-        spec
-          .settings
-          .env_from
-          .insert("EI_Q01_STALE_TEST".into(), "INHERITED_TEST_FLAG".into());
-      }
-      let error = supervisor
-        .spawn(&spec, &BTreeMap::new(), &BTreeSet::new())
-        .unwrap_err();
-      let diagnostic = error
-        .downcast_ref::<crate::runtime::owners::ei_state::Diagnostic>()
-        .unwrap();
-      assert_eq!(diagnostic.code, "ei_test_reserved_env");
-      assert_eq!(
-        diagnostic.path,
-        format!(
-          "/cores/isos/layers/process/groups/component/nodes/ei/settings/{field}/EI_Q01_STALE_TEST"
-        )
-      );
-    }
-  }
-
-  #[test]
   fn automatic_child_restart_reuses_run_and_control_grant_bundle() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Paths {
@@ -1823,7 +1719,7 @@ sleep 10
   fn graph(settings: &str) -> String {
     let settings: Value = serde_json::from_str(settings).unwrap();
     serde_json::json!({
-      "version": "0.2.0",
+      "version": "0.2.1",
       "robot": {"id": "r", "name": "R"},
       "cores": {"isos": {"layers": {"process": {"groups": {"component": {
         "nodes": {"eos": {
@@ -1843,7 +1739,7 @@ sleep 10
     assert!(project(&source.replace("\"process\"", "\"hardware\"")).is_err());
     assert!(project(&graph(r#"{"command":["sleep","1"]}"#)).is_err());
     let toml = r#"
-version = "0.2.0"
+version = "0.2.1"
 [robot]
 id = "r"
 name = "R"
@@ -1985,11 +1881,17 @@ command = ["/bin/sleep", "1"]
   #[test]
   fn full_graph_validator_fails_closed() {
     let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data"),
+      runtime: temp.path().join("run"),
+    };
+    paths.prepare().unwrap();
     let graph_path = temp.path().join("graph.json");
     fs::write(&graph_path, graph(r#"{"command":["/bin/sleep","1"]}"#)).unwrap();
-    validate_with_program(&graph_path, Path::new("/bin/true")).unwrap();
-    assert!(validate_with_program(&graph_path, Path::new("/bin/false")).is_err());
-    assert!(validate_with_program(&graph_path, Path::new("/missing/validator")).is_err());
+    validate_with_program(&paths, &graph_path, Path::new("/bin/true")).unwrap();
+    assert!(validate_with_program(&paths, &graph_path, Path::new("/bin/false")).is_err());
+    assert!(validate_with_program(&paths, &graph_path, Path::new("/missing/validator")).is_err());
   }
 
   #[test]

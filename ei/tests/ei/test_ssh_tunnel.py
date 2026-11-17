@@ -14,7 +14,7 @@ from types import ModuleType
 def _load_tunnel_module() -> ModuleType:
   """Load the hyphenated tunnel script as a Python module."""
   root = Path(__file__).resolve().parents[2]
-  path = root / "scripts/ssh-tunnel.py"
+  path = root.parent / "scripts/ei/ssh-tunnel.py"
   spec = importlib.util.spec_from_file_location("ssh_tunnel", path)
   assert spec is not None
   assert spec.loader is not None
@@ -65,7 +65,7 @@ def test_askpass_ignores_openssh_prompt_argument() -> None:
   result = subprocess.run(
     [
       sys.executable,
-      str(root / "scripts/ssh-tunnel.py"),
+      str(root.parent / "scripts/ei/ssh-tunnel.py"),
       "developer@robot.example.com's password:",
     ],
     check=True,
@@ -103,7 +103,7 @@ def test_worker_terminates_ssh_child_on_sigterm(tmp_path: Path) -> None:
     "LAB_PASSWORD": "test-password",
   }
   worker = subprocess.Popen(
-    [sys.executable, str(root / "scripts/ssh-tunnel.py")], env=environment
+    [sys.executable, str(root.parent / "scripts/ei/ssh-tunnel.py")], env=environment
   )
   try:
     time.sleep(0.2)

@@ -21,15 +21,11 @@ $control-height: 28px;
 $touch-target: 44px;
 $control-padding-inline: 14px;
 
-// Typography — editorial reading type, restrained UI sans, technical mono.
-$font-reading: 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
-$font-ui: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif;
-$font-display: $font-reading;
-$font-display-latin: Georgia, 'Noto Serif SC', 'Times New Roman', serif;
-$font-display-sans: $font-ui;
-$font-display-kai: $font-reading;
+// One shared UI face; keep system monospace for code and numeric diagnostics.
+$font-ui: 'Noto Sans SC', system-ui, sans-serif;
+$font-display: $font-ui;
 $font-body: $font-ui;
-$font-mono: 'JetBrains Mono', 'Space Grotesk', 'Fira Code', monospace;
+$font-mono: ui-monospace, monospace;
 
 // Breakpoints
 $breakpoints: (

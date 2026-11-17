@@ -9,8 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from ei.core.monitor import EstopLatch
+from ei.core.governance.safety import EstopLatch
 from ei.lib import shared_events
 from ei.lib.operation_ledger import OperationLedger, PendingOperation
 from ei.lib.safety_state import SafetyState, SafetyStateError, runtime_lock

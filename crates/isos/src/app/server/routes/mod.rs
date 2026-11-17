@@ -1,16 +1,19 @@
 //! Domain routes exposed by the loopback API.
 pub(super) mod catalog;
 pub(super) mod graph;
+pub(super) mod graph_vision;
 pub(super) mod graph_pool;
+pub(super) mod log_stream;
+pub(super) mod monitor_stream;
 pub(super) mod nodes;
 pub(super) mod owner_control;
-pub(super) mod owner_vision;
 pub(super) mod package_handlers;
 pub(super) mod presentations;
 pub(super) mod runtime;
+pub(super) mod status_stream;
 pub(super) mod system;
 use system::{health, ui_config, version};
-use nodes::{node_event, node_event_result, node_monitor};
+use nodes::{external_node, node_event, node_event_result, node_monitor};
 use super::*;
 
 pub(super) fn router(app: Arc<App>) -> Router {
@@ -50,15 +53,16 @@ pub(super) fn router(app: Arc<App>) -> Router {
       "/api/isos/v1/runtime/process-status",
       get(process_status).options(preflight),
     )
+    .route(
+      "/api/isos/v1/runtime/status/ws",
+      get(status_stream::websocket),
+    )
     .route("/api/isos/v1/owners/eos/control", owner_control::route())
     .route(
-      "/api/isos/v1/owners/eos/vision/gates",
-      get(owner_vision::gates).options(preflight),
+      "/api/isos/v1/vision/bindings",
+      get(graph_vision::bindings).options(preflight),
     )
-    .route(
-      "/api/isos/v1/owners/eos/vision/ws",
-      get(owner_vision::websocket),
-    )
+    .route("/api/isos/v1/vision/ws", get(graph_vision::websocket))
     .route(
       "/api/isos/v1/nodes/events",
       post(node_event).options(preflight),
@@ -72,6 +76,14 @@ pub(super) fn router(app: Arc<App>) -> Router {
       get(node_monitor).options(preflight),
     )
     .route(
+      "/api/isos/v1/nodes/monitor/ws",
+      get(monitor_stream::websocket),
+    )
+    .route(
+      "/api/isos/v1/nodes/external",
+      post(external_node).options(preflight),
+    )
+    .route(
       "/api/isos/v1/presentations/select",
       post(select_presentation).options(preflight),
     )
@@ -80,8 +92,22 @@ pub(super) fn router(app: Arc<App>) -> Router {
       get(package_list).options(preflight),
     )
     .route(
+      "/api/isos/v1/packages/config",
+      get(package_handlers::package_config_get)
+        .put(package_handlers::package_config_put)
+        .options(preflight),
+    )
+    .route(
+      "/api/isos/v1/packages/config/validate",
+      post(package_handlers::package_config_validate).options(preflight),
+    )
+    .route(
       "/api/isos/v1/packages/install",
       post(package_install).options(preflight),
+    )
+    .route(
+      "/api/isos/v1/packages/preview-download",
+      post(package_preview_download).options(preflight),
     )
     .route(
       "/api/isos/v1/packages/link",
@@ -104,6 +130,7 @@ pub(super) fn router(app: Arc<App>) -> Router {
       post(process_control).options(preflight),
     )
     .route("/api/isos/v1/runtime/logs", get(logs).options(preflight))
+    .route("/api/isos/v1/runtime/logs/ws", get(log_stream::websocket))
     .route(
       "/api/isos/v1/graph",
       get(node_graph).put(apply_node_graph).options(preflight),
@@ -111,6 +138,10 @@ pub(super) fn router(app: Arc<App>) -> Router {
     .route(
       "/api/isos/v1/graph/new",
       get(new_node_graph).options(preflight),
+    )
+    .route(
+      "/api/isos/v1/graph/convert",
+      get(graph::convert_node_graph).options(preflight),
     )
     .route(
       "/api/isos/v1/graph-pool",

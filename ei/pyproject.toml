@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel>=0.42"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ei"
-version = "0.2.1"
+version = "0.2.3"
 description = "IsOS embodied intelligence runtime"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,52 +31,42 @@ dev = [
   "pyright>=1.1.350",
   "import-linter>=2.0",
 ]
-# Vector recall (opt/memory): plan recall and docs-corpus RAG over one
-# sqlite-vec index. Optional by design: without it recall degrades to
+# Vector recall in the memory layer: plan recall and docs-corpus RAG over one
+# sqlite-vec index. Without it recall degrades to
 # keyword search and the pipeline test suite still passes.
 vec = [
   "sqlite-vec>=0.1",
 ]
 
-# CMake-owned public wrappers delegate to these importable packages. The wheel
+# Public wrappers delegate to these importable packages. The wheel
 # deliberately defines no competing console scripts.
-[tool.setuptools.packages.find]
-where = ["src"]
-exclude = ["*.tests", "*.tests.*"]
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.package-data]
-"ei.contracts" = ["**/*.json"]
+"ei" = ["native/*.so"]
 
 [tool.pytest.ini_options]
 cache_dir = "../data/cache/tools/pytest-ei"
 asyncio_mode = "auto"
-testpaths = ["tests", "src"]
+testpaths = ["tests", "."]
 # Private programs are a separate import root in a source checkout.
-pythonpath = [".", "libexec"]
+pythonpath = ["..", ".", "package"]
 
 [tool.ruff]
 cache-dir = "../data/cache/tools/ruff-ei"
-# `libexec/ei_ext/` and `tests/` are repository-local roots, not third-party imports.
-src = [".", "src", "libexec"]
+# `package/ei_ext/` and `tests/` are repository-local roots, not third-party imports.
+src = [".", "package"]
 indent-width = 2
 extend-exclude = [
-  "src/island/generated/eos/**",
-  "src/island/generated/gateway_pb2.py",
-  "src/island/generated/gateway_pb2.pyi",
-  "src/island/generated/gateway_pb2_grpc.py",
-  "src/island/generated/skills_pb2.py",
-  "src/island/generated/skills_pb2.pyi",
-  "src/island/generated/skills_pb2_grpc.py",
+  "setup.py",
+  "generated/eos/**",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# An absent or broken opt/ package degrades the optional feature, never startup;
-# the composition root catches whatever the optional import raises.
-"src/ei/main.py" = ["BLE001"]
-"src/island/generated/gateway_pb2.py" = ["F401", "I001", "UP009"]
-"src/island/generated/gateway_pb2_grpc.py" = ["F401", "I001"]
-"src/island/generated/skills_pb2.py" = ["F401", "I001", "UP009"]
-"src/island/generated/skills_pb2_grpc.py" = ["F401", "I001"]
+# An absent or broken vector extension degrades recall, never startup;
+# the composition root catches the optional import failure.
+"core/system/launch.py" = ["BLE001"]
 
 [tool.ruff.format]
 indent-style = "space"
@@ -86,49 +76,32 @@ typeCheckingMode = "standard"
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
-include = ["src", "libexec"]
+include = ["__init__.py", "*.py", "contracts", "core", "generated", "io", "lib", "package"]
 exclude = [
-  "src/island/generated/eos/**",
-  "src/island/generated/gateway_pb2.py",
-  "src/island/generated/gateway_pb2_grpc.py",
-  "src/island/generated/skills_pb2.py",
-  "src/island/generated/skills_pb2_grpc.py",
+  "setup.py",
+  "generated/eos/**",
 ]
 executionEnvironments = [
-  { root = "src", extraPaths = ["src"] },
-  { root = "libexec", extraPaths = ["src", "libexec", "."] },
+  { root = ".", extraPaths = ["..", "."] },
+  { root = "package", extraPaths = ["package", "."] },
 ]
 
 [tool.importlinter]
 # Private EI extensions ship outside the wheel but their boundary remains
 # CI-enforced. Run from the repository root.
-root_packages = ["ei", "island", "ei_ext"]
+root_packages = ["ei", "ei_ext"]
 
 [[tool.importlinter.contracts]]
 name = "lib imports no ei module"
 type = "forbidden"
 source_modules = ["ei.lib"]
 forbidden_modules = [
-  "ei.api",
-  "ei.internal",
+  "ei.io",
   "ei.contracts",
   "ei.bin",
   "ei.core",
-  "ei.opt",
   "ei_ext",
 ]
-
-[[tool.importlinter.contracts]]
-name = "core imports no opt"
-type = "forbidden"
-source_modules = ["ei.core"]
-forbidden_modules = ["ei.opt"]
-
-[[tool.importlinter.contracts]]
-name = "opt imports no core"
-type = "forbidden"
-source_modules = ["ei.opt"]
-forbidden_modules = ["ei.core"]
 
 # Simulation and any other out-of-process backend see the leaf utilities and
 # the wire contracts, nothing else: core hands extensions only `lib`.
@@ -137,11 +110,9 @@ name = "ei ext imports no ei implementation"
 type = "forbidden"
 source_modules = ["ei_ext"]
 forbidden_modules = [
-  "ei.api",
-  "ei.internal",
+  "ei.io",
   "ei.bin",
   "ei.core",
-  "ei.opt",
 ]
 
 [[tool.importlinter.contracts]]
@@ -161,15 +132,15 @@ name = "core pipeline layers"
 type = "layers"
 layers = [
   "ei.io",
-  "ei.core.decision",
-  "ei.core.safety",
-  "ei.core.registry",
-  "ei.core.monitor",
-  "ei.core.memory",
-  "ei.core.context",
-  "ei.core.perception",
-  "ei.core.missions",
-  "ei.core.link",
+  "ei.core.system.sandbox",
+  "ei.core.cognition.decision",
+  "ei.core.governance.safety",
+  "ei.core.system.registry",
+  "ei.core.cognition.memory",
+  "ei.core.cognition.context",
+  "ei.core.evidence.perception",
+  "ei.core.cognition.missions",
+  "ei.core.io.link",
 ]
 
 [dependency-groups]

@@ -17,6 +17,8 @@ pub(crate) struct ProcessHandoff<'a> {
   pub(crate) node_type: &'a str,
   pub(crate) package: &'a PackageIdentity,
   pub(crate) entrypoint: &'a PathBuf,
+  pub(crate) entrypoint_sha256: &'a str,
+  pub(crate) args: &'a [String],
   pub(crate) resources: &'a BTreeMap<String, ResourceSelection>,
   pub(crate) lifecycle_adapter: &'a str,
   pub(crate) release_sha256: &'a str,

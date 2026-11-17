@@ -191,28 +191,6 @@
               }
             }
           }
-        },
-        "eos_interface": {
-          "groups": {
-            "gate": {
-              "nodes": {
-                "front": {
-                  "id": "front",
-                  "node_type": "isos.eos_interface.camera_gate@v0.2",
-                  "label": "Front preview",
-                  "description": "Read-only camera gate",
-                  "inputs": {
-                    "frame": {
-                      "node": "isos/eos_hardware/camera/front",
-                      "output": "frame",
-                      "priority": -20,
-                      "frequency_hz": 15.0
-                    }
-                  }
-                }
-              }
-            }
-          }
         }
       }
     }

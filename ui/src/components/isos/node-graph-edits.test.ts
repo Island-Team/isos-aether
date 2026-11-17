@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeGraph, NodeTypeDefinition } from '@/services/isos/node-graph';
-import { addNode, addableTypes, admittedConnection, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, removeNode, removedNodePaths, renameNode, updateNode } from './node-graph-edits';
+import { addNode, addableTypes, admittedConnection, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, packageGraphDraft, removeNode, removedNodePaths, renameNode, updateNode } from './node-graph-edits';
 
 it('keeps legacy types for graph resolution but hides them from new additions', () => {
   const current = { ...camera, id: 'isos.ui.workbench.health@v0.2' };
@@ -12,9 +12,18 @@ const movementContract = { owner: 'eos', id: 'base-movement', version: '1.0' };
 const dispatcher: NodeTypeDefinition = { id: 'isos.eos_dispatcher.control@v0.2', core: 'isos', layer: 'eos_dispatcher', group: 'control', kind: 'software', lifecycle: 'internal', capabilities: ['admission'], settings: [], inputs: [], outputs: [{ name: 'base_command', data_type: 'base_movement', transport: 'in_process', contract: movementContract, required: false }] };
 const base: NodeTypeDefinition = { id: 'isos.eos_hardware.base@v0.2', core: 'isos', layer: 'eos_hardware', group: 'base', kind: 'base', lifecycle: 'adapter', capabilities: ['body_velocity'], settings: [], inputs: [{ name: 'command', data_type: 'base_movement', transport: 'in_process', contract: movementContract, required: true }], outputs: [{ name: 'status', data_type: 'status', required: false }] };
 const camera: NodeTypeDefinition = { id: 'isos.eos_hardware.camera@v0.2', core: 'isos', layer: 'eos_hardware', group: 'camera', kind: 'camera', lifecycle: 'adapter', capabilities: ['rgb8', 'aligned_depth_u16'], settings: [], inputs: [], outputs: [{ name: 'frame', data_type: 'camera_frame', required: false }] };
-const empty = (): NodeGraph => ({ version: '0.2.0', robot: { id: 'robot', name: 'Robot' }, cores: {} });
+const empty = (): NodeGraph => ({ version: '0.2.1', robot: { id: 'robot', name: 'Robot' }, cores: {} });
 
 describe('current node graph edits', () => {
+  it('starts a package graph without carrying over the mock-arm demo', () => {
+    const starter = addNode(empty(), camera, 'front');
+    const draft = packageGraphDraft(starter);
+    expect(draft.version).toBe(starter.version);
+    expect(draft.robot).toEqual(starter.robot);
+    expect(draft.cores.isos.layers).toEqual({});
+    expect(graphNodes(draft, [])).toEqual([]);
+    expect(graphNodes(starter, [])).toHaveLength(1);
+  });
   it('detects a package preview that removes an existing node', () => {
     const graph = addNode(empty(), camera, 'front');
     expect(removedNodePaths(graph, addNode(graph, camera, 'rear'))).toEqual([]);
@@ -43,6 +52,14 @@ describe('current node graph edits', () => {
     expect(entries.find((entry) => entry.path === 'isos/eos_hardware/camera/front')?.definition).toBe(camera);
     expect(entries.find((entry) => entry.path === 'isos/eos_hardware/inspection/second')?.definition).toBe(other);
     expect(graphNodes(graph, [camera])[1].definition).toBeUndefined();
+  });
+  it('preserves the exact package pin when equal type IDs share a placement', () => {
+    const first = { ...camera, package: { id: 'one/robot', version: '0.2.1' } };
+    const second = { ...camera, package: { id: 'two/robot', version: '0.2.1' } };
+    const graph = addNode(empty(), second, 'front');
+    const entry = graphNodes(graph, [first, second])[0];
+    expect(entry.node.package).toEqual(second.package);
+    expect(entry.definition).toBe(second);
   });
   it('does not invent hardware values for a new target type', () => {
     const target = { ...base, id: 'isos.eos_hardware.base@v0.2' };

@@ -66,7 +66,7 @@ for case in cases:
         }, case
     if case.get("support_token_not_stop_proof"):
         assert case["expected_reason"] == "eos_receipt_missing", case
-assert {"clean_reverse_dependency", "eos_dual_ack_unknown", "provider_crash", "restart_old_stop_unknown", "log_collector_outage", "simulator_crash", "socket_cleanup_failure"}.issubset(ids)
+assert {"clean_reverse_dependency", "eos_dual_ack_unknown", "provider_crash", "restart_old_stop_unknown", "log_collector_outage", "service_child_crash", "socket_cleanup_failure"}.issubset(ids)
 assert "daemon_short_snapshot" in ids
 assert {"leader_exited_unreaped_before_stop", "leader_reaped_before_group_signal", "cleanup_window_starts_before_deadline", "crash_after_durable_stop_intent", "crash_during_stop", "new_run_stop_state_reset", "crash_between_p07_publish_and_state_reset", "stop_intent_fsync_failure", "manager_crash_with_running_record"}.issubset(ids)
 assert {"stalled_intent_rename_after_deadline", "stalled_intent_parent_fsync_after_deadline", "live_confirmed_then_manager_restart", "deadline_equality_fence"}.issubset(ids)

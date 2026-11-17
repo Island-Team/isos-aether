@@ -1,4 +1,4 @@
-//! Local, per-core JSONL reads for the workbench. Owner sockets carry health only.
+//! IsOS-owned selected owner log pool and manager JSONL reads for the workbench.
 
 use super::{CurrentError, CurrentQuery, LogStore, cursor, level_rank, valid_source};
 use crate::app::config::Paths;
@@ -32,20 +32,11 @@ struct Row {
   value: Value,
 }
 
-fn core_paths(store: &LogStore, paths: &Paths) -> [PathBuf; 3] {
-  let deployment = store.root().file_name().unwrap_or_default();
+fn core_paths(store: &LogStore, _paths: &Paths) -> [PathBuf; 3] {
   [
     store.root().join("isos.jsonl"),
-    paths
-      .owner_data("eos")
-      .join("log")
-      .join(deployment)
-      .join("eos.jsonl"),
-    paths
-      .owner_data("ei")
-      .join("log")
-      .join(deployment)
-      .join("ei.jsonl"),
+    store.root().join("owner-pool/eos.jsonl"),
+    store.root().join("owner-pool/ei.jsonl"),
   ]
 }
 
@@ -266,7 +257,7 @@ fn read(
       };
       if chrono::DateTime::parse_from_rfc3339(timestamp).is_err()
         || !source.starts_with(&format!("{core}."))
-        || !source.ends_with("@aether-v0.2.1")
+        || !source.ends_with("@aether-v0.2.3")
       {
         continue;
       }
@@ -299,7 +290,7 @@ fn read(
         continue;
       }
       value["core"] = json!(core);
-      if value["run_id"].as_str() != Some(&run_id) {
+      if value["run_id"].as_str() != Some(&run_id) && !(index > 0 && kind == "manager_session") {
         continue;
       }
       if value["event_code"].is_null() {
@@ -508,7 +499,7 @@ mod tests {
         .create(true)
         .open(path)
         .unwrap();
-      writeln!(file, "{}", json!({"timestamp":time,"level":"info","source":format!("{core}.runtime.health.worker@aether-v0.2.1"),"message":core,"run_id":run_id})).unwrap();
+      writeln!(file, "{}", json!({"timestamp":time,"level":"info","source":format!("{core}.runtime.health.worker@aether-v0.2.3"),"message":core,"run_id":run_id})).unwrap();
     }
     let mut cursor = None;
     let mut seen = Vec::new();
@@ -543,7 +534,8 @@ mod tests {
     let eos = core_paths(&store, &paths)[1].clone();
     fs::create_dir_all(eos.parent().unwrap()).unwrap();
     let target = temp.path().join("outside");
-    fs::write(&target, format!("{}\n", json!({"timestamp":"2026-11-09T09:00:00Z","level":"error","source":"eos.fake@aether-v0.2.1","message":"outside"}))).unwrap();
+    fs::write(&target, format!("{}\n", json!({"timestamp":"2026-11-09T09:00:00Z","level":"error","source":"eos.fake@aether-v0.2.3","message":"outside"}))).unwrap();
+    fs::remove_file(&eos).unwrap();
     std::os::unix::fs::symlink(&target, &eos).unwrap();
     let page = read_current(&store, &paths, None, query(None, 10)).unwrap();
     assert!(page["lines"].as_array().unwrap().is_empty());
@@ -566,13 +558,36 @@ mod tests {
       .create(true)
       .open(eos)
       .unwrap();
-    writeln!(file, "{}", json!({"timestamp":"2026-11-09T09:00:00Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.1","message":"old","run_id":"rold"})).unwrap();
+    writeln!(file, "{}", json!({"timestamp":"2026-11-09T09:00:00Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.3","message":"old","run_id":"rold"})).unwrap();
     writeln!(file, "{}", "x".repeat(20_000)).unwrap();
-    writeln!(file, "{}", json!({"timestamp":"2026-11-09T09:00:01Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.1","message":"new","run_id":"rnew"})).unwrap();
+    writeln!(file, "{}", json!({"timestamp":"2026-11-09T09:00:01Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.3","message":"new","run_id":"rnew"})).unwrap();
     let page = read_current(&store, &paths, None, query(None, 10)).unwrap();
     assert_eq!(page["lines"].as_array().unwrap().len(), 1);
     assert_eq!(page["lines"][0]["message"], "new");
     assert_eq!(page["diagnostics"][0]["code"], "log_collector_gap");
+  }
+
+  #[test]
+  fn idle_manager_scope_includes_retained_owner_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data/isos"),
+      runtime: temp.path().join("run"),
+    };
+    let store = LogStore::new(&paths, "demo").unwrap();
+    let eos = core_paths(&store, &paths)[1].clone();
+    fs::write(
+      eos,
+      format!(
+        "{}\n",
+        json!({"timestamp":"2026-11-09T09:00:00Z","level":"info","source":"eos.owner_service.rs@aether-v0.2.3","message":"retained","run_id":"m-previous"})
+      ),
+    )
+    .unwrap();
+    let page = read_current(&store, &paths, None, query(None, 10)).unwrap();
+    assert_eq!(page["scope"]["kind"], "manager_session");
+    assert_eq!(page["lines"][0]["message"], "retained");
   }
 
   #[test]
@@ -600,5 +615,31 @@ mod tests {
     let lines = page["lines"].as_array().unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|line| line["run_id"] == "ractive"));
+  }
+
+  #[test]
+  fn owner_pool_keeps_history_for_later_ui_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data/isos"),
+      runtime: temp.path().join("run"),
+    };
+    let store = LogStore::new(&paths, "demo").unwrap();
+    store
+      .append_owner_pool(
+        "ei",
+        &[json!({
+          "timestamp":"2026-11-15T12:00:00Z",
+          "level":"warn",
+          "source":"ei.runtime.owner.service@aether-v0.2.3",
+          "message":"worker unavailable"
+        })],
+      )
+      .unwrap();
+    let reopened = LogStore::new(&paths, "demo").unwrap();
+    let page = read_current(&reopened, &paths, None, query(None, 10)).unwrap();
+    assert_eq!(page["lines"][0]["message"], "worker unavailable");
+    assert_eq!(page["lines"][0]["core"], "ei");
   }
 }

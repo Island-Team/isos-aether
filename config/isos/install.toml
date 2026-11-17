@@ -3,5 +3,5 @@
 # ISOS_RELEASE_CHANNEL. ISOS_INSTALL_CONFIG selects another TOML file for updates.
 [install]
 prefix = "~/.local/isos"
-release_repository = "Island-Team/isos-p"
+release_repository = "Island-Team/isos-aether"
 channel = "stable"

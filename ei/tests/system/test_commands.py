@@ -24,7 +24,7 @@ def test_ei_build_recipe_uses_synchronized_environment(tmp_path: Path, machine: 
   uv.chmod(0o755)
   environment = {**os.environ, "PATH": f"{commands}:{os.environ['PATH']}"}
   subprocess.run(
-    [str(root / "scripts/platform/dispatch.sh"), "build", "--wheel"],
+    [str(root.parent / "scripts/ei/platform/dispatch.sh"), "build", "--wheel"],
     cwd=tmp_path,
     env=environment,
     check=True,
@@ -39,8 +39,8 @@ def test_ei_build_recipe_uses_synchronized_environment(tmp_path: Path, machine: 
 def test_ei_tty_invokes_managed_core_without_private_console(tmp_path: Path) -> None:
   root = Path(__file__).resolve().parents[2]
   prefix = tmp_path / "prefix"
-  (prefix / "share/contracts").mkdir(parents=True)
-  (prefix / "libexec").mkdir()
+  (prefix / "contract").mkdir(parents=True)
+  (prefix / "pkg").mkdir()
   fake_python = tmp_path / "python"
   called = tmp_path / "called"
   fake_python.write_text(

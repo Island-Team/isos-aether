@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from ei.lib.vlm import ChatMessage, ModelResponse, VLMClient
 
 

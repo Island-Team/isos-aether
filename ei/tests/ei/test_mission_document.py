@@ -6,18 +6,17 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
-from ei.api.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
-from ei.core.missions import MissionProtectedError, MissionQueue
-from ei.core.missions.document import (
+from ei.core.cognition.missions import MissionProtectedError, MissionQueue
+from ei.core.cognition.missions.document import (
   ActionState,
   MissionAction,
   MissionDocument,
   MissionStep,
   StepState,
 )
+from ei.core.system.models.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
 from ei.lib.config import MissionTemplateConfig
+from pydantic import ValidationError
 
 
 def _document(*, revision: int = 1) -> MissionDocument:

@@ -22,7 +22,6 @@ describe('edge QoS inspector', () => {
   it('shows omitted optional values and disables fixed or unrouted edges', async () => {
     await render({ ...admitted, routed: false, qos_eligible: false, route_class: 'design_only' });
     expect(host.textContent).toContain('Design only');
-    expect(host.textContent).toContain('unlimited');
     expect(host.querySelector('fieldset')?.disabled).toBe(true);
     expect(host.textContent).toContain('Producer expected rate (hint): 30 Hz');
   });

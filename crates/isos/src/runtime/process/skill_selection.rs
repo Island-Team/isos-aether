@@ -207,7 +207,7 @@ pub fn entries(graph: &Value) -> std::result::Result<Vec<(Entry, String)>, Diagn
     let Some(value) = node.pointer("/settings/skill_executables") else {
       continue;
     };
-    if graph["version"] != "0.2.0"
+    if graph["version"] != "0.2.1"
       || node["node_type"] != "isos.process.component@v0.2"
       || id != "eos"
       || node["settings"]["role"] != "eos"
@@ -611,23 +611,23 @@ pub fn compare_selected(
   graph: &Value,
   revision: &str,
   root: &Path,
-) -> std::result::Result<Option<PathBuf>, crate::domain::graph::generated_v2::Diagnostic> {
+) -> std::result::Result<Option<PathBuf>, crate::domain::graph::generated::Diagnostic> {
   let expected = render(paths, graph, revision)
-    .map_err(|_| crate::domain::graph::generated_v2::snapshot_mismatch())?;
+    .map_err(|_| crate::domain::graph::generated::snapshot_mismatch())?;
   let path = root.join(RELATIVE_FILE);
   match expected {
     Some(bytes) => {
       let actual = read_selected_bytes(root, bytes.len())?;
       if actual != bytes {
-        return Err(crate::domain::graph::generated_v2::snapshot_mismatch());
+        return Err(crate::domain::graph::generated::snapshot_mismatch());
       }
       Ok(Some(path))
     }
     None => {
       match fs::symlink_metadata(&path) {
-        Ok(_) => return Err(crate::domain::graph::generated_v2::snapshot_mismatch()),
+        Ok(_) => return Err(crate::domain::graph::generated::snapshot_mismatch()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(crate::domain::graph::generated_v2::snapshot_mismatch()),
+        Err(_) => return Err(crate::domain::graph::generated::snapshot_mismatch()),
       }
       Ok(None)
     }
@@ -637,8 +637,8 @@ pub fn compare_selected(
 fn read_selected_bytes(
   root: &Path,
   expected_len: usize,
-) -> std::result::Result<Vec<u8>, crate::domain::graph::generated_v2::Diagnostic> {
-  let mismatch = crate::domain::graph::generated_v2::snapshot_mismatch;
+) -> std::result::Result<Vec<u8>, crate::domain::graph::generated::Diagnostic> {
+  let mismatch = crate::domain::graph::generated::snapshot_mismatch;
   if expected_len == 0 || expected_len > MAX_SELECTION_BYTES {
     return Err(mismatch());
   }
@@ -729,7 +729,7 @@ pub fn verify_child_handoff(
   }
   let expected = expected
     .ok_or_else(|| anyhow::anyhow!("selected EOS skill handoff is missing; Apply again"))?;
-  let root = crate::domain::graph::generated_v2::selected_v2_root(
+  let root = crate::domain::graph::generated::selected_v2_root(
     paths,
     deployment,
     &saved.value,
@@ -763,7 +763,7 @@ pub(crate) mod tests {
   }
 
   pub(crate) fn graph(list: Value) -> Value {
-    json!({"version":"0.2.0","cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
+    json!({"version":"0.2.1","cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
         "eos":{"id":"eos","node_type":"isos.process.component@v0.2","settings":{"role":"eos","skill_executables":list}}
     }}}}}}}})
   }
@@ -1100,8 +1100,7 @@ pub(crate) mod tests {
       (PathBuf::from("launch-inputs.json"), b"[]".to_vec()),
     ];
     let root =
-      crate::domain::graph::generated_v2::publish(&paths, "test", &value, &revision, &owner)
-        .unwrap();
+      crate::domain::graph::generated::publish(&paths, "test", &value, &revision, &owner).unwrap();
     let manifest: Value =
       serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(
@@ -1123,8 +1122,7 @@ pub(crate) mod tests {
       0o600
     );
     assert_eq!(
-      crate::domain::graph::generated_v2::selected_v2_root(&paths, "test", &value, &revision)
-        .unwrap(),
+      crate::domain::graph::generated::selected_v2_root(&paths, "test", &value, &revision).unwrap(),
       root
     );
     let mut specs = vec![crate::runtime::process::ProcessSpec {
@@ -1147,7 +1145,7 @@ pub(crate) mod tests {
     fs::write(root.join(RELATIVE_FILE), b"{}").unwrap();
     assert!(verify_child_handoff(&paths, "test", &specs[0]).is_err());
     assert_eq!(
-      crate::domain::graph::generated_v2::selected_v2_root(&paths, "test", &value, &revision)
+      crate::domain::graph::generated::selected_v2_root(&paths, "test", &value, &revision)
         .unwrap_err()
         .code,
       "generated_manifest_mismatch"

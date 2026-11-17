@@ -154,7 +154,7 @@ impl Inputs {
     name: &str,
     revision: &str,
     specs: &[process::ProcessSpec],
-    plan: &crate::domain::graph::generated_v2::SecretPlan,
+    plan: &crate::domain::graph::generated::SecretPlan,
   ) -> Result<Option<Self>> {
     let spec = specs
       .iter()
@@ -169,7 +169,7 @@ impl Inputs {
       "saved graph revision changed"
     );
     let graph: Value = serde_json::from_slice(&saved_bytes)?;
-    let root = crate::domain::graph::generated_v2::selected_v2_root(paths, name, &graph, revision)?;
+    let root = crate::domain::graph::generated::selected_v2_root(paths, name, &graph, revision)?;
     let actual = skill_selection::compare_selected(paths, &graph, revision, &root)?;
     ensure!(
       actual.as_deref() == Some(Path::new(selected)),
@@ -244,7 +244,7 @@ impl Inputs {
     paths: &Paths,
     name: &str,
     specs: &[process::ProcessSpec],
-    plan: &crate::domain::graph::generated_v2::SecretPlan,
+    plan: &crate::domain::graph::generated::SecretPlan,
   ) -> Result<()> {
     self.launch_recheck(paths, name)?;
     let spec = specs
@@ -275,7 +275,7 @@ impl Inputs {
     );
     let graph: Value = serde_json::from_slice(&saved_bytes)?;
     let root =
-      crate::domain::graph::generated_v2::selected_v2_root(paths, name, &graph, &self.revision)?;
+      crate::domain::graph::generated::selected_v2_root(paths, name, &graph, &self.revision)?;
     ensure!(
       root
         .file_name()

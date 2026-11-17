@@ -3,7 +3,7 @@ import { applyNodeGraph, putGraphPoolEntry, validateNodeGraph, type NodeGraph } 
 import { validatedApply } from './validated-apply';
 
 vi.mock('@/services/isos/node-graph', () => ({ validateNodeGraph: vi.fn(), putGraphPoolEntry: vi.fn(), applyNodeGraph: vi.fn() }));
-const graph: NodeGraph = { version: '0.2.0', robot: { id: 'r', name: 'r' }, cores: {} };
+const graph: NodeGraph = { version: '0.2.1', robot: { id: 'r', name: 'r' }, cores: {} };
 
 describe('IsOS Validate before Apply', () => {
   it('does not PUT a rejected graph', async () => {
@@ -19,6 +19,16 @@ describe('IsOS Validate before Apply', () => {
     vi.mocked(validateNodeGraph).mockResolvedValue({ valid: true, diagnostics: [], edges: [] });
     expect((await validatedApply(graph, 'demo', 'r1', () => false, vi.fn())).state).toBe('stale');
     expect(applyNodeGraph).not.toHaveBeenCalled();
+  });
+  it('saves and applies a graph with a missing input warning', async () => {
+    const warning = { path: '/cores/ei/layers/io/groups/input/nodes/trigger/inputs/activation', code: 'edge_required_input', message: 'required input activation is not connected' };
+    vi.mocked(validateNodeGraph).mockResolvedValue({ valid: true, diagnostics: [], warnings: [warning], edges: [] });
+    vi.mocked(putGraphPoolEntry).mockResolvedValue({ name: 'demo', revision: 'new-r2', graph });
+    vi.mocked(applyNodeGraph).mockResolvedValue({ revision: 'new-r2', graph });
+    const result = await validatedApply(graph, 'demo', 'r1', () => true, vi.fn());
+    expect(result.state).toBe('applied');
+    if (result.state === 'applied') expect(result.validation.warnings).toEqual([warning]);
+    expect(applyNodeGraph).toHaveBeenCalledWith('demo', 'new-r2');
   });
   it('uses the captured revision for an accepted graph and propagates a stale revision rejection', async () => {
     vi.mocked(applyNodeGraph).mockClear();

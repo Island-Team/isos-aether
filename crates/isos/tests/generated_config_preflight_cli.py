@@ -99,12 +99,12 @@ class CleanHome:
         component.mkdir(parents=True)
         factory.mkdir(parents=True)
         (prefix / "pyproject.toml").write_text("[project]\nname='ei-fixture'\nversion='0.2.1'\n")
-        module = prefix / "src/ei"
+        module = prefix / "ei"
         module.mkdir(parents=True)
         (module / "__init__.py").write_text("# verified fixture module\n")
         for relative in (
             "ei.toml", "modes.toml", "profiles/isos.toml", "models.toml",
-            "prompts.toml", "missions.toml", "safety/gate.toml", "opt/sandbox.toml",
+            "prompts.toml", "missions.toml", "safety/gate.toml", "sandbox.toml",
             "extra/nested.toml",
         ):
             path = component / relative

@@ -4,7 +4,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 it('loads the graph and selected catalog, starts its revision and reads process health', async () => {
   vi.stubGlobal('ISOSUI_API_ORIGIN', 'http://127.0.0.1:16000');
-  const graph = { version: '0.2.0', robot: { id: 'robot', name: 'Robot' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
+  const graph = { version: '0.2.1', robot: { id: 'robot', name: 'Robot' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
   const status = { schema_version: '1.0.0', state: 'running', run_id: 'run-a', run_id_state: 'known', saved_revision: 'rev-a', active_revision: 'rev-a', processes: [] };
   const calls: { path: string; method: string; body: unknown }[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {

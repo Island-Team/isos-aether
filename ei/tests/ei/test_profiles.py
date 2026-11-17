@@ -5,9 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-
-from ei.core.decision.profiles import (
+from ei.core.cognition.decision.profiles import (
   Profile,
   ProfileError,
   ProfileStep,
@@ -17,7 +15,8 @@ from ei.core.decision.profiles import (
   render_catalog,
   unknown_primitives,
 )
-from ei.core.registry import PrimitiveRegistry
+from ei.core.system.registry import PrimitiveRegistry
+from pydantic import ValidationError
 
 _STEPS = [
   {

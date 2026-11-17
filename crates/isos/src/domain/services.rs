@@ -445,22 +445,32 @@ impl ServiceManager {
     validate_all(&self.paths)
   }
   pub fn status(&self) -> Result<Vec<ServiceStatus>> {
-    Ok(
-      self
-        .list()?
+    let ids = self.list()?;
+    Ok(std::thread::scope(|scope| {
+      let checks = ids
         .into_iter()
         .map(|id| {
           if let Some(running) = self.running.get(&id) {
+            let probe = running.spec.health.as_ref().map(|probe| {
+              let cwd = &running.spec.cwd;
+              scope.spawn(move || probe_ready(probe, cwd))
+            });
+            (id, Some((running, probe)))
+          } else {
+            (id, None)
+          }
+        })
+        .collect::<Vec<_>>();
+      checks
+        .into_iter()
+        .map(|(id, check)| {
+          if let Some((running, probe)) = check {
             ServiceStatus {
               id,
               state: "running",
               pid: Some(running.child.id()),
               restarts: running.restarts,
-              healthy: running
-                .spec
-                .health
-                .as_ref()
-                .map(|probe| probe_ready(probe, &running.spec.cwd)),
+              healthy: probe.map(|probe| probe.join().unwrap_or(false)),
               artifact_sha256: Some(running.spec.artifact.sha256.clone()),
             }
           } else {
@@ -474,8 +484,8 @@ impl ServiceManager {
             }
           }
         })
-        .collect(),
-    )
+        .collect()
+    }))
   }
   fn spawn(&self, spec: &ServiceSpec) -> Result<Child> {
     let mut command = Command::new(&spec.command[0]);

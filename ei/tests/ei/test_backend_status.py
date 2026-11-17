@@ -7,12 +7,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
-from ei.api.status import BackendConnection
-from ei.core.context import ContextBuilder
-from ei.core.link import BackendStatusTracker, backend_section_renderer
-from ei.core.monitor import monitor_entry
-from ei.core.perception.admission import Admission
+from ei.core.cognition.context import ContextBuilder
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import monitor_entry
+from ei.core.io.link import BackendStatusTracker, backend_section_renderer
+from ei.core.system.models.status import BackendConnection
 from ei.lib.config import MonitorConfig
 
 
@@ -114,7 +113,6 @@ async def test_monitor_records_heartbeats() -> None:
 @pytest.mark.asyncio
 async def test_backend_ws_stream() -> None:
   import websockets
-
   from ei.io.northbound import BACKEND_PATH, NorthboundServer
   from ei.io.state import ServerState
 
@@ -173,7 +171,7 @@ def test_tracker_carries_robot_profile() -> None:
 
 
 def test_render_backend_status_names_the_robot() -> None:
-  from ei.core.link import render_backend_status
+  from ei.core.io.link import render_backend_status
 
   tracker = BackendStatusTracker("x:18010", backend="station-1", name="station-1 robot")
   tracker.record_success()
@@ -190,7 +188,7 @@ def test_render_backend_status_names_the_robot() -> None:
 
 
 def test_tracker_applies_live_device_status_to_agent_context() -> None:
-  from ei.core.link import render_backend_status
+  from ei.core.io.link import render_backend_status
 
   tracker = BackendStatusTracker("x:18010", backend="sandbox")
   tracker.update_runtime(

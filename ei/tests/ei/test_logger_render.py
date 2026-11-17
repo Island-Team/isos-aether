@@ -11,7 +11,7 @@ def _event_dict() -> dict:
   return {
     "event": "first_context_snapshot",
     "level": "info",
-    "logger": "ei.core.context",
+    "logger": "ei.core.cognition.context",
     "timestamp": "2026-08-18T10:00:00Z",
     "prompt": "Preamble.\nno data received\nno map data received",
     "observation_ids": [],
@@ -24,7 +24,7 @@ def test_render_file_escapes_multiline_prompt() -> None:
   assert len(lines) == 1
   assert "prompt=Preamble.\\nno data received" in rendered
   assert rendered.startswith(
-    "2026-08-18T10:00:00Z INFO ei/ei.core.context first_context_snapshot"
+    "2026-08-18T10:00:00Z INFO ei/ei.core.cognition.context first_context_snapshot"
   )
 
 
@@ -57,7 +57,7 @@ def test_render_file_normalizes_crlf_and_cr() -> None:
 
 def _record(message: dict) -> logging.LogRecord:
   return logging.LogRecord(
-    "ei.core.decision.model", logging.INFO, __file__, 1, message, (), None
+    "ei.core.cognition.decision.model", logging.INFO, __file__, 1, message, (), None
   )
 
 

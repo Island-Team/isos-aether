@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { DEFAULT_MONITOR_REFRESH_HZ, getArmMonitor, type ArmMonitorSnapshot } from '@/services/isos/arm-monitor';
+import { DEFAULT_MONITOR_REFRESH_HZ, decodeArmMonitor, getArmMonitor, type ArmMonitorSnapshot } from '@/services/isos/arm-monitor';
+import { resolveIsosApiOrigin } from '@/services/isos/api-client';
 import { IsosApiError } from '@/services/isos/transport';
 import type { Language } from '@/types';
 import './arm-monitor.scss';
 
 export interface ArmMonitorReading { snapshot: ArmMonitorSnapshot | null; receivedAt: number | null; error: string; errorCode?: string }
 
-/** One request at a time, at most five per second while the surface is visible. */
+/** One visible monitor stream, at most five snapshots per second. */
 export function useArmMonitor(enabled: boolean, refreshHz = DEFAULT_MONITOR_REFRESH_HZ): ArmMonitorReading {
   const [reading, setReading] = useState<ArmMonitorReading>({ snapshot: null, receivedAt: null, error: '' });
   useEffect(() => {
@@ -15,6 +16,8 @@ export function useArmMonitor(enabled: boolean, refreshHz = DEFAULT_MONITOR_REFR
     let busy = false;
     let lastStartedAt = 0;
     let controller: AbortController | null = null;
+    let socket: WebSocket | null = null;
+    let retry: number | undefined;
     const rate = Number.isFinite(refreshHz) ? Math.max(1, Math.min(5, refreshHz)) : DEFAULT_MONITOR_REFRESH_HZ;
     const intervalMs = Math.ceil(1000 / rate);
     const refresh = async (): Promise<void> => {
@@ -30,10 +33,48 @@ export function useArmMonitor(enabled: boolean, refreshHz = DEFAULT_MONITOR_REFR
         if (active) setReading({ snapshot: null, receivedAt: null, error: error instanceof Error ? error.message : String(error), errorCode: error instanceof IsosApiError ? error.code : undefined });
       } finally { busy = false; controller = null; }
     };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), intervalMs);
-    document.addEventListener('visibilitychange', refresh);
-    return () => { active = false; controller?.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
+    const connect = async (): Promise<void> => {
+      if (!active || document.visibilityState !== 'visible' || socket) return;
+      try {
+        const origin = await resolveIsosApiOrigin(true);
+        if (!active || document.visibilityState !== 'visible') return;
+        const url = new URL(`${origin}/api/isos/v1/nodes/monitor/ws`);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.searchParams.set('refresh_hz', String(Math.round(rate)));
+        const next = new WebSocket(url);
+        socket = next;
+        next.onmessage = (event) => {
+          try {
+            const raw: unknown = JSON.parse(String(event.data));
+            if (!raw || typeof raw !== 'object') throw new Error('Invalid arm monitor event');
+            const value = raw as { type?: string; snapshot?: unknown; error?: { code?: string; message?: string } };
+            if (value.type === 'snapshot') {
+              const snapshot = decodeArmMonitor(value.snapshot);
+              setReading({ snapshot, receivedAt: snapshot.state === 'running' ? Date.now() : null, error: '' });
+            } else if (value.type === 'error') {
+              setReading({ snapshot: null, receivedAt: null, error: value.error?.message || 'Arm monitor unavailable', errorCode: value.error?.code });
+            } else throw new Error('Invalid arm monitor event');
+          } catch (error) { setReading({ snapshot: null, receivedAt: null, error: error instanceof Error ? error.message : String(error) }); next.close(); }
+        };
+        next.onerror = () => next.close();
+        next.onclose = () => {
+          if (socket !== next) return;
+          socket = null;
+          if (active && document.visibilityState === 'visible') retry = window.setTimeout(() => { retry = undefined; void connect(); }, 1000);
+        };
+      } catch (error) {
+        setReading({ snapshot: null, receivedAt: null, error: error instanceof Error ? error.message : String(error) });
+        if (active) retry = window.setTimeout(() => { retry = undefined; void connect(); }, 1000);
+      }
+    };
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') { if (typeof WebSocket === 'undefined') void refresh(); else void connect(); }
+      else socket?.close();
+    };
+    if (typeof WebSocket === 'undefined') void refresh(); else void connect();
+    const timer = typeof WebSocket === 'undefined' ? window.setInterval(() => void refresh(), intervalMs) : undefined;
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { active = false; controller?.abort(); socket?.close(); if (retry !== undefined) window.clearTimeout(retry); if (timer !== undefined) window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [enabled, refreshHz]);
   return reading;
 }

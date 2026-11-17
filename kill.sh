@@ -17,7 +17,7 @@ if args not in ([], ["--dry-run"]):
 dry_run = bool(args)
 print("WARNING: emergency force-exit bypasses owner Stop and cannot prove physical safety.", file=sys.stderr)
 
-names = {"isos", "aether-profile", "aether-runtime", "aether-http-bridge", "aether-config-server", "ei-runtime", "ei"}
+names = {"isos", "aether-profile", "aether-runtime", "aether-server", "ei-runtime", "ei"}
 run_dir = pathlib.Path(os.environ.get("ISOS_STOP_RUN_DIR", root / "data/isos/run")).resolve()
 
 def within(path, directory):
@@ -41,6 +41,15 @@ def process_group(pid):
     except (OSError, IndexError, ValueError):
         return None
 
+def selected_owner_socket(argv):
+    if "owner" not in argv or "--socket" not in argv:
+        return False
+    index = argv.index("--socket") + 1
+    if index >= len(argv):
+        return False
+    socket = pathlib.Path(argv[index]).resolve()
+    return socket in {run_dir / "eos-owner.sock", run_dir / "ei-owner.sock"}
+
 def identity(pid):
     proc = pathlib.Path("/proc") / str(pid)
     try:
@@ -57,23 +66,17 @@ def identity(pid):
     if not argv:
         return None
     exe_path = pathlib.Path(exe)
-    if not within(exe_path, root) and not within(cwd, root):
+    socket_owner = selected_owner_socket(argv)
+    if not within(exe_path, root) and not within(cwd, root) and not socket_owner:
         return None
     name = exe_path.name
-    if name in names and within(exe_path, root):
+    if name in names and (within(exe_path, root) or socket_owner):
         if name in {"aether-profile", "ei-runtime", "ei"} and "owner" in argv:
-            # An owner from another test workspace is not this deployment.
-            if "--socket" not in argv:
-                return None
-            index = argv.index("--socket") + 1
-            if index >= len(argv) or not within(pathlib.Path(argv[index]), run_dir):
+            if not socket_owner:
                 return None
         return start, " ".join(argv)
-    if name.startswith("python") and within(cwd, root):
-        if "-m" in argv and "ei.config_cli" in argv and "owner" in argv and "--socket" in argv:
-            index = argv.index("--socket") + 1
-            if index < len(argv) and within(pathlib.Path(argv[index]), run_dir):
-                return start, " ".join(argv)
+    if name.startswith("python") and "-m" in argv and "ei.config_cli" in argv and socket_owner:
+        return start, " ".join(argv)
     return None
 
 def targets():

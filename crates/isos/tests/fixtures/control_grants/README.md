@@ -1,6 +1,6 @@
 # R03 IsOS control-grant handoff cases
 
-[中文](README_cn.md) · [IsOS owner contract](../../../../../docs/isos/interfaces/core/control-grants.md) · [Design](../../../../../docs/isos/design/README.md)
+[中文](README_cn.md) · [IsOS owner contract](../../../../../docs/isos/interfaces/core.md#core_control_grants) · [Design](../../../../../docs/isos/core/README.md)
 
 `cases.json` is the frozen design matrix for IsOS issuance and launch delivery. It is not a passing-runtime claim. A clean `ISOS_HOME`, an explicitly selected verified schema-2 V2 graph generation, a required selected EOS stub, and optional selected EI and bridge stubs form the baseline. Each stub records only the *names* of reserved environment variables it sees. The EOS R03 suite independently checks verifier bytes, gRPC metadata, role/method scopes and Dispatcher release. No fixture writes a real grant into a source checkout.
 

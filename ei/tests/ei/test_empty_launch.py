@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+import ei.core as core_module
 import pytest
 import websockets
-
-import ei.core as core_module
+from ei.core.system import composition
 from ei.io.northbound import (
   HEALTH_PATH,
   PRIMITIVES_PATH,
@@ -38,7 +38,7 @@ async def test_empty_launch_is_ready_with_no_primitives_skills_or_model_requests
   def model_must_not_load(*_args, **_kwargs):
     raise AssertionError("empty launch loaded a model binding")
 
-  monkeypatch.setattr(core_module, "VLMModel", model_must_not_load)
+  monkeypatch.setattr(composition, "VLMModel", model_must_not_load)
   stop = asyncio.Event()
   task = asyncio.create_task(
     core_module.launch_empty(config, state_dir=tmp_path, external_stop=stop)

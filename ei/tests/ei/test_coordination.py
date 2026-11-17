@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from ei.core.decision.coordination.auction import award
-from ei.core.decision.coordination.bidders import BidderProfile, bidder_profiles
-from ei.core.decision.coordination.board import StepState, TaskBoard
-from ei.core.decision.coordination.leases import (
+from ei.core.cognition.decision.coordination_auction import award
+from ei.core.cognition.decision.coordination_bidders import (
+  BidderProfile,
+  bidder_profiles,
+)
+from ei.core.cognition.decision.coordination_board import StepState, TaskBoard
+from ei.core.cognition.decision.coordination_leases import (
   LeaseClaim,
   LeaseOutcome,
   ZoneLeases,
 )
-from ei.core.decision.profiles import Profile, ProfileStep
-from ei.core.link import DeviceBinding, EosDiscovery, PrimitiveBinding
+from ei.core.cognition.decision.profiles import Profile, ProfileStep
+from ei.core.io.link import DeviceBinding, EosDiscovery, PrimitiveBinding
 
 
 def _step(step_id: str, primitive: str, **kwargs) -> ProfileStep:

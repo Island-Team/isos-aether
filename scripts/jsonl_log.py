@@ -21,6 +21,16 @@ def record(level: str, source: str, message: str) -> str:
     )
 
 
+def append(output, readable, level: str, source: str, message: str) -> None:
+    line = record(level, source, message)
+    output.write(line + "\n")
+    entry = json.loads(line)
+    safe_message = entry["message"].replace("\r", "\\n").replace("\n", "\\n")
+    readable.write(
+        f'IsOS-v0.2.3@{source}: [{level.upper()}][{entry["timestamp"]}]{safe_message}\n'
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=Path)
@@ -31,15 +41,16 @@ def main() -> None:
     args = parser.parse_args()
     if args.stdin == (args.message is not None):
         parser.error("provide a message or --stdin")
-    with args.path.open("a", encoding="utf-8") as output:
+    with args.path.open("a", encoding="utf-8") as output, args.path.with_suffix(".log").open("a", encoding="utf-8") as readable:
         if args.stdin:
             for line in sys.stdin:
-                output.write(record(args.level, args.source, line) + "\n")
+                append(output, readable, args.level, args.source, line)
                 output.flush()
+                readable.flush()
                 sys.stdout.write(line)
                 sys.stdout.flush()
         else:
-            output.write(record(args.level, args.source, args.message) + "\n")
+            append(output, readable, args.level, args.source, args.message)
 
 
 if __name__ == "__main__":

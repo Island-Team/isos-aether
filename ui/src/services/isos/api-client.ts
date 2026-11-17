@@ -16,11 +16,26 @@ async function origin(): Promise<string> {
         throw new Error('IsOS UI runtime configuration has an invalid API origin');
       }
       return value.api_origin;
-    })
-    .catch(() => builtOrigin);
-  return localOrigin;
+    });
+  try { return await localOrigin; }
+  catch {
+    // A transient failure while IsOS restarts must not pin this tab to a stale port.
+    localOrigin = undefined;
+    return builtOrigin;
+  }
+}
+
+/** Resolve the current local API address, including a changed port after IsOS restarts. */
+export async function resolveIsosApiOrigin(refresh = false): Promise<string> {
+  if (refresh) localOrigin = undefined;
+  return origin();
 }
 
 export async function request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
-  return createIsosClient(await origin())<T>(path, method, body, signal);
+  try { return await createIsosClient(await origin())<T>(path, method, body, signal); }
+  catch (error) {
+    // Re-read the runtime address on the next request. Never replay a mutation.
+    if (!(error instanceof Error && error.name === 'IsosApiError')) localOrigin = undefined;
+    throw error;
+  }
 }

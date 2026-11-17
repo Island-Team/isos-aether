@@ -53,12 +53,12 @@ mod tests {
   }
 
   #[test]
-  fn starter_has_three_cores_and_eight_connected_demo_nodes() {
+  fn starter_has_three_cores_and_nine_connected_demo_nodes() {
     let temp = tempfile::tempdir().unwrap();
     let paths = paths(&temp);
     paths.prepare().unwrap();
     let graph = draft(&paths, "robot-a").unwrap();
-    assert_eq!(graph["version"], "0.2.0");
+    assert_eq!(graph["version"], "0.2.1");
     assert_eq!(graph["robot"]["id"], "robot-a");
     assert_eq!(graph["cores"].as_object().unwrap().len(), 3);
     let expected = [
@@ -69,6 +69,10 @@ mod tests {
       (
         "/cores/ei/layers/io/groups/input/nodes/trigger/node_type",
         "ei.io.input.trigger@v0.2",
+      ),
+      (
+        "/cores/ei/layers/cognition/groups/intent/nodes/context/node_type",
+        "ei.cognition.intent.context@v0.2",
       ),
       (
         "/cores/ei/layers/cognition/groups/intent/nodes/forwarder/node_type",
@@ -122,11 +126,84 @@ mod tests {
   }
 
   #[test]
-  fn pooled_demo_has_two_separate_eight_node_chains() {
+  fn repository_demo_extends_the_generic_draft_with_package_vision() {
+    let temp = tempfile::tempdir().unwrap();
+    let expected = draft(&paths(&temp), "default").unwrap();
+    let saved: Value = serde_json::from_str(include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../../config/graph-pool/demo.nodes.json"
+    )))
+    .unwrap();
+    assert_eq!(
+      saved.pointer(
+        "/cores/eos/layers/hardware/groups/camera/nodes/front_camera/settings/camera_width"
+      ),
+      Some(&json!(1280))
+    );
+    assert_eq!(
+      saved.pointer(
+        "/cores/eos/layers/hardware/groups/camera/nodes/front_camera/settings/camera_height"
+      ),
+      Some(&json!(720))
+    );
+    let camera =
+      &saved["cores"]["eos"]["layers"]["hardware"]["groups"]["camera"]["nodes"]["front_camera"];
+    assert_eq!(
+      camera["package"],
+      json!({"id":"island/mujoco-sim","version":"0.2.6"})
+    );
+    assert_eq!(camera["adapter"]["package"], camera["package"]);
+    assert_eq!(camera["capabilities"], json!(["jpeg"]));
+    assert_eq!(camera["adapter"]["settings"]["service_instance"], "native");
+    assert_eq!(camera["adapter"]["settings"]["device_id"], "cam-0");
+    assert_eq!(camera["adapter"]["settings"]["frequency_hz"], 30);
+    assert_eq!(
+      saved["cores"]["eos"]["layers"]["interface"]["groups"]["egress"]["nodes"]["front_vision_flow"]
+        ["inputs"]["frame"]["sources"]["node"],
+      "eos/hardware/camera/front_camera"
+    );
+    assert_eq!(
+      saved["cores"]["isos"]["layers"]["ui"]["groups"]["vision"]["nodes"]["front_monitor"]["inputs"]
+        ["frame"]["sources"]["node"],
+      "eos/interface/egress/front_vision_flow"
+    );
+    let mut generic = saved.clone();
+    generic
+      .pointer_mut("/cores/eos/layers/hardware/groups")
+      .unwrap()
+      .as_object_mut()
+      .unwrap()
+      .remove("camera");
+    generic
+      .pointer_mut("/cores/eos/layers/interface/groups/egress/nodes")
+      .unwrap()
+      .as_object_mut()
+      .unwrap()
+      .remove("front_vision_flow");
+    generic
+      .pointer_mut("/cores/isos/layers/ui/groups")
+      .unwrap()
+      .as_object_mut()
+      .unwrap()
+      .remove("vision");
+    assert_eq!(generic, expected);
+    let count = saved["cores"]
+      .as_object()
+      .unwrap()
+      .values()
+      .flat_map(|core| core["layers"].as_object().unwrap().values())
+      .flat_map(|layer| layer["groups"].as_object().unwrap().values())
+      .map(|group| group["nodes"].as_object().unwrap().len())
+      .sum::<usize>();
+    assert_eq!(count, 20);
+  }
+
+  #[test]
+  fn demo_fixture_has_two_separate_eight_node_chains() {
     use std::collections::BTreeMap;
 
     let path =
-      Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json");
+      Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/graph/demo-only.nodes.json");
     let graph: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     let mut roots = BTreeMap::new();
     let mut edges = Vec::new();

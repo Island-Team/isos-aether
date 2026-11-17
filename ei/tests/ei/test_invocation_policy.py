@@ -1,10 +1,9 @@
-"""Model invocation policy — pure admission logic (docs/ei/design/cognition/decision.md)."""
+"""Model invocation policy — pure admission logic (docs/ei/core/cognition/decision.md)."""
 
 from __future__ import annotations
 
 import pytest
-
-from ei.core.decision.policy import InvocationPolicy, InvocationTrigger
+from ei.core.cognition.decision.policy import InvocationPolicy, InvocationTrigger
 
 
 class FakeClock:

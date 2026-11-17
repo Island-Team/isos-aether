@@ -74,19 +74,30 @@ pub(crate) fn next_run_id() -> String {
 fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Result<()> {
   let saved = graph_contract::parse(source.as_bytes())?;
   ensure!(
-    saved.value["version"] == "0.2.0",
-    "graph version must be 0.2.0"
+    saved.value["version"] == "0.2.1",
+    "graph version must be 0.2.1"
   );
   let proposal = graph_apply::Proposal {
     graph: saved.value,
     bytes: source.as_bytes().to_vec(),
     revision: saved.revision,
+    warnings: Vec::new(),
   };
   graph_apply::prepare(paths, name, &proposal).map_err(anyhow::Error::new)?;
   Ok(())
 }
 
 pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
+  static EXECUTABLE_SHA256: std::sync::OnceLock<std::result::Result<String, String>> =
+    std::sync::OnceLock::new();
+  let executable_sha256 = EXECUTABLE_SHA256
+    .get_or_init(|| {
+      fs::read("/proc/self/exe")
+        .map(|bytes| hex::encode(Sha256::digest(bytes)))
+        .map_err(|error| error.to_string())
+    })
+    .as_ref()
+    .map_err(|error| anyhow::anyhow!("read manager executable: {error}"))?;
   let executable = std::env::current_exe()?;
   let stat = fs::read_to_string("/proc/self/stat")?;
   let fields = stat
@@ -103,7 +114,7 @@ pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
       "mode": paths.mode()?,
       "executable": executable,
       // The source build can replace its path while this manager is still running.
-      "executable_sha256": hex::encode(Sha256::digest(fs::read("/proc/self/exe")?)),
+      "executable_sha256": executable_sha256,
       "isos_version": env!("CARGO_PKG_VERSION"),
       "api_schema_version": "0.1.0",
       "service_contract_version": "1.0.0",
@@ -112,8 +123,32 @@ pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
   }))
 }
 
+#[cfg(test)]
+mod identity_tests {
+  use super::*;
+
+  #[test]
+  fn manager_identity_reuses_the_running_executable_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = config::Paths {
+      config: directory.path().join("config"),
+      data: directory.path().join("data"),
+      runtime: directory.path().join("run"),
+    };
+    paths.prepare().unwrap();
+    let expected = hex::encode(Sha256::digest(fs::read("/proc/self/exe").unwrap()));
+    let first = manager_identity(&paths).unwrap();
+    let second = manager_identity(&paths).unwrap();
+    assert_eq!(first["executable_sha256"], expected);
+    assert_eq!(second["executable_sha256"], first["executable_sha256"]);
+    assert_eq!(second["pid"], first["pid"]);
+  }
+}
+
 mod operations;
 pub(crate) mod owner_deployment;
+pub(crate) mod isos_external;
+pub(crate) mod package_services;
 mod socket;
 mod daemon_runtime;
 mod client;
@@ -122,5 +157,6 @@ pub(crate) use operations::api_call;
 pub(crate) use socket::{bind_daemon, handle_client};
 pub(crate) use daemon_runtime::daemon;
 pub(crate) use client::{
-  RemoteDiagnosticError, manager_call, manager_call_revision, manager_status_for_http, service_call,
+  RemoteDiagnosticError, manager_call, manager_call_revision, manager_status_for_http,
+  manager_status_for_poll, service_call,
 };

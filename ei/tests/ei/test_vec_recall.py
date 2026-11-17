@@ -5,19 +5,17 @@ from __future__ import annotations
 import asyncio
 import math
 import sys
-import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
-from ei.api.mission import MissionRecord
-from ei.api.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
-from ei.core.context import ContextBuilder
-from ei.core.decision import DecisionPlanner
-from ei.core.memory import EpisodicStore, RecallService, ReferenceStore
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.decision import DecisionPlanner
+from ei.core.cognition.memory import EpisodicStore, RecallService, ReferenceStore
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.mission import MissionRecord
+from ei.core.system.models.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import DecisionConfig, LaunchConfig, load_prompt_config
 from ei.lib.vlm import ChatMessage, ModelResponse
 
@@ -25,7 +23,7 @@ from ei.lib.vlm import ChatMessage, ModelResponse
 def _vec_index(tmp_path: Path):
   """Build the real optional index or skip when the extra is not installed."""
   pytest.importorskip("sqlite_vec")
-  from ei.opt.memory.vec import SqliteVecIndex
+  from ei.core.cognition.memory.vec import SqliteVecIndex
 
   return SqliteVecIndex(tmp_path / "vec.db")
 
@@ -60,7 +58,7 @@ def _plan(order: str, outcome: StepOutcome, *, plan_id: str) -> PlanRecord:
 
 def test_embedder_is_deterministic_case_insensitive_and_normalized() -> None:
   pytest.importorskip("sqlite_vec")
-  from ei.opt.memory.vec import EMBEDDING_DIM, embed_text
+  from ei.core.cognition.memory.vec import EMBEDDING_DIM, embed_text
 
   vector = embed_text("Dock the robot at the station")
 
@@ -168,7 +166,7 @@ def test_missing_or_disabled_vector_runtime_degrades_to_none(
   )
   assert build_recall_index(disabled, tmp_path) is None
 
-  monkeypatch.setitem(sys.modules, "ei.opt.memory.vec", None)
+  monkeypatch.setitem(sys.modules, "ei.core.cognition.memory.vec", None)
   assert build_recall_index(launch_config, tmp_path) is None
 
 
@@ -180,9 +178,11 @@ def test_vector_database_is_created_below_cache_root(
   from ei.main import build_recall_index
 
   paths: list[Path] = []
-  memory = types.ModuleType("ei.opt.memory")
-  memory.SqliteVecIndex = lambda path: paths.append(path) or object()
-  monkeypatch.setitem(sys.modules, "ei.opt.memory", memory)
+  from ei.core.cognition import memory
+
+  monkeypatch.setattr(
+    memory, "SqliteVecIndex", lambda path: paths.append(path) or object(), raising=False
+  )
   enabled = launch_config.model_copy(
     update={"launch": launch_config.launch.model_copy(update={"memory": True})}
   )

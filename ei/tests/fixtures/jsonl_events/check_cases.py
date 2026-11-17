@@ -219,7 +219,7 @@ assert not valid_event({**ready, "event_code": "ei_unlisted"})
 assert not valid_event({**ready, "level": "warn"})
 assert not valid_event({**ready, "message": "raw model prompt"})
 assert not valid_event(
-  {**ready, "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/sim"}
+  {**ready, "node_path": "/cores/isos/layers/eos_process/groups/driver/nodes/sim"}
 )
 assert not valid_event(
   {**ready, "node_path": "/cores/isos/layers/ei_common/groups/agent/nodes/main/settings"}

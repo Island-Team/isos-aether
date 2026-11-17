@@ -11,9 +11,9 @@ import time
 
 import pytest
 import websockets
-
 from ei.core import launch
 from ei.lib.config import GatewayConfig
+
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 

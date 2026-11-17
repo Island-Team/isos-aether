@@ -6,19 +6,22 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from structlog.testing import capture_logs
-
-from ei.contracts.actions import PrimitiveAck, RejectReason
-from ei.contracts.perception.pose import PlanarPose, PlanarVelocity
-from ei.contracts.perception.world.scene import RobotKinematics, SceneSnapshot
-from ei.core.monitor import (
+from ei.contracts.evidence.perception import (
+  PlanarPose,
+  PlanarVelocity,
+  RobotKinematics,
+  SceneSnapshot,
+)
+from ei.contracts.io.link import PrimitiveAck, RejectReason
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import (
   BoundWatchdog,
   EstopLatch,
   PhysicalBounds,
   RateWindow,
 )
-from ei.core.perception.admission import Admission
 from ei.lib.config import MonitorConfig
+from structlog.testing import capture_logs
 
 
 class FakeClient:

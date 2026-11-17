@@ -2,8 +2,8 @@ use crate::{
   app::auth,
   domain::packages,
   app::cli::{
-    AuthCommand, Cli, CommandLine, DeploymentCommand, config_command, library, package_command,
-    print_init_next_steps, services_command,
+    AuthCommand, Cli, CommandLine, DemoCommand, DeploymentCommand, config_command, library,
+    package_command, print_init_next_steps, services_command,
   },
   app::config,
   runtime::owners::core_setup,
@@ -99,7 +99,7 @@ pub(crate) fn run() -> Result<()> {
       crate::app::foreground::ensure_server(&paths, &name)?;
       crate::app::foreground::open_browser()?;
     }
-    CommandLine::Run => {
+    CommandLine::Run { no_ui } => {
       let setup_started = Instant::now();
       ensure_setup(&paths, &name)?;
       crate::runtime::manager::emit_phase_timing(
@@ -109,11 +109,15 @@ pub(crate) fn run() -> Result<()> {
         setup_started.elapsed().as_millis() as u64,
       );
       if UnixStream::connect(paths.socket()).is_err() {
-        return serve_foreground(paths, name, false, true, true);
+        return serve_foreground(paths, name, false, !no_ui, true, no_ui);
       }
+      anyhow::ensure!(
+        !no_ui,
+        "IsOS manager is already running; stop it before `isos run --no-ui`"
+      );
       catch_interrupts()?;
       let started = manager_call(&paths, &name, "deployment_start")?;
-      print_run_startup(&paths, &name, &started)?;
+      print_run_startup(&paths, &name, &started, !no_ui)?;
       wait_for_interrupt(
         &paths,
         &name,
@@ -122,8 +126,8 @@ pub(crate) fn run() -> Result<()> {
           .context("start result lacks run ID")?,
       )?;
     }
-    CommandLine::Serve { ui_live } => {
-      serve_foreground(paths, name, ui_live, false, false)?;
+    CommandLine::Serve { ui_live, no_ui } => {
+      serve_foreground(paths, name, ui_live, false, false, no_ui)?;
     }
     CommandLine::Auth { command } => match command {
       AuthCommand::Login => auth::login(&paths)?,
@@ -133,7 +137,7 @@ pub(crate) fn run() -> Result<()> {
     CommandLine::Start => {
       catch_interrupts()?;
       let started = manager_call(&paths, &name, "deployment_start")?;
-      print_run_startup(&paths, &name, &started)?;
+      print_run_startup(&paths, &name, &started, true)?;
       wait_for_interrupt(
         &paths,
         &name,
@@ -162,7 +166,7 @@ pub(crate) fn run() -> Result<()> {
     CommandLine::Restart => {
       catch_interrupts()?;
       let started = manager_call(&paths, &name, "deployment_restart")?;
-      print_run_startup(&paths, &name, &started)?;
+      print_run_startup(&paths, &name, &started, true)?;
       wait_for_interrupt(
         &paths,
         &name,
@@ -195,6 +199,54 @@ pub(crate) fn run() -> Result<()> {
         json!([])
       };
       println!("{}", serde_json::to_string_pretty(&status)?);
+    }
+    CommandLine::Demo { command } => {
+      let origin = http::local_origin()?;
+      let identity = manager_call(&paths, &name, "manager_identity")?;
+      anyhow::ensure!(
+        identity["api_origin"] == origin,
+        "selected local API does not match this IsOS manager"
+      );
+      let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+      let activate = matches!(&command, DemoCommand::Activate { .. });
+      let (route, body) = match command {
+        DemoCommand::Monitor => ("nodes/monitor", None),
+        DemoCommand::Activate { event_id } | DemoCommand::Result { event_id } => {
+          let status = manager_call(&paths, &name, "deployment_status")?;
+          let run_id = status["run_id"].as_str().context("no active demo run")?;
+          let revision = status["active_revision"]
+            .as_str()
+            .context("active demo revision unavailable")?;
+          if activate {
+            (
+              "nodes/events",
+              Some(
+                json!({"schema_version":"0.2.0","source_node":"isos/ui/button/trigger","output":"activation","data_type":"button_activation@v0.2","run_id":run_id,"active_revision":revision,"payload":{"event_id":event_id,"kind":"activate"}}),
+              ),
+            )
+          } else {
+            (
+              "nodes/events/result",
+              Some(
+                json!({"schema_version":"0.2.0","source_node":"isos/ui/button/trigger","run_id":run_id,"active_revision":revision,"event_id":event_id}),
+              ),
+            )
+          }
+        }
+      };
+      let url = format!("{origin}/api/isos/v1/{route}");
+      let request = if let Some(body) = body {
+        client.post(url).json(&body)
+      } else {
+        client.get(url)
+      };
+      let response = request.send()?;
+      let status = response.status();
+      let body: serde_json::Value = response.json()?;
+      println!("{}", serde_json::to_string_pretty(&body)?);
+      anyhow::ensure!(status.is_success(), "demo API returned HTTP {status}");
     }
     CommandLine::Logs {
       source,
@@ -291,7 +343,7 @@ pub(crate) fn run() -> Result<()> {
     }
     CommandLine::Doctor => crate::app::cli::doctor(&paths, &name)?,
     CommandLine::Config { command } => config_command(&paths, &name, command)?,
-    CommandLine::Packages { command } => package_command(&paths, command)?,
+    CommandLine::Packages { command } => package_command(&paths, &name, command)?,
     CommandLine::Skills { command } => library(&paths, &name, "skills", command)?,
     CommandLine::Services { command } => services_command(&paths, &name, command)?,
     CommandLine::Backends { command } => library(&paths, &name, "backends", command)?,

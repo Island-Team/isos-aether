@@ -35,4 +35,26 @@ describe('IsOS API client', () => {
     const { request } = await import('./api-client');
     await expect(request('/graph')).rejects.toThrow('unsupported API schema version');
   });
+
+  it('re-reads the runtime API address after a transport outage without replaying the request', async () => {
+    vi.stubGlobal('window', { location: { hostname: '127.0.0.1' } });
+    let runtimeReads = 0;
+    let apiReads = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === '/isosui-runtime.json') {
+        runtimeReads += 1;
+        return { ok: true, json: async () => ({ api_origin: runtimeReads === 1 ? 'http://127.0.0.1:16001' : 'http://127.0.0.1:16002' }) };
+      }
+      apiReads += 1;
+      if (apiReads === 1) throw new Error('server restarting');
+      return { ok: true, status: 200, json: async () => ({ schema_version: '0.1.0', ok: true, data: { revision: 'saved' }, error: null }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { request } = await import('./api-client');
+    await expect(request('/graph')).rejects.toThrow('Cannot reach IsOS');
+    expect(await request('/graph')).toEqual({ revision: 'saved' });
+    expect(runtimeReads).toBe(2);
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:16002/api/isos/v1/graph', expect.anything());
+    expect(apiReads).toBe(2);
+  });
 });

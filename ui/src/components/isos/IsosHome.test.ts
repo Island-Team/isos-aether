@@ -3,7 +3,7 @@ import { graphPackagePins, type NodeGraph } from '@/services/isos/node-graph';
 
 describe('Home package requirements', () => {
   it('lists distinct exact pins from unrelated node families', () => {
-    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'robot', name: 'Robot' }, cores: {
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'robot', name: 'Robot' }, cores: {
       eos: { layers: { process: { groups: { simulator: { nodes: {
         sim: { id: 'sim', node_type: 'sample.sim@v0.2', label: '', description: '', package: { id: 'example/simulator', version: '1.2.0' } },
         sim2: { id: 'sim2', node_type: 'sample.sim@v0.2', label: '', description: '', package: { id: 'example/simulator', version: '1.2.0' } },

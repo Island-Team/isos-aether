@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 import ei.main as main_module
-from island.path import Layout
+import pytest
+from ei.lib.layout import Layout
 
 
 def _switches(config, *, backend: bool, sandbox: bool):

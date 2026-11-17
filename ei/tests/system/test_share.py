@@ -6,10 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
-from island.cfg import ConfigError, load
-from island.path import Layout, Mode
-from island.share import (
+from ei.lib.layout import Layout, Mode
+from ei.lib.product_config import ConfigError, load
+from ei.lib.resources import (
   SharedResources,
   configured_resources,
   repository_resources,
@@ -21,13 +20,13 @@ def test_source_checkout_has_one_resource_root() -> None:
   root = Path(__file__).resolve().parents[2]
   resources = repository_resources(root)
 
-  assert resources.roots == (root.parent / "share",)
+  assert resources.roots == (root.parent / "contract",)
   assert (
     require_eos_contracts(resources)[0]
-    == root.parent / "share/eos/contracts/eos/gateway.proto"
+    == root.parent / "contract/proto/gateway.proto"
   )
-  assert resources.require("ei/defaults/ei/models.toml").is_file()
-  assert resources.require("isos/defaults/island.toml").is_file()
+  assert (root.parent / "config/defaults/ei/models.toml").is_file()
+  assert (root.parent / "config/defaults/island.toml").is_file()
 
 
 def test_installed_ei_resolves_bundled_product_config_and_resources(
@@ -41,15 +40,14 @@ def test_installed_ei_resolves_bundled_product_config_and_resources(
   bundled.write_text(
     (source.parent / "config/ei/island.toml")
     .read_text()
-    .replace('share = ["../share"]', 'share = ["share", ".."]')
   )
   defaults = ei_prefix / "share/defaults/island.toml"
   defaults.parent.mkdir(parents=True)
-  defaults.write_bytes((source.parent / "share/isos/defaults/island.toml").read_bytes())
+  defaults.write_bytes((source.parent / "config/defaults/island.toml").read_bytes())
   ei_default = ei_prefix / "share/defaults/ei/ei.toml"
   ei_default.parent.mkdir(parents=True)
   ei_default.write_bytes((source.parent / "config/ei/ei.toml").read_bytes())
-  eos_contract = tmp_path / "share/isos/eos/contracts/eos/gateway.proto"
+  eos_contract = tmp_path / "share/isos/contract/proto/gateway.proto"
   eos_contract.parent.mkdir(parents=True)
   eos_contract.write_text('syntax = "proto3";\n')
   layout = Layout.resolve(
@@ -61,24 +59,26 @@ def test_installed_ei_resolves_bundled_product_config_and_resources(
 
   resources = configured_resources(layout)
 
-  assert resources.roots == (ei_prefix / "share", tmp_path / "share/isos")
-  assert resources.require("defaults/ei/ei.toml") == ei_default
-  assert resources.require("eos/contracts/eos/gateway.proto") == eos_contract
+  assert layout.contracts == tmp_path / "share/isos/contract"
+  assert resources.roots == (tmp_path / "share/isos/contract",)
+  assert ei_default.is_file()
+  assert resources.require("proto/gateway.proto") == eos_contract
 
   system_config = tmp_path / "no-system-overlay/island.toml"
   system_config.parent.mkdir(parents=True)
   system_config.write_text(
-    bundled.read_text().replace('share = ["share", ".."]', 'share = ["share"]')
+    bundled.read_text().replace('share = ["../contract"]', 'share = ["missing"]')
   )
-  assert configured_resources(layout).roots == (ei_prefix / "share",)
-  assert configured_resources(layout, system_config).roots == (ei_prefix / "share",)
+  with pytest.raises(ConfigError, match="shared resource root not found"):
+    configured_resources(layout)
+  assert configured_resources(layout, bundled).roots == (tmp_path / "share/isos/contract",)
 
 
 def test_missing_resource_root_rejects(tmp_path: Path) -> None:
   root = Path(__file__).resolve().parents[2]
   config = load(
     root.parent / "config/ei/island.toml",
-    defaults=root.parent / "share/isos/defaults/island.toml",
+    defaults=root.parent / "config/defaults/island.toml",
   )
   layout = Layout.resolve(mode=Mode.PORTABLE, prefix=tmp_path, environ={})
 
@@ -90,10 +90,10 @@ def test_duplicate_logical_resource_rejects(tmp_path: Path) -> None:
   root = Path(__file__).resolve().parents[2]
   config = load(
     root.parent / "config/ei/island.toml",
-    defaults=root.parent / "share/isos/defaults/island.toml",
+    defaults=root.parent / "config/defaults/island.toml",
   )
   for directory in ("first", "second"):
-    file = tmp_path / directory / "eos/contracts/eos/gateway.proto"
+    file = tmp_path / directory / "proto/gateway.proto"
     file.parent.mkdir(parents=True)
     file.write_text("duplicate")
   layout = Layout.resolve(mode=Mode.PORTABLE, prefix=tmp_path, environ={})

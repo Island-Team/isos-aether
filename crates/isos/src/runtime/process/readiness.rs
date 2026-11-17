@@ -2,7 +2,7 @@
 
 use crate::{
   app::config::Paths, runtime::process::core_bins, runtime::owners::core_setup,
-  domain::graph::generated_v2, domain::graph::graph_contract, app::isosui, runtime::process,
+  domain::graph::generated, domain::graph::graph_contract, app::isosui, runtime::process,
   runtime::process::reader_features,
 };
 use serde_json::{Value, json};
@@ -70,7 +70,7 @@ fn generation_issue(
   let Some(revision) = revision else {
     return (false, None);
   };
-  match generated_v2::selected(paths, name, graph, revision, None) {
+  match generated::selected(paths, name, graph, revision, None) {
     Ok(None) => {
       let prior_apply = std::fs::read(paths.generated(name).join("selection.json"))
         .ok()
@@ -119,9 +119,26 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
   let saved = graph_contract::read(&graph_path).ok();
   let graph_revision = saved.as_ref().map(|saved| saved.revision.clone());
   let graph: Value = saved.map_or(Value::Null, |saved| saved.value);
-  let selected_catalog = graph
-    .is_object()
-    .then(|| process::catalog_for_graph(paths, &graph));
+  // Catalog admission and the two setup identities launch independent owner
+  // adapters. Run them together so a slow adapter does not delay the others.
+  let (selected_catalog, eos_identity, ei_identity) = std::thread::scope(|scope| {
+    let catalog = graph
+      .is_object()
+      .then(|| scope.spawn(|| process::catalog_for_graph(paths, &graph)));
+    let eos = scope.spawn(|| core_setup::identity(paths, "eos"));
+    let ei = scope.spawn(|| {
+      if graph.is_object() {
+        core_setup::identity_for_graph(paths, "ei", &graph)
+      } else {
+        core_setup::identity(paths, "ei")
+      }
+    });
+    (
+      catalog.map(|handle| handle.join().expect("catalog worker panicked")),
+      eos.join().expect("EOS identity worker panicked"),
+      ei.join().expect("EI identity worker panicked"),
+    )
+  });
   let graph_admission_issue = if graph.is_object() {
     admission_issue(
       &graph,
@@ -159,6 +176,14 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     .is_object()
     .then(|| core_setup::endpoints(paths, name, &graph))
     .transpose();
+  let selected_generation_issue = generation_issue(paths, name, &graph, graph_revision.as_deref());
+  let launch_inputs_issue = if selected_generation_issue.0 {
+    core_setup::verify_launch_inputs(paths, name)
+      .err()
+      .map(|error| error.to_string())
+  } else {
+    None
+  };
   let cores: Vec<Value> = ["eos", "ei"]
         .into_iter()
         .map(|core| {
@@ -174,7 +199,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             let process_enabled = health_graph || process_present(&graph, core);
             let enabled = process_enabled || owner_layers_present(&graph, core);
             let (generation_configured, generation_issue) = if enabled {
-                generation_issue(paths, name, &graph, graph_revision.as_deref())
+                selected_generation_issue.clone()
             } else {
                 (false, None)
             };
@@ -197,22 +222,19 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                                 })
                         })
                 });
+            let identity = if core == "ei" { &ei_identity } else { &eos_identity };
             let (path, version, compatible, reason) = match path {
-                Ok(path) => match if core == "ei" && graph.is_object() {
-                    core_setup::identity_for_graph(paths, core, &graph)
-                } else {
-                    core_setup::identity(paths, core)
-                } {
+                Ok(path) => match identity {
                     Ok(identity) => {
                         let supports_graph = identity["supported_graph_versions"]
                             .as_array()
-                            .is_some_and(|versions| versions.iter().any(|v| v == "0.2.0"));
+                            .is_some_and(|versions| versions.iter().any(|v| v == "0.2.1"));
                         (
                             Some(path.to_string_lossy().into_owned()),
                             identity["product_version"].as_str().map(str::to_owned),
                             supports_graph,
                             (!supports_graph).then(|| format!(
-                                "{core} setup does not advertise graph 0.2.0"
+                                "{core} setup does not advertise graph 0.2.1"
                             )),
                         )
                     },
@@ -226,9 +248,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 Err(error) => (None, None, false, Some(error.to_string())),
             };
             let inputs_issue = if graph_configured {
-                core_setup::verify_launch_inputs(paths, name)
-                    .err()
-                    .map(|e| e.to_string())
+                launch_inputs_issue.clone()
             } else {
                 None
             };
@@ -271,7 +291,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             let action = if !enabled {
                 "Core is not enabled in the saved graph".into()
             } else if graph_admission_issue.is_some() {
-                "Use a valid 0.2.0 graph".into()
+                "Use a valid 0.2.1 graph".into()
             } else if !compatible {
                 format!("Build {core} in this workspace and configure its binary directory")
             } else if !process_enabled {
@@ -332,7 +352,7 @@ mod tests {
 
   #[test]
   fn three_core_wrapper_catalog_is_used_for_readiness_admission() {
-    let graph = json!({"version":"0.2.0","cores":{
+    let graph = json!({"version":"0.2.1","cores":{
       "isos":{"layers":{}},
       "ei":{"layers":{"cognition":{"groups":{"context":{"nodes":{
         "builder":{"id":"builder","node_type":"ei.cognition.context.builder@v0.2"}
@@ -363,7 +383,7 @@ mod tests {
   #[test]
   fn owner_layers_remain_visible_without_a_process_node() {
     let graph =
-      json!({"version":"0.2.0","cores":{"isos":{"layers":{"ei_cognition":{"groups":{}}}}}});
+      json!({"version":"0.2.1","cores":{"isos":{"layers":{"ei_cognition":{"groups":{}}}}}});
     assert!(owner_layers_present(&graph, "ei"));
     assert!(!process_present(&graph, "ei"));
     assert!(!owner_layers_present(&graph, "eos"));
@@ -390,7 +410,7 @@ mod tests {
       eos["action"]
         .as_str()
         .unwrap()
-        .contains("valid 0.2.0 graph")
+        .contains("valid 0.2.1 graph")
     );
     assert!(status["cores"][1]["reason"].is_null());
   }
@@ -412,7 +432,7 @@ mod tests {
     .unwrap();
     let status = report(&paths, "default", None);
     assert_eq!(status["graph"]["configured"], true);
-    assert_eq!(status["graph"]["version"], "0.2.0");
+    assert_eq!(status["graph"]["version"], "0.2.1");
   }
 
   #[test]

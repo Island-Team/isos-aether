@@ -3,30 +3,22 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import math
 import os
 import platform
-import struct
-import tempfile
 import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from websockets.asyncio.client import unix_connect
-from websockets.asyncio.server import unix_serve
-
-from ei.stages import (
+from ei.core.system.stages import (
   STAGE_TYPES,
   StagePayload,
   StageRuntime,
   StageValue,
   compose_stages,
 )
-from ei.vision_evidence import VisionEvidence, VisionInspection
 
 _JPEG = (
   b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
@@ -34,20 +26,6 @@ _JPEG = (
 )
 _GRAPH_REVISION = "0" * 64
 _PROJECTION_REVISION = "a" * 64
-
-
-class MeasuredVisionEvidence(VisionEvidence):
-  """Record ingress before the production admission method runs."""
-
-  def __init__(self, binding: dict, grant: str) -> None:
-    super().__init__(binding, grant)
-    self.received_ns: dict[int, int] = {}
-
-  async def accept(self, payload: bytes) -> None:
-    size = struct.unpack_from("<I", payload)[0]
-    generation = json.loads(payload[4 : 4 + size])["gate_generation"]
-    self.received_ns.setdefault(generation, time.monotonic_ns())
-    await super().accept(payload)
 
 
 def percentile(samples: list[int], rank: float) -> float:
@@ -132,7 +110,7 @@ def _graph(*, contended: bool) -> dict:
     layers.setdefault(layer, {"groups": {}})["groups"].setdefault(group, {"nodes": {}})[
       "nodes"
     ][node_id] = node
-  return {"version": "0.2.0", "robot": {}, "cores": {"isos": {"layers": layers}}}
+  return {"version": "0.2.1", "robot": {}, "cores": {"isos": {"layers": layers}}}
 
 
 def stage_run(
@@ -278,189 +256,10 @@ def stage_run(
   }
 
 
-async def vision_run(items: int, *, interval_ns: int = 33_333_334) -> dict:
-  with tempfile.TemporaryDirectory(prefix="ei-q03-vision-") as name:
-    run = Path(name)
-    os.chmod(run, 0o700)
-    (run / "ei").mkdir(mode=0o700)
-    grant = "1" * 64
-    inspection_grant = "2" * 64
-    grant_file = run / "ei-vision.grant"
-    grant_file.write_text(grant + "\n")
-    grant_file.chmod(0o600)
-    binding = {
-      "schema_version": 1,
-      "deployment_run_id": "q03-bench",
-      "graph_revision": _GRAPH_REVISION,
-      "projection_revision": _PROJECTION_REVISION,
-      "eos_endpoint": {"transport": "uds", "path": str(run / "eos-vision-owner.sock")},
-      "source_path": "eos/hardware/camera/front",
-      "gate_path": "eos/interface/gate/front",
-      "ingress_type": "ei.vision.ingress@v0.1.frame",
-      "render": {"max_width_px": 1280, "jpeg_quality": 80},
-      "target_fps": 30,
-      "grant_file": str(grant_file),
-    }
-    verifier = run / "ei-vision-inspection-verifier.json"
-    verifier.write_text(
-      json.dumps(
-        {
-          "schema_version": 1,
-          "run_id": "q03-bench",
-          "graph_revision": _GRAPH_REVISION,
-          "inspection_sha256": hashlib.sha256(
-            bytes.fromhex(inspection_grant)
-          ).hexdigest(),
-        }
-      )
-    )
-    verifier.chmod(0o600)
-    stream = str(uuid.uuid5(uuid.NAMESPACE_URL, "ei-q03-vision"))
-    evidence = MeasuredVisionEvidence(binding, grant)
-    inspection = VisionInspection(evidence, run / "ei-vision-inspection.sock", verifier)
-    await inspection.start()
-    sent: list[dict] = []
-    releases: asyncio.Queue[None] = asyncio.Queue()
-    completed = asyncio.Event()
-
-    async def eos_stub(ws) -> None:
-      if (
-        ws.request.path != "/api/eos/v2/vision/owner-ws"
-        or ws.request.headers["Authorization"] != f"Bearer {grant}"
-      ):
-        raise RuntimeError("owner handshake invalid")
-      request = json.loads(await ws.recv())
-      if request != {
-        "op": "subscribe",
-        "gate_path": binding["gate_path"],
-        "revision": _PROJECTION_REVISION,
-        "target_fps": 30,
-        "max_width_px": 1280,
-        "jpeg_quality": 80,
-      }:
-        raise RuntimeError("subscription mismatch")
-      await ws.send(
-        json.dumps(
-          {
-            "type": "subscribed",
-            "graph_revision": _GRAPH_REVISION,
-            "projection_revision": _PROJECTION_REVISION,
-            "source_path": binding["source_path"],
-            "gate_path": binding["gate_path"],
-            "runtime_stream_id": stream,
-            "gate_generation": 0,
-          }
-        )
-      )
-      for index in range(1, items + 1):
-        await releases.get()
-        metadata = {
-          "graph_revision": _GRAPH_REVISION,
-          "projection_revision": _PROJECTION_REVISION,
-          "runtime_stream_id": stream,
-          "source_path": binding["source_path"],
-          "source_frame_id": f"frame-{index:05d}",
-          "gate_path": binding["gate_path"],
-          "gate_generation": index,
-          "width_px": 1,
-          "height_px": 1,
-          "source_rate_hz": 30.0,
-          "render": binding["render"],
-          "jpeg_sha256": hashlib.sha256(_JPEG).hexdigest(),
-        }
-        raw = json.dumps(metadata, separators=(",", ":")).encode()
-        frame = struct.pack("<I", len(raw)) + raw + _JPEG
-        sent.append({"generation": index, "sent_ns": time.monotonic_ns()})
-        await ws.send(frame)
-        if index % 100 == 0:
-          await ws.send(frame)
-      await completed.wait()
-
-    server = await unix_serve(eos_stub, binding["eos_endpoint"]["path"])
-    Path(binding["eos_endpoint"]["path"]).chmod(0o600)
-    await evidence.start()
-    rows = []
-    try:
-      async with unix_connect(
-        str(inspection.path),
-        uri="ws://localhost/api/aether/ei/vision/evidence",
-        additional_headers={"Authorization": f"Bearer {inspection_grant}"},
-      ) as ws:
-        await ws.recv()
-        start = time.monotonic_ns()
-        for index in range(1, items + 1):
-          delay = start + (index - 1) * interval_ns - time.monotonic_ns()
-          if delay > 0:
-            await asyncio.sleep(delay / 1e9)
-          releases.put_nowait(None)
-          while True:
-            state = json.loads(await asyncio.wait_for(ws.recv(), 2))
-            if state["gate_generation"] == index:
-              break
-          at = time.monotonic_ns()
-          if (
-            state["accepted_count"] != index
-            or state["source_frame_id"] != f"frame-{index:05d}"
-          ):
-            raise RuntimeError("inspection identity or acceptance mismatch")
-          rows.append(
-            {
-              "generation": index,
-              "sent_ns": sent[index - 1]["sent_ns"],
-              "received_ns": evidence.received_ns[index],
-              "inspection_ns": at,
-              "latency_ns": at - evidence.received_ns[index],
-            }
-          )
-        expected_rejections = items // 100
-        if expected_rejections:
-          deadline = time.monotonic_ns() + 2_000_000_000
-          while (
-            evidence.snapshot()["rejection_counts"].get("generation_stale", 0)
-            != expected_rejections
-          ):
-            if time.monotonic_ns() >= deadline:
-              raise TimeoutError("duplicate rejection barrier exceeded 2 seconds")
-            await asyncio.sleep(0.001)
-        end = time.monotonic_ns()
-        state = evidence.snapshot()
-        if (
-          state["accepted_count"] != items
-          or state["rejected_count"] != expected_rejections
-          or state["rejection_counts"]
-          != ({"generation_stale": expected_rejections} if expected_rejections else {})
-        ):
-          raise RuntimeError("vision admission accounting failed")
-    finally:
-      completed.set()
-      await evidence.stop()
-      await inspection.stop()
-      server.close()
-      await server.wait_closed()
-    if inspection.path.exists():
-      raise RuntimeError("inspection socket survived stop")
-    samples = [row["latency_ns"] for row in rows]
-    return {
-      "case": "vision",
-      "fixture_sha256": hashlib.sha256(_JPEG).hexdigest(),
-      "fixture_bytes": len(_JPEG),
-      "offered": items + items // 100,
-      "accepted": items,
-      "delivered": items,
-      "generation_stale": items // 100,
-      "elapsed_seconds": (end - start) / 1e9,
-      "throughput_accepted_per_second": items / ((end - start) / 1e9),
-      "median_ms": percentile(samples, 0.5),
-      "p99_ms": percentile(samples, 0.99),
-      "samples": rows,
-      "errors": [],
-    }
-
-
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument(
-    "--case", choices=("stage-baseline", "stage-contended", "vision"), required=True
+    "--case", choices=("stage-baseline", "stage-contended"), required=True
   )
   parser.add_argument("--output", type=Path, required=True)
   parser.add_argument(
@@ -470,12 +269,8 @@ def main() -> None:
   args = parser.parse_args()
   if args.runs < 1 or (args.items is not None and args.items < 1):
     parser.error("runs and items must be positive")
-  items = args.items or (1000 if args.case == "vision" else 10000)
-  run = lambda: (
-    asyncio.run(vision_run(items))
-    if args.case == "vision"
-    else stage_run(items, contended=args.case == "stage-contended")
-  )
+  items = args.items or 10000
+  run = lambda: stage_run(items, contended=args.case == "stage-contended")
   warmup = run()
   measured = [run() for _ in range(args.runs)]
   rates = [

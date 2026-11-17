@@ -2,11 +2,11 @@
 
 #[cfg(test)]
 use crate::{app::config::Paths, runtime::process};
+#[cfg(test)]
 use anyhow::Result;
 #[cfg(test)]
 use anyhow::ensure;
 use serde::Serialize;
-use serde_json::Value;
 #[cfg(test)]
 use std::{
   fs::{self, File},
@@ -51,60 +51,11 @@ fn reserved(path: String) -> anyhow::Error {
   .into()
 }
 
-const Q01_STALE_TEST_ENV: &str = "EI_Q01_STALE_TEST";
-const EI_SETTINGS: &str = "/cores/isos/layers/process/groups/component/nodes/ei/settings";
-
-fn test_env_reserved(path: String) -> anyhow::Error {
-  Diagnostic {
-    code: "ei_test_reserved_env",
-    stage: "graph",
-    path,
-    message: "Remove graph-authored EI Q01 test enablement and retry",
-  }
-  .into()
-}
-
-pub fn reject_test_env_graph(graph: &Value) -> Result<()> {
-  let Some(settings) = graph.pointer(EI_SETTINGS) else {
-    return Ok(());
-  };
-  for field in ["env", "env_from"] {
-    if settings
-      .pointer(&format!("/{field}/{Q01_STALE_TEST_ENV}"))
-      .is_some()
-    {
-      return Err(test_env_reserved(format!(
-        "{EI_SETTINGS}/{field}/{Q01_STALE_TEST_ENV}"
-      )));
-    }
-  }
-  Ok(())
-}
-
-#[cfg(test)]
-pub fn reject_test_env_spec(spec: &process::ProcessSpec) -> Result<()> {
-  if spec.id != "ei" {
-    return Ok(());
-  }
-  if spec.settings.env.contains_key(Q01_STALE_TEST_ENV) {
-    return Err(test_env_reserved(format!(
-      "{EI_SETTINGS}/env/{Q01_STALE_TEST_ENV}"
-    )));
-  }
-  if spec.settings.env_from.contains_key(Q01_STALE_TEST_ENV) {
-    return Err(test_env_reserved(format!(
-      "{EI_SETTINGS}/env_from/{Q01_STALE_TEST_ENV}"
-    )));
-  }
-  Ok(())
-}
-
 #[cfg(test)]
 pub fn validate_authored(specs: &[process::ProcessSpec]) -> Result<()> {
   let Some(spec) = specs.iter().find(|spec| spec.id == "ei") else {
     return Ok(());
   };
-  reject_test_env_spec(spec)?;
   let base = "/cores/isos/layers/process/groups/component/nodes/ei/settings";
   for (index, arg) in spec.settings.args.iter().enumerate() {
     if [
@@ -204,7 +155,6 @@ pub fn prepare(paths: &Paths, deployment: &str, specs: &mut [process::ProcessSpe
 mod tests {
   use super::*;
   use crate::runtime::process::{ProcessSettings, ProcessSpec};
-  use serde_json::json;
   use std::os::unix::fs::symlink;
 
   fn spec() -> ProcessSpec {
@@ -312,52 +262,6 @@ mod tests {
         format!("/cores/isos/layers/process/groups/component/nodes/ei/settings{expected}")
       );
     }
-  }
-
-  #[test]
-  fn q01_test_flag_is_forbidden_only_as_ei_graph_target() {
-    let fixture: Value = serde_json::from_str(include_str!(
-      "../../../tests/fixtures/q01_ei_stale_env/cases.json"
-    ))
-    .unwrap();
-    for case in fixture["cases"].as_array().unwrap() {
-      let mut graph = json!({});
-      graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["ei"]["settings"] =
-        case["settings"].clone();
-      let error = reject_test_env_graph(&graph).unwrap_err();
-      let diagnostic = error.downcast_ref::<Diagnostic>().unwrap();
-      assert_eq!(diagnostic.code, fixture["code"].as_str().unwrap());
-      assert_eq!(diagnostic.stage, fixture["stage"].as_str().unwrap());
-      assert_eq!(diagnostic.path, case["path"].as_str().unwrap());
-      let mut spec = spec();
-      if case["field"] == "env" {
-        spec
-          .settings
-          .env
-          .insert(Q01_STALE_TEST_ENV.into(), "1".into());
-      } else {
-        spec
-          .settings
-          .env_from
-          .insert(Q01_STALE_TEST_ENV.into(), "INHERITED_TEST_FLAG".into());
-      }
-      let error = reject_test_env_spec(&spec).unwrap_err();
-      assert_eq!(
-        error.downcast_ref::<Diagnostic>().unwrap().path,
-        case["path"].as_str().unwrap()
-      );
-      graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["other"] =
-        json!({"settings":case["settings"]});
-      graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["ei"]["settings"] =
-        json!({});
-      reject_test_env_graph(&graph).unwrap();
-    }
-    let mut spec = spec();
-    spec
-      .settings
-      .env_from
-      .insert("UNRELATED".into(), Q01_STALE_TEST_ENV.into());
-    reject_test_env_spec(&spec).unwrap();
   }
 
   #[test]

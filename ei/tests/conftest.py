@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from ei.lib.config import GatewayConfig, LaunchConfig, load_launch_config
+
 from tests.ei.stub.gateway import StubGateway, start_stub_gateway, stop_stub_gateway
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

@@ -7,15 +7,14 @@ import json
 
 import pytest
 import websockets
-
-from ei.api.primitives import PrimitiveDescriptor, PrimitivesSnapshot
-from ei.api.skills import SkillDescriptor, SkillsSnapshot
-from ei.api.status import HealthState
-from ei.contracts.limits import NumericRange
-from ei.core.perception.admission import Admission
-from ei.core.registry import Primitive, PrimitiveRegistry
+from ei.contracts.io.link import NumericRange
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.status import HealthState
+from ei.core.system.registry import Primitive, PrimitiveRegistry
 from ei.io import PRIMITIVES_PATH, SKILLS_PATH, NorthboundServer
 from ei.io.catalog import primitives_snapshot
+from ei.io.models.primitives import PrimitiveDescriptor, PrimitivesSnapshot
+from ei.io.models.skills import SkillDescriptor, SkillsSnapshot
 from ei.io.state import ServerState
 from ei.io.store import PrimitivesStore, SkillsStore
 

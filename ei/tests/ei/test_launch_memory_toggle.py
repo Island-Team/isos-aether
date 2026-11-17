@@ -19,7 +19,6 @@ import time
 
 import pytest
 import websockets
-
 from ei.core import launch
 
 

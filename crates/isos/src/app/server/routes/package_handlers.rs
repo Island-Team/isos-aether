@@ -1,6 +1,97 @@
 //! Packages API handlers.
 use super::*;
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackageConfigQuery {
+  id: String,
+  version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackageConfigEdit {
+  schema_version: String,
+  id: String,
+  version: String,
+  #[serde(default)]
+  revision: Option<String>,
+  #[serde(default)]
+  toml: Option<String>,
+  #[serde(default)]
+  values: Option<toml::Value>,
+}
+
+fn config_source(edit: &PackageConfigEdit) -> Result<String> {
+  anyhow::ensure!(
+    edit.schema_version == "0.1.0",
+    "unsupported API schema version"
+  );
+  match (&edit.toml, &edit.values) {
+    (Some(source), None) => Ok(source.clone()),
+    (None, Some(values)) => Ok(toml::to_string_pretty(values)?),
+    _ => anyhow::bail!("provide exactly one of toml or values"),
+  }
+}
+
+pub(crate) async fn package_config_get(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  Query(query): Query<PackageConfigQuery>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  let saved =
+    packages::package_config::show(&app.paths, &app.deployment, &query.id, &query.version)
+      .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?;
+  ok(json!(saved))
+}
+
+pub(crate) async fn package_config_put(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  Query(query): Query<PackageConfigQuery>,
+  Json(edit): Json<PackageConfigEdit>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  if query.id != edit.id || query.version != edit.version {
+    return Err(err(StatusCode::BAD_REQUEST, "package identity mismatch"));
+  }
+  let source =
+    config_source(&edit).map_err(|error| internal_err(StatusCode::BAD_REQUEST, &error))?;
+  let revision = edit
+    .revision
+    .as_deref()
+    .ok_or_else(|| err(StatusCode::BAD_REQUEST, "config revision required"))?;
+  let saved = packages::package_config::save(
+    &app.paths,
+    &app.deployment,
+    &edit.id,
+    &edit.version,
+    revision,
+    &source,
+  )
+  .map_err(|error| internal_err(StatusCode::CONFLICT, &error))?;
+  ok(json!(saved))
+}
+
+pub(crate) async fn package_config_validate(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  Json(edit): Json<PackageConfigEdit>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  let source =
+    config_source(&edit).map_err(|error| internal_err(StatusCode::BAD_REQUEST, &error))?;
+  let saved = packages::package_config::show(&app.paths, &app.deployment, &edit.id, &edit.version)
+    .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?;
+  match packages::package_config::validate(&saved.descriptor, &source, &[]) {
+    Ok(()) => ok(json!({"valid":true,"diagnostics":[]})),
+    Err(error) => ok(
+      json!({"valid":false,"diagnostics":[{"code":"package_config_invalid","message":error.to_string()}]}),
+    ),
+  }
+}
+
 pub(crate) async fn package_list(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
   authorized(&app, &headers)?;
   let installed = packages::listing(&app.paths)
@@ -13,6 +104,34 @@ pub(crate) async fn package_list(State(app): State<Arc<App>>, headers: HeaderMap
 pub(crate) struct PackageRequest {
   id: String,
   version: String,
+  approval: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackagePreviewRequest {
+  id: String,
+  version: String,
+}
+
+pub(crate) async fn package_preview_download(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  Json(request): Json<PackagePreviewRequest>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  let preview = tokio::task::spawn_blocking(move || {
+    let release = packages::catalog_release(&request.id, &request.version)?;
+    anyhow::ensure!(
+      release.id == request.id && release.version == request.version,
+      "catalog returned a different package identity"
+    );
+    packages::download_preview(&release)
+  })
+  .await
+  .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?
+  .map_err(|error| internal_err(StatusCode::BAD_REQUEST, &error))?;
+  ok(json!({"preview":preview}))
 }
 
 #[derive(Deserialize)]
@@ -42,7 +161,7 @@ pub(crate) async fn package_install(
       release.id == request.id && release.version == request.version,
       "catalog returned a different package identity"
     );
-    packages::install(&paths, &release, false, None)
+    packages::install_approved(&paths, &release, &request.approval)
   })
   .await
   .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?;

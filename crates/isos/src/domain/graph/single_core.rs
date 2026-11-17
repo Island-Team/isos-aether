@@ -19,11 +19,11 @@ fn diagnostic(
 
 /// Return only the layers owned by the requested process.
 pub fn owner_projection(graph: &Value, role: &str) -> Result<Value, Diagnostic> {
-  if graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.1" {
     return Err(diagnostic(
       "/version",
       "unsupported_graph_version",
-      "owner projection requires graph 0.2.0",
+      "owner projection requires graph 0.2.1",
     ));
   }
   match role {
@@ -46,7 +46,7 @@ pub fn owner_projection(graph: &Value, role: &str) -> Result<Value, Diagnostic> 
         "owner layers must be an object",
       )
     })?;
-  Ok(json!({"version":"0.2.0","robot":graph["robot"],"cores":{(role):{"layers":layers}}}))
+  Ok(json!({"version":graph["version"],"robot":graph["robot"],"cores":{(role):{"layers":layers}}}))
 }
 
 #[cfg(test)]
@@ -55,7 +55,7 @@ mod tests {
 
   #[test]
   fn owner_projection_contains_only_its_own_core() {
-    let graph = json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{
+    let graph = json!({"version":"0.2.1","robot":{"id":"r","name":"R"},"cores":{
       "isos":{"layers":{"ui":{"groups":{}}}},
       "ei":{"layers":{"io":{"groups":{}}}},
       "eos":{"layers":{"hardware":{"groups":{}}}}
@@ -82,10 +82,26 @@ mod tests {
   #[test]
   fn missing_owner_core_is_rejected() {
     let graph =
-      json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{"isos":{"layers":{}}}});
+      json!({"version":"0.2.1","robot":{"id":"r","name":"R"},"cores":{"isos":{"layers":{}}}});
     assert_eq!(
       owner_projection(&graph, "ei").unwrap_err().path,
       "/cores/ei/layers"
     );
+  }
+
+  #[test]
+  fn owner_projection_preserves_every_node_value_and_connection() {
+    let graph = json!({"version":"0.2.1","robot":{"id":"r","name":"R"},"cores":{
+      "isos":{"layers":{"ui":{"groups":{"monitor":{"nodes":{"view":{"id":"view","node_type":"isos.ui.vision.monitor@v0.2","settings":{"note":"keep this"},"inputs":{"frame":{"node":"eos/interface/egress/out","output":"frame"}}}}}}}}},
+      "ei":{"layers":{"io":{"groups":{"input":{"nodes":{"first":{"id":"first","node_type":"ei.io.input.arm_status@v0.2","settings":{"forward_rate_hz":37},"inputs":{"observation":{"node":"eos/interface/egress/arm","output":"observation"}}}}}}}}},
+      "eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"id":"front","node_type":"eos.hardware.camera.device@v0.2","settings":{"width_px":1280,"height_px":720,"fps":60},"adapter":{"settings":{"frequency_hz":60,"device_id":"cam"}},"observation":{"max_rate_hz":60,"max_payload_bytes":12000000}}}}}},"interface":{"groups":{"egress":{"nodes":{"out":{"id":"out","node_type":"eos.interface.egress.vision_flow@v0.2","inputs":{"frame":{"node":"eos/hardware/camera/front","output":"frame"}}}}}}}}}
+    }});
+    for role in ["ei", "eos"] {
+      let projected = owner_projection(&graph, role).unwrap();
+      assert_eq!(
+        projected["cores"][role]["layers"],
+        graph["cores"][role]["layers"]
+      );
+    }
   }
 }

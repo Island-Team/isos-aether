@@ -6,15 +6,14 @@ import asyncio
 from datetime import datetime
 
 import pytest
-
-from ei.api.mission import MissionPriorityBand, MissionState
-from ei.core.missions import MissionQueue, ResubmitOutcome
-from ei.core.missions.priority import (
+from ei.core.cognition.missions import MissionQueue, ResubmitOutcome
+from ei.core.cognition.missions.priority import (
   MissionPriority,
   PriorityWeights,
   score_mission,
   should_preempt,
 )
+from ei.core.system.models.mission import MissionPriorityBand, MissionState
 from ei.lib.config import PriorityConfig
 
 WEIGHTS = PriorityWeights()

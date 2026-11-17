@@ -1,22 +1,22 @@
-"""Generated JSON Schemas for northbound primitive and skill interfaces."""
+"""EI wire models must match the IsOS-owned northbound JSON Schemas."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from ei.api.invoke import (
+from ei.io.models.invoke import (
   PrimitiveInvokeAck,
   PrimitiveInvokeError,
   PrimitiveInvokeRequest,
 )
-from ei.api.mission import (
+from ei.io.models.mission import (
   MissionCommandAck,
   MissionCommandError,
   MissionCommandRequest,
 )
-from ei.api.primitives import PrimitivesSnapshot
-from ei.api.skills import (
+from ei.io.models.primitives import PrimitivesSnapshot
+from ei.io.models.skills import (
   SkillCommandAck,
   SkillCommandError,
   SkillCommandRequest,
@@ -27,7 +27,7 @@ from ei.api.skills import (
 
 SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 SCHEMA_ROOT = (
-  Path(__file__).resolve().parents[2] / "src/ei/contracts/schemas/northbound"
+  Path(__file__).resolve().parents[3] / "contract/schemas/northbound"
 )
 
 
@@ -61,7 +61,7 @@ def test_northbound_schemas_match_their_wire_models() -> None:
       "ei.contracts.northbound.primitives_snapshot.v1",
       PrimitivesSnapshot,
     ),
-    "skills_snapshot.v2.json": (
+    "skills_snapshot.json": (
       "ei.contracts.northbound.skills_snapshot.v2",
       SkillsSnapshot,
     ),

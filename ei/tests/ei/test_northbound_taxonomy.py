@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ei.contracts.endpoints import WORLD_RESOURCE_KINDS, ResourceKind
+from ei.contracts.io.link import WORLD_RESOURCE_KINDS, ResourceKind
 from ei.io import (
   PART_PATHS,
   PRIMITIVE_INVOKE_PATH,

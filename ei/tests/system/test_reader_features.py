@@ -40,7 +40,7 @@ def test_real_selected_launcher_and_setup_identity_agree(tmp_path: Path) -> None
   runtime = _probe(root, python=sys.executable)
   setup = subprocess.run(
     [str(root / "bin/ei-config"), "setup", "--json"],
-    input='{"schema_version":2,"op":"identity","core":"ei"}',
+    input='{"schema_version":3,"op":"identity","core":"ei"}',
     cwd=tmp_path,
     env={**os.environ, "EI_PYTHON": sys.executable},
     capture_output=True,
@@ -54,12 +54,12 @@ def test_real_selected_launcher_and_setup_identity_agree(tmp_path: Path) -> None
   setup_reply = json.loads(setup.stdout)
   identity = setup_reply["identity"]
   assert identity["core"] == "ei"
-  assert identity["product_version"] == "0.2.1"
-  assert identity["graph_version"] == "0.2.0"
+  assert identity["product_version"] == "0.2.3"
+  assert identity["graph_version"] == "0.2.1"
   assert identity["node_type_version"] == "0.2"
-  assert identity["supported_graph_versions"] == ["0.2.0"]
+  assert identity["supported_graph_versions"] == ["0.2.1"]
   assert identity["supported_node_type_versions"] == ["0.2"]
-  assert len(identity["supported_node_types"]) == 6
+  assert len(identity["supported_node_types"]) == 13
   assert runtime_reply == {
     "binary": "ei",
     "product_version": setup_reply["identity"]["product_version"],
@@ -67,17 +67,16 @@ def test_real_selected_launcher_and_setup_identity_agree(tmp_path: Path) -> None
       "managed-config-v1",
       "eos-gateway-client-v2",
       "ei-evidence-scheduler-v1",
-      "vision-evidence-ingress-v1",
-      "vision-inspection-uds-v1",
     ],
   }
-  assert len(setup_reply["identity"]["supported_node_types"]) == 6
+  assert len(setup_reply["identity"]["supported_node_types"]) == 13
   assert setup_reply["identity"]["supported_node_types"] == sorted(
     setup_reply["identity"]["supported_node_types"]
   )
   assert setup_reply["identity"]["features"] == [
-    "setup-v2",
+    "setup-v3",
     "catalog",
+    "custom-node-v1",
     "graph-0.2-ei-projection",
     "health-only-owner-v1",
     "activation-owner-v1",
@@ -103,7 +102,7 @@ assert 'grpc' not in sys.modules
       script,
     ],
     cwd=tmp_path,
-    env={**os.environ, "PYTHONPATH": str(root / "src")},
+    env={**os.environ, "PYTHONPATH": str(root.parent)},
     capture_output=True,
     text=True,
     timeout=10,
@@ -116,7 +115,8 @@ assert 'grpc' not in sys.modules
 
 def test_missing_default_interpreter_never_bootstraps(tmp_path: Path) -> None:
   source = tmp_path / "source"
-  (source / "src/ei").mkdir(parents=True)
+  source.mkdir(parents=True)
+  (source / "__init__.py").touch()
   (source / "pyproject.toml").write_text("[project]\nname='ei'\n")
   fake_bin = tmp_path / "bin"
   fake_bin.mkdir()
@@ -149,10 +149,10 @@ def test_probe_uses_selected_interpreter_and_installed_module_tree(
   tmp_path: Path,
 ) -> None:
   prefix = tmp_path / "portable"
-  module = prefix / "lib/island/ei/reader_features.py"
+  module = prefix / "pkg/ei/reader_features.py"
   module.parent.mkdir(parents=True)
-  (prefix / "share/contracts").mkdir(parents=True)
-  (prefix / "libexec").mkdir()
+  (prefix / "contract").mkdir(parents=True)
+  (prefix / "pkg").mkdir(exist_ok=True)
   (module.parent / "__init__.py").write_text("")
   module.write_text('print("selected-module-v1")\n')
   interpreter = tmp_path / "selected-python"
@@ -179,10 +179,10 @@ def test_setup_and_runtime_use_same_selected_installed_module_root(
   tmp_path: Path,
 ) -> None:
   prefix = tmp_path / "portable"
-  (prefix / "share/contracts").mkdir(parents=True)
-  (prefix / "libexec").mkdir()
-  selected_lib = tmp_path / "selected-lib"
-  package = selected_lib / "ei"
+  (prefix / "contract").mkdir(parents=True)
+  (prefix / "pkg").mkdir()
+  selected_pkg = tmp_path / "selected-pkg"
+  package = selected_pkg / "ei"
   package.mkdir(parents=True)
   (package / "__init__.py").write_text("")
   (package / "reader_features.py").write_text('print("runtime-selected")\n')
@@ -191,7 +191,7 @@ def test_setup_and_runtime_use_same_selected_installed_module_root(
   env.update(
     {
       "ISLAND_PREFIX": str(prefix),
-      "ISLAND_LIB": str(selected_lib),
+      "ISLAND_PKG": str(selected_pkg),
       "EI_PYTHON": sys.executable,
     }
   )
@@ -212,7 +212,7 @@ def test_setup_and_runtime_use_same_selected_installed_module_root(
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
-  assert not list(selected_lib.rglob("__pycache__"))
+  assert not list(selected_pkg.rglob("__pycache__"))
 
 
 def test_missing_explicit_interpreter_fails_without_side_effects(

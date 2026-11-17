@@ -9,6 +9,8 @@ Testing/
 compile_commands.json
 
 # Runtime logs and state
+/crates/aether-runtime/data/
+/crates/aether-system/data/
 
 # Deployment-specific integrations and bindings
 /etc/eos/eos.toml
@@ -49,8 +51,8 @@ compile_commands.json
 __pycache__/
 *.py[cod]
 
-# MuJoCo writes this diagnostic file in the process working directory.
-MUJOCO_LOG.TXT
+# package hardware writes this diagnostic file in the process working directory.
+*_LOG.TXT
 
 # Component outputs and local settings (one repository-wide ignore file)
 /crates/isos/target/
@@ -64,6 +66,7 @@ dist/
 /ei/dist/
 /data/
 /config/deployments/
+/config/auth.json
 /config/.graph-migration.lock
 /ei/captures/
 /ei/report.md

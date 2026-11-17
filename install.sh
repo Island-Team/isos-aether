@@ -7,7 +7,7 @@ INSTALL_LOG_DIR="$ROOT/data/isos/log/install/$SESSION"
 mkdir -p "$INSTALL_LOG_DIR"
 chmod 700 "$INSTALL_LOG_DIR"
 INSTALL_LOG="$INSTALL_LOG_DIR/install.jsonl"
-log_install() { python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" "$1" isos.install@aether-v0.2.1 "$2"; }
+log_install() { python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" "$1" isos.install@aether-v0.2.3 "$2"; }
 log_install info install_starting
 trap 'status=$?; log_install error "install_failed status=$status line=$LINENO"' ERR
 PREFIX="${ISOS_INSTALL_ROOT:-}"
@@ -66,11 +66,33 @@ TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 if [[ -z "$BUNDLE" ]] && (( BUILD )); then
   log_install info build_starting
   log_install info build_cargo
-  "$CARGO_BIN" build --locked --release --workspace --manifest-path "$ROOT/Cargo.toml" 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.1 --stdin
+  if python3 "$ROOT/scripts/rust_build_cache.py" release check; then
+    log_install info build_cargo_unchanged
+  else
+    "$CARGO_BIN" build --locked --release --workspace --manifest-path "$ROOT/Cargo.toml" 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.3 --stdin
+    python3 "$ROOT/scripts/rust_build_cache.py" release write
+  fi
   log_install info build_ei
-  ( cd "$ROOT/ei" && ./scripts/platform/dispatch.sh build ) 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.1 --stdin
+  if python3 "$ROOT/scripts/ei_build_cache.py" check; then
+    log_install info build_ei_unchanged
+  else
+    "$ROOT/scripts/ei/platform/dispatch.sh" build 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.3 --stdin
+    python3 "$ROOT/scripts/ei_build_cache.py" write
+  fi
   log_install info build_ui
-  ( cd "$ROOT/ui" && npm ci && npm run build ) 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.1 --stdin
+  UI_LOCK_HASH="$(sha256sum "$ROOT/ui/package-lock.json" | cut -d' ' -f1)"
+  if [[ ! -d "$ROOT/ui/node_modules" || ! -f "$ROOT/ui/node_modules/.isos-lock-hash" || "$(cat "$ROOT/ui/node_modules/.isos-lock-hash")" != "$UI_LOCK_HASH" ]]; then
+    ( cd "$ROOT/ui" && npm ci ) 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.3 --stdin
+    printf '%s\n' "$UI_LOCK_HASH" > "$ROOT/ui/node_modules/.isos-lock-hash"
+  else
+    log_install info build_ui_dependencies_unchanged
+  fi
+  if python3 "$ROOT/scripts/ui_build_cache.py" release check && ( cd "$ROOT/ui" && node scripts/verify-bundles.mjs >/dev/null ); then
+    log_install info build_ui_unchanged
+  else
+    ( cd "$ROOT/ui" && npm run build ) 2>&1 | python3 "$ROOT/scripts/jsonl_log.py" "$INSTALL_LOG" info isos.install.build@aether-v0.2.3 --stdin
+    python3 "$ROOT/scripts/ui_build_cache.py" release write
+  fi
   log_install info build_completed
 fi
 mkdir -p "$PREFIX/releases" "$PREFIX/bin"
@@ -101,9 +123,10 @@ PY
   [[ -x "$STAGE/bin/isos" && -x "$STAGE/libexec/isos" && -f "$STAGE/MANIFEST.sha256" ]] || {
     echo 'bundle is missing required IsOS files' >&2; exit 1;
   }
-  for program in aether-profile aether-runtime aether-http-bridge aether-config-server; do
+  for program in aether-profile aether-runtime aether-server; do
     [[ -x "$STAGE/libexec/$program" ]] || { echo "bundle is missing EOS program: $program" >&2; exit 1; }
   done
+  [[ -f "$STAGE/libexec/libaether_runtime.so" ]] || { echo 'bundle is missing EOS demo node library' >&2; exit 1; }
   [[ -f "$STAGE/share/isos/ui/web/index.html" && -f "$STAGE/share/isos/ui/tui/index.js" && -f "$STAGE/share/isos/config/isos.toml" && -x "$STAGE/share/isos/ei/bin/ei" ]] || {
     echo 'bundle is missing required UI, config, or EI files' >&2; exit 1;
   }
@@ -129,54 +152,47 @@ else
   VERSION="$($TARGET_DIR/release/isos --version | awk '{print $2}')"
 mkdir -p "$STAGE/bin" "$STAGE/libexec" "$STAGE/share/isos/ui" "$STAGE/share/isos/config" "$STAGE/share/isos/ei"
 cp "$TARGET_DIR/release/isos" "$STAGE/libexec/isos"
-for program in aether-profile aether-runtime aether-http-bridge aether-config-server; do
+for program in aether-profile aether-runtime aether-server; do
   [[ -x "$TARGET_DIR/release/$program" ]] || { echo "required EOS binary missing: $program" >&2; exit 1; }
   cp "$TARGET_DIR/release/$program" "$STAGE/libexec/$program"
 done
+[[ -f "$TARGET_DIR/release/libaether_runtime.so" ]] || { echo 'required EOS demo node library missing' >&2; exit 1; }
+cp "$TARGET_DIR/release/libaether_runtime.so" "$STAGE/libexec/libaether_runtime.so"
 cp -a "$ROOT/ui/dist/local" "$STAGE/share/isos/ui/web"
 cp -a "$ROOT/ui/dist/tui" "$STAGE/share/isos/ui/tui"
-cp -a "$ROOT/share/eos" "$STAGE/share/isos/eos"
+cp -a "$ROOT/contract" "$STAGE/share/isos/contract"
 cp -a "$ROOT/config/isos/." "$STAGE/share/isos/config/"
 cp "$ROOT/config/isosui.toml" "$STAGE/share/isos/config/isosui.toml"
 cp "$ROOT/LICENSE" "$STAGE/share/isos/LICENSE"
 cp "$ROOT/install.sh" "$STAGE/share/isos/install.sh"
-for part in bin libexec; do cp -a "$ROOT/ei/$part" "$STAGE/share/isos/ei/$part"; done
+cp -a "$ROOT/ei/bin" "$STAGE/share/isos/ei/bin"
+cp -a "$ROOT/ei/package" "$STAGE/share/isos/ei/pkg"
 mkdir -p "$STAGE/share/isos/ei/etc/ei"
 cp -a "$ROOT/config/ei/." "$STAGE/share/isos/ei/etc/ei/"
 mv "$STAGE/share/isos/ei/etc/ei/island.toml" "$STAGE/share/isos/ei/etc/island.toml"
-# The source checkout has one root share tree; releases retain the existing EI
-# product overlay so older installed resource locations remain unchanged.
-python3 - "$STAGE/share/isos/ei/etc/island.toml" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-source = 'share = ["../share"]'
-if text.count(source) != 1:
-  raise SystemExit(f"unexpected EI source resource roots: {path}")
-path.write_text(text.replace(source, 'share = ["share", ".."]'))
-PY
 # Source factory defaults may link to canonical config/ei files; release manifest
 # verification requires regular files at both runtime paths.
-python3 - "$ROOT/share/ei/defaults/ei" "$ROOT/config/ei" <<'PY'
+python3 - "$ROOT/config/defaults/ei" "$ROOT/config/ei" <<'PY'
 from pathlib import Path
 import sys
 
-share, etc = (Path(value).resolve() for value in sys.argv[1:])
-for item in share.rglob('*'):
+factory, etc = (Path(value).resolve() for value in sys.argv[1:])
+for item in factory.rglob('*'):
   if item.is_symlink() and (not item.resolve().is_file() or not item.resolve().is_relative_to(etc)):
     raise SystemExit(f"EI factory default link escapes config/ei: {item}")
 PY
 mkdir -p "$STAGE/share/isos/ei/share/defaults"
-cp -aL "$ROOT/share/ei/defaults/ei" "$STAGE/share/isos/ei/share/defaults/ei"
-cp "$ROOT/share/isos/defaults/island.toml" "$STAGE/share/isos/ei/share/defaults/island.toml"
-if [[ -f "$ROOT/ei/dist/ei-${VERSION}-py3-none-any.whl" ]]; then
-  command -v uv >/dev/null || { echo 'uv is required to install EI dependencies' >&2; exit 127; }
-  uv pip install --target "$STAGE/share/isos/ei/lib/island" --python "$(command -v python3.12)" "$ROOT/ei/dist/ei-${VERSION}-py3-none-any.whl"
-else
-  echo "EI wheel for ${VERSION} is missing" >&2; exit 1
+cp -aL "$ROOT/config/defaults/ei" "$STAGE/share/isos/ei/share/defaults/ei"
+cp "$ROOT/config/defaults/island.toml" "$STAGE/share/isos/ei/share/defaults/island.toml"
+shopt -s nullglob
+EI_WHEELS=("$ROOT/ei/dist/ei-${VERSION}-py3-none-linux_"*.whl)
+shopt -u nullglob
+if (( ${#EI_WHEELS[@]} != 1 )); then
+  echo "expected exactly one Linux EI wheel for ${VERSION}; found ${#EI_WHEELS[@]}" >&2
+  exit 1
 fi
+command -v uv >/dev/null || { echo 'uv is required to install EI dependencies' >&2; exit 127; }
+uv pip install --target "$STAGE/share/isos/ei/pkg" --python "$(command -v python3.12)" "${EI_WHEELS[0]}"
 cat > "$STAGE/bin/isos" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail

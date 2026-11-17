@@ -7,11 +7,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[5]
 PAIRS = [
-    ("docs/isos/interfaces/packages/verification.md", "docs_cn/isos/interfaces/packages/verification_cn.md"),
-    ("docs/isos/interfaces/node/instance.md", "docs_cn/isos/interfaces/node/instance_cn.md"),
-    ("docs/isos/interfaces/http/README.md", "docs_cn/isos/interfaces/http/README_cn.md"),
-    ("docs/isos/design/app/server.md", "docs_cn/isos/design/app/server_cn.md"),
-    ("docs/isos/start/README.md", "docs_cn/isos/start/README_cn.md"),
+    ("docs/isos/interfaces/package/README.md", "docs_cn/isos/interfaces/package/README_cn.md"),
+    ("docs/node/interfaces/graph.md", "docs_cn/node/interfaces/graph_cn.md"),
+    ("docs/isos/interfaces/api/http.md", "docs_cn/isos/interfaces/api/http_cn.md"),
+    ("docs/isos/core/server.md", "docs_cn/isos/core/server_cn.md"),
+    ("docs/isos/start/quick-start.md", "docs_cn/isos/start/quick-start_cn.md"),
     ("crates/isos/tests/fixtures/reader_features/README.md", "crates/isos/tests/fixtures/reader_features/README_cn.md"),
 ]
 SHARED = [
