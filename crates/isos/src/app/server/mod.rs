@@ -874,6 +874,30 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn source_install_requires_dev_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = Arc::new(App {
+      paths: Paths {
+        config: temp.path().join("config"),
+        data: temp.path().join("data"),
+        runtime: temp.path().join("run"),
+      },
+      deployment: "default".into(),
+    });
+    let request = Request::builder()
+      .method(Method::POST)
+      .uri("/api/isos/v1/packages/install-source")
+      .header(header::HOST, "127.0.0.1:16000")
+      .header(header::CONTENT_TYPE, "application/json")
+      .body(Body::from(
+        r#"{"id":"island/mujoco-sim","version":"0.2.7","path":"/tmp/source"}"#,
+      ))
+      .unwrap();
+    let response = router(app).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+  }
+
+  #[tokio::test]
   async fn obsolete_component_and_build_routes_are_absent() {
     for route in [
       "/api/isos/v2/graph",

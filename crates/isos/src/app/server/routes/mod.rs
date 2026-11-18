@@ -106,6 +106,10 @@ pub(super) fn router(app: Arc<App>) -> Router {
       post(package_install).options(preflight),
     )
     .route(
+      "/api/isos/v1/packages/install-source",
+      post(package_handlers::package_install_source).options(preflight),
+    )
+    .route(
       "/api/isos/v1/packages/preview-download",
       post(package_preview_download).options(preflight),
     )
