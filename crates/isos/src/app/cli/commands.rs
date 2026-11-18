@@ -366,9 +366,42 @@ pub(crate) fn package_command(
       }
     }
     PackageCommand::Install(args) => install_package(paths, args, None)?,
-    PackageCommand::Configure { pin } => {
+    PackageCommand::Configure { pin, service } => {
       let (id, version) = package_pin(&pin)?;
       let saved = packages::package_config::show(paths, deployment, id, version)?;
+      if let Some(service) = &service {
+        ensure!(
+          saved
+            .descriptor
+            .sections
+            .iter()
+            .any(|section| section.id == format!("services.{service}")),
+          "package service {service} is not declared"
+        );
+      }
+      let mut source = saved.toml.clone();
+      if service.as_deref()
+        == saved
+          .descriptor
+          .setup
+          .as_ref()
+          .map(|setup| setup.service.as_str())
+        && packages::package_config::setup_needed(&saved)
+        && io::stdin().is_terminal()
+      {
+        let setup = saved
+          .descriptor
+          .setup
+          .as_ref()
+          .expect("setup_needed requires setup");
+        print!("{}", setup.prompt.en);
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if answer.trim().eq_ignore_ascii_case("y") {
+          source = packages::package_config::run_setup(paths, &saved)?;
+        }
+      }
       let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .find_map(|name| {
@@ -381,7 +414,7 @@ pub(crate) fn package_command(
         .prefix("isos-package-config-")
         .suffix(".toml")
         .tempfile()?;
-      fs::write(temp.path(), &saved.toml)?;
+      fs::write(temp.path(), &source)?;
       let editor_parts = shlex::split(&editor).context("invalid VISUAL or EDITOR command")?;
       let (program, arguments) = editor_parts
         .split_first()

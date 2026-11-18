@@ -355,6 +355,19 @@ it('falls back to demo when the remembered graph file is missing', async () => {
   await act(async () => root.unmount());
 });
 
+it('opens a pool graph for inspection when its package keeps the deployment owner offline', async () => {
+  const offlineGraph = { ...graph, cores: { ...graph.cores, ei: { layers: { governance: { groups: { monitor: { nodes: { arm_status: { id: 'arm_status', node_type: 'ei.governance.monitor.arm_status@v0.2', label: 'EI monitor governance', description: 'Read-only monitor pass' } } } } } } } } };
+  mocks.snapshot.mockRejectedValue(new Error('required owner is unavailable'));
+  mocks.types.mockResolvedValue({ types: [] });
+  mocks.pool.mockResolvedValue({ graphs: [{ name: 'demo', revision: 'a'.repeat(64), version: '0.2.1' }] });
+  mocks.poolEntry.mockResolvedValue({ name: 'demo', revision: 'a'.repeat(64), graph: offlineGraph });
+  const { container, root } = await mount();
+  expect(container.textContent).toContain('Deployment owner is unavailable; this graph file can be previewed.');
+  await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Select ei/governance/monitor/arm_status')!.click());
+  expect(container.textContent).toContain('Read-only monitor pass');
+  await act(async () => root.unmount());
+});
+
 it('explains that a saved graph file needs Apply before deployment', async () => {
   mocks.snapshot.mockResolvedValue(snapshot('a'.repeat(64)));
   mocks.readiness.mockResolvedValue({ cores: [{ core: 'eos', path: '/bin/eos', version: '0.2.1', compatible: true, configured: true, graph_configured: true, running: false, ready: false, reason: 'pending_apply', action: 'Apply' }] });

@@ -98,6 +98,8 @@ IsOS 只在所选工件及所有声明文件的字节摘要匹配后安装精确
 
 JSON 描述符包含 `contract:"isos.package-config@v1"`、`schema_version:"0.1.0"` 和 `sections[]`。每节有唯一的 `id`（`package`、`host` 或 `services.<instance>`）、中英文 `label` 与 `description`，以及 `fields[]`。每个字段有唯一的 slug `name`、`type`（`string`、`integer`、`boolean`、`directory`、`file` 或 `enum`）、`required`、中英文 `label` 和 `description`，以及可选的中英文 `note`。整数字段可声明 `min` 和 `max`；表单把它们用作输入范围，IsOS 在保存时校验。`default` 可填充初始空白输入，但软件包的 TOML 模板必须包含实际配置值：仅声明默认值不会将其写入 TOML 或传给所有者。文件和目录值须为绝对路径；选中服务所需路径必须存在且类型匹配。运行服务及其环境模板只能引用已声明的配置字段。
 
+可选的 `setup` 对象可以为交互式 CLI 配置指定包内已验证的相对可执行文件。它声明与 `services.<instance>` 节匹配的 `service`、`entrypoint`、中英文 `prompt`，以及指向已声明本机文件或目录字段的 `outputs`。若任一输出路径缺失，`isos pkg configure <pin> --service <instance>` 会在运行辅助程序前询问。辅助程序接收部署专用数据目录和输出 JSON 路径，只写入已声明的绝对路径；IsOS 校验路径类型，并在保存前把填充后的 TOML 交给编辑器。拒绝下载时仍可手动配置。非交互式配置和 Web 表单不执行辅助程序。
+
 例如，软件包可在 `services.camera` 节声明 `"name":"width"`、`"min":64`、`"max":2048` 的整数字段及中英文标签和说明，并在模板的 `[services.camera]` 中设置 `width = 1280`。软件包所有者仍须按自己的相机实现验证该值。UI 和 IsOS 不赋予该字段相机语义。[软件包配置 API](../api/http_cn.md#http_packages)支持读取、校验及带修订检查的保存；配置按部署和精确包版本存储，与节点图草稿分离。配置变更保存后，需要在下次 Run 前重新 Apply。
 
 以下精简描述符和模板展示这两个文件；发行清单须绑定其准确路径及摘要：

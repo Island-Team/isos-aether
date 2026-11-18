@@ -210,3 +210,7 @@ IsOS 验证精确软件包锁定、发行与载荷摘要、贡献节点类型及
 - 其他语言绑定须通过针对 `isos_node_v1` 的 C ABI 表、所有权规则与失败测试后才予以合格认定。
 - 为非 Linux 主机增加平台专属库加载器及工件标签。在此之前，即使软件包含有构建文件，Windows 和 macOS 原生节点工件仍不受支持。
 - 为每个新增所有者或平台增加软件包检查用例，覆盖 ABI 不匹配、字节变化、依赖缺失、拒绝、崩溃及不确定 Stop。
+
+## 软件包安装辅助程序资格检查（候选，2026-11-18）
+
+对于 MuJoCo 0.2.7 候选版，`cargo fmt --all -- --check`、`cargo test -p isos package_config`、`cargo clippy -p isos --all-targets -- -D warnings` 和 `python3 scripts/check_doc_links.py --all` 均通过。配套源码检出通过了 15 项节点测试和 35 项 CTest。使用专题版 IsOS 执行 `ISOS_AETHER_BIN_DIR=<所有者二进制目录> ISOS_EI_BIN_DIR=<EI 二进制目录> isos pkg check --source <MuJoCo 专题检出> --version 0.2.7 --output <空目录> --graph <原生图> --graph <RoboCasa 图> --package-config <本地 TOML>`；两种服务的托管回放均通过。隔离的本地安装及交互式 `isos pkg configure island/mujoco-sim@0.2.7 --service robocasa` 使用已准备的本地资源验证了拒绝与接受。完整检查和 CLI 记录位于 MuJoCo 检出的忽略目录 `data/test/20261118-release-027-audit/`。全新网络获取及经审查的 IsOS 发布仍是单独的门槛。

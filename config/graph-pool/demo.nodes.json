@@ -173,7 +173,7 @@
                   "adapter": {
                     "package": {
                       "id": "island/mujoco-sim",
-                      "version": "0.2.6"
+                      "version": "0.2.7"
                     },
                     "settings": {
                       "device_id": "robocasa/camera/agentview-left",
@@ -200,7 +200,7 @@
                   },
                   "package": {
                     "id": "island/mujoco-sim",
-                    "version": "0.2.6"
+                    "version": "0.2.7"
                   },
                   "settings": {
                     "camera_height": 720,

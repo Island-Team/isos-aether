@@ -61,7 +61,18 @@ pub struct Section {
 pub struct Descriptor {
   pub contract: String,
   pub schema_version: String,
+  #[serde(default)]
+  pub setup: Option<Setup>,
   pub sections: Vec<Section>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Setup {
+  pub service: String,
+  pub entrypoint: String,
+  pub prompt: Text,
+  pub outputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -237,6 +248,20 @@ pub(super) fn validate_package_files(
       }
     }
     validate_descriptor(&descriptor)?;
+    if let Some(setup) = &descriptor.setup {
+      let path = root.join(&setup.entrypoint);
+      let metadata = fs::symlink_metadata(&path)?;
+      ensure!(
+        metadata.file_type().is_file()
+          && metadata.len() <= 1_048_576
+          && metadata.permissions().mode() & 0o111 != 0,
+        "invalid package setup helper"
+      );
+      ensure!(
+        path.canonicalize()?.starts_with(root.canonicalize()?),
+        "unsafe package setup helper"
+      );
+    }
     let template = std::str::from_utf8(&template)?;
     validate(&descriptor, template, &[])?;
   }
@@ -249,6 +274,30 @@ fn validate_descriptor(descriptor: &Descriptor) -> Result<()> {
     "unsupported package config descriptor"
   );
   let mut sections = BTreeSet::new();
+  if let Some(setup) = &descriptor.setup {
+    ensure!(valid_slug(&setup.service), "invalid package setup service");
+    ensure!(
+      !setup.entrypoint.starts_with('/')
+        && !setup
+          .entrypoint
+          .split('/')
+          .any(|part| part.is_empty() || part == "." || part == ".."),
+      "invalid package setup entrypoint"
+    );
+    ensure!(
+      !setup.prompt.en.trim().is_empty() && !setup.prompt.cn.trim().is_empty(),
+      "missing package setup prompt"
+    );
+    let mut outputs = BTreeSet::new();
+    ensure!(
+      !setup.outputs.is_empty()
+        && setup
+          .outputs
+          .iter()
+          .all(|field| valid_slug(field) && outputs.insert(field)),
+      "invalid or duplicate package setup outputs"
+    );
+  }
   for section in &descriptor.sections {
     ensure!(
       section.id == "package"
@@ -328,6 +377,24 @@ fn validate_descriptor(descriptor: &Descriptor) -> Result<()> {
         };
         ensure!(valid, "invalid config field default");
       }
+    }
+  }
+  if let Some(setup) = &descriptor.setup {
+    ensure!(
+      sections.contains(&format!("services.{}", setup.service)),
+      "package setup service is not declared"
+    );
+    let host = descriptor
+      .sections
+      .iter()
+      .find(|section| section.id == "host")
+      .context("package setup needs host fields")?;
+    for output in &setup.outputs {
+      ensure!(
+        host.fields.iter().any(|field| field.name == *output
+          && matches!(field.field_type.as_str(), "directory" | "file")),
+        "package setup output must name a host path field"
+      );
     }
   }
   Ok(())
@@ -554,6 +621,109 @@ pub fn show(paths: &Paths, deployment: &str, id: &str, version: &str) -> Result<
   })
 }
 
+pub fn setup_needed(saved: &Saved) -> bool {
+  let Some(setup) = &saved.descriptor.setup else {
+    return false;
+  };
+  setup.outputs.iter().any(|name| {
+    let kind = saved
+      .descriptor
+      .sections
+      .iter()
+      .find(|section| section.id == "host")
+      .and_then(|section| section.fields.iter().find(|field| field.name == *name))
+      .map(|field| field.field_type.as_str());
+    saved
+      .values
+      .get("host")
+      .and_then(|host| host.get(name))
+      .and_then(toml::Value::as_str)
+      .is_none_or(|value| {
+        value.is_empty()
+          || match kind {
+            Some("directory") => !Path::new(value).is_dir(),
+            Some("file") => !Path::new(value).is_file(),
+            _ => true,
+          }
+      })
+  })
+}
+
+/// Run a verified, operator-approved package setup helper and return a config draft.
+pub fn run_setup(paths: &Paths, saved: &Saved) -> Result<String> {
+  let setup = saved
+    .descriptor
+    .setup
+    .as_ref()
+    .context("package has no setup helper")?;
+  let package = verify(paths, &saved.id, &saved.version)?.root;
+  let entrypoint = package
+    .join(&setup.entrypoint)
+    .canonicalize()
+    .context("package setup helper is missing")?;
+  ensure!(
+    entrypoint.starts_with(package.canonicalize()?),
+    "package setup path escapes package"
+  );
+  ensure!(entrypoint.is_file(), "package setup helper is not a file");
+  ensure!(
+    fs::metadata(&entrypoint)?.permissions().mode() & 0o111 != 0,
+    "package setup helper is not executable"
+  );
+  let destination = paths
+    .data
+    .join("package-setup")
+    .join(&saved.id)
+    .join(&saved.version);
+  fs::create_dir_all(&destination)?;
+  let output = tempfile::NamedTempFile::new()?;
+  let status = std::process::Command::new(&entrypoint)
+    .arg(&destination)
+    .arg(output.path())
+    .status()
+    .context("could not launch package setup helper")?;
+  ensure!(status.success(), "package setup helper failed");
+  let bytes = fs::read(output.path())?;
+  ensure!(bytes.len() <= 4096, "package setup output is too large");
+  let values: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
+  ensure!(
+    values.len() == setup.outputs.len(),
+    "package setup output fields differ"
+  );
+  let mut draft: toml::Value = toml::from_str(&saved.toml)?;
+  let host = draft
+    .get_mut("host")
+    .and_then(toml::Value::as_table_mut)
+    .context("package config has no host section")?;
+  for name in &setup.outputs {
+    let value = values
+      .get(name)
+      .and_then(serde_json::Value::as_str)
+      .context("package setup output is missing a path")?;
+    let path = Path::new(value);
+    ensure!(
+      path.is_absolute() && path.exists(),
+      "package setup output path is unavailable"
+    );
+    let kind = saved
+      .descriptor
+      .sections
+      .iter()
+      .find(|section| section.id == "host")
+      .and_then(|section| section.fields.iter().find(|field| field.name == *name))
+      .map(|field| field.field_type.as_str())
+      .context("package setup output field is undeclared")?;
+    ensure!(
+      (kind == "directory" && path.is_dir()) || (kind == "file" && path.is_file()),
+      "package setup output has wrong path kind"
+    );
+    host.insert(name.clone(), toml::Value::String(value.to_owned()));
+  }
+  let source = toml::to_string_pretty(&draft)?;
+  validate(&saved.descriptor, &source, &[])?;
+  Ok(source)
+}
+
 /// Read and validate only the service instances selected by one graph revision.
 /// The returned revision is the exact TOML SHA-256 for Apply/Run fencing.
 pub fn selected(
@@ -600,6 +770,29 @@ pub fn save(
 mod tests {
   use super::*;
   #[test]
+  fn package_setup_declares_only_host_paths_and_safe_entrypoints() {
+    let mut descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+      "contract":"isos.package-config@v1", "schema_version":"0.1.0",
+      "setup":{"service":"robocasa","entrypoint":"bin/setup","prompt":{"en":"Download?","cn":"下载？"},
+        "outputs":["assets"]},
+      "sections":[
+        {"id":"host","label":{"en":"Host","cn":"本机"},"description":{"en":"Host","cn":"本机"},
+          "fields":[{"name":"assets","type":"directory","required":false,"label":{"en":"Assets","cn":"资源"},
+            "description":{"en":"Assets","cn":"资源"}}]},
+        {"id":"services.robocasa","label":{"en":"RoboCasa","cn":"RoboCasa"},
+          "description":{"en":"RoboCasa","cn":"RoboCasa"},"fields":[]}
+      ]
+    })).unwrap();
+    validate_descriptor(&descriptor).unwrap();
+    descriptor.setup.as_mut().unwrap().entrypoint = "../setup".into();
+    assert!(validate_descriptor(&descriptor).is_err());
+    descriptor.setup.as_mut().unwrap().entrypoint = "bin/setup".into();
+    descriptor.setup.as_mut().unwrap().outputs = vec!["undeclared".into()];
+    assert!(validate_descriptor(&descriptor).is_err());
+    descriptor.setup.as_mut().unwrap().outputs = vec!["assets".into(), "assets".into()];
+    assert!(validate_descriptor(&descriptor).is_err());
+  }
+  #[test]
   fn config_read_rejects_symlink_and_uses_template_only_when_absent() {
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("package.toml");
@@ -645,6 +838,7 @@ mod tests {
       descriptor: Descriptor {
         contract: "isos.package-config@v1".into(),
         schema_version: "0.1.0".into(),
+        setup: None,
         sections: Vec::new(),
       },
       values,
@@ -660,6 +854,7 @@ mod tests {
     let descriptor = Descriptor {
       contract: "isos.package-config@v1".into(),
       schema_version: "0.1.0".into(),
+      setup: None,
       sections: vec![Section {
         id: "services.native".into(),
         label: Text {
