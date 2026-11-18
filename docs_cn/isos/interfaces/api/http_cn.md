@@ -270,7 +270,7 @@ IsOS 管理已保存图及其精确字节 SHA-256 修订。所有 `/api/isos/v1/
 
 `POST /api/isos/v1/graph/connection` 预览一条草稿连接。草稿包含该输入引用后，请求携带 `{schema_version, graph, source, output, target, input}`。`source` 与 `target` 是规范的四段节点路径；`output` 与 `input` 是端口名。响应为包含准确 `source`、`output`、`target`、`input`、路由类别、通道及 QoS 字段的 `{allowed:true, edge}`，或 `{allowed:false, diagnostic}`。预览期间其他必需输入和固定绑定目标可以尚未连接。选定目录不可用时返回 503，API 版本错误返回 400。该读取不保存草稿，Apply 会重新执行完整准入。
 
-当前图格式为 `0.2.1`，包含 `isos`、`ei`、`eos` 核心，类型 ID 为 `<core>.<layer>.<group>.<node>@v0.2`。仓库中的[混合示例](../../../../examples/mixed-mujoco.nodes.json)有 17 个节点。它保留机械臂观测和相机视觉路径，但让模拟机械臂控制路径缺少激活源，用于验证不完整链警告；该路径无法向机械臂发送命令。Apply 该示例需要已验证的 `island/mujoco-sim@0.2.4` 软件包及其配置。`/graph/new` 返回的无软件包 17 节点起始图具有连通的按钮到机械臂路径。仓库演示图另有 `island/mujoco-sim@0.2.6` 相机与视觉路径。混合示例不生成 IsOS 子进程规格。工作进程实时健康通过部署状态读取；图读取仅代表配置。
+当前图格式为 `0.2.1`，包含 `isos`、`ei`、`eos` 核心，类型 ID 为 `<core>.<layer>.<group>.<node>@v0.2`。仓库中的[混合示例](../../../../examples/mixed-mujoco.nodes.json)有 17 个节点。它保留机械臂观测和相机视觉路径，但让模拟机械臂控制路径缺少激活源，用于验证不完整链警告；该路径无法向机械臂发送命令。Apply 该示例需要已验证的 `island/mujoco-sim@0.2.4` 软件包及其配置。`/graph/new` 返回的无软件包 17 节点起始图具有连通的按钮到机械臂路径。仓库演示图另有 `island/mujoco-sim@0.2.7` 相机与视觉路径。混合示例不生成 IsOS 子进程规格。工作进程实时健康通过部署状态读取；图读取仅代表配置。
 
 `GET /api/isos/v1/graph/convert?revision=<sha256>` 仅在修订值匹配绑定图的原始字节时，将 `0.2.1` 图转换为未保存的 `0.2.1` 草稿。转换只更改 `version`，保留节点 ID、输入、设置和软件包精确固定版本。使用相同修订值通过图库 PUT 保存；并发修改返回 409。
 工作台可只读打开旧版图库文件并预览相同转换。保存操作检查该文件的修订值，随后应用操作验证并绑定转换后的图。
@@ -319,6 +319,7 @@ IsOS Web UI 发送包含 EOS 公共操作的 JSON 对象。例如 `{"op":"time"}
 | `GET /api/isos/v1/packages` | 无正文 | 精确锁定和验证状态的 `data.installed` 行。 | 403 Host/Origin；503 存储错误。 |
 | `POST /api/isos/v1/packages/preview-download` | 精确 `id`、`version`。 | 选定工件的 URL、大小、SHA-256、发布者/来源、信任状态及批准摘要；不下载工件。 | 400 发行版无效或不兼容。 |
 | `POST /api/isos/v1/packages/install` | 精确 `id`、`version`、预览返回的 `approval`。 | 已验证收据、路径、更新的清单。 | 400 缺少批准或批准已失效；409 锁定重复；422 契约不支持或工件不安全。 |
+| `POST /api/isos/v1/packages/install-source` | 精确 `id`、`version`、本机源码检出的绝对 `path`；仅开发模式。 | 构建干净的检出并以 `local_source` 安装已验证字节；不修改节点图或运行。 | 400 路径或锁定无效；403 产品模式；422 构建或验证失败。 |
 | `POST /api/isos/v1/packages/link` | 精确 `id`、`version`、绝对 `path`，可选绝对 `manifest`。 | 已验证链接收据和清单。 | 400 格式错误；409 锁定重复；422 不受支持或载荷变化。 |
 | `POST /api/isos/v1/packages/preview-link` | 绝对软件包 `path`，可选 `manifest`。 | `id`、`version`、`ready`、有界 `issues`；不发布。 | 400 格式错误；422 软件包不安全。 |
 | `GET /api/isos/v1/packages/config?id=<id>&version=<version>` | 查询参数中的已安装精确锁定。 | `data` 包含此部署和锁定的 `descriptor`、`toml`、解析后的 `values` 与 `revision`。 | 422 描述符或配置缺失、无效。 |

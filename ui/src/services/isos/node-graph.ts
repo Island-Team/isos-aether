@@ -333,6 +333,9 @@ export function previewPackageDownload(id: string, version: string): Promise<{ p
 export function installBackend(id: string, version: string, approval: string): Promise<unknown> {
   return request('/packages/install', 'POST', { id, version, approval });
 }
+export function installSourceBackend(id: string, version: string, path: string): Promise<unknown> {
+  return request('/packages/install-source', 'POST', { id, version, path });
+}
 export function linkBackend(id: string, version: string, path: string, manifest?: string): Promise<unknown> {
   return request('/packages/link', 'POST', { id, version, path, ...(manifest ? { manifest } : {}) });
 }

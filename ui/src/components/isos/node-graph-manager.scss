@@ -40,6 +40,12 @@
 .node-graph-advanced[open] > div > small { padding: 0 4px 6px; color: var(--text-secondary); font-size: .7rem; }
 .node-graph-recovery { font-size: .82rem; }
 .node-graph-note { margin: 3px 12px; color: var(--text-secondary); font-size: .82rem; line-height: 1.35; overflow-wrap: anywhere; }
+.node-graph-dependency-repair { display: grid; gap: 8px; max-height: 220px; margin: 6px 12px; padding: 10px; overflow: auto; border: 1px solid var(--warning); border-radius: 6px; background: var(--bg-elevated); font-size: .82rem; }
+.node-graph-dependency-repair ul { margin: 0; padding-left: 20px; }
+.node-graph-dependency-repair__pin { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+.node-graph-dependency-repair__pin p { margin: 0; width: 100%; }
+.node-graph-dependency-repair__pin label { flex: 1 1 220px; }
+.node-graph-dependency-repair > button { justify-self: start; }
 .node-graph-body { position: relative; display: grid; grid-template-columns: var(--library-width, 260px) minmax(0, 1fr) var(--side-width, 320px); flex: 1; min-height: 0; }
 .node-graph-body--library-collapsed { grid-template-columns: minmax(0, 1fr) var(--side-width, 320px); }
 .node-graph-body--side-collapsed { grid-template-columns: var(--library-width, 260px) minmax(0, 1fr); }

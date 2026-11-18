@@ -109,6 +109,14 @@ pub(crate) struct PackageRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct PackageSourceRequest {
+  id: String,
+  version: String,
+  path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PackagePreviewRequest {
   id: String,
   version: String,
@@ -187,6 +195,79 @@ pub(crate) async fn package_install(
   );
   ok(
     json!({"path":installed,"verified":true,"source_kind":"approved_catalog","installed":packages::listing(&app.paths).map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?}),
+  )
+}
+
+pub(crate) async fn package_install_source(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  Json(request): Json<PackageSourceRequest>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  if app
+    .paths
+    .mode()
+    .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?
+    != "dev"
+  {
+    return Err(err(
+      StatusCode::FORBIDDEN,
+      "source installation requires dev mode",
+    ));
+  }
+  packages::package_path(&app.paths, &request.id, &request.version)
+    .map_err(|error| internal_err(StatusCode::BAD_REQUEST, &error))?;
+  if !request.path.is_absolute() {
+    return Err(err(
+      StatusCode::BAD_REQUEST,
+      "source checkout path must be absolute",
+    ));
+  }
+  let id = request.id.clone();
+  let version = request.version.clone();
+  let paths = app.paths.clone();
+  let result = tokio::task::spawn_blocking(move || {
+    packages::install_source(
+      &paths,
+      &request.path,
+      Some(&request.id),
+      Some(&request.version),
+    )
+  })
+  .await
+  .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?;
+  let (_, installed) = match result {
+    Ok(installed) => installed,
+    Err(error) => {
+      record_package(
+        &app,
+        "error",
+        "package_source_build_failed",
+        &id,
+        &version,
+        "local_source",
+        None,
+      );
+      tracing::warn!(package_id = %id, package_version = %version, %error, "source package installation failed");
+      return Err(fail(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "package_source_build_failed",
+        "source package build or verification failed; check IsOS logs",
+        json!({"id":id,"version":version}),
+      ));
+    }
+  };
+  record_package(
+    &app,
+    "info",
+    "package_verified",
+    &id,
+    &version,
+    "local_source",
+    Some(&installed),
+  );
+  ok(
+    json!({"path":installed,"verified":true,"source_kind":"local_source","installed":packages::listing(&app.paths).map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?}),
   )
 }
 
