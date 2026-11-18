@@ -526,13 +526,19 @@ export function NodeGraphManager({ lang, visible = true, panelMenu, onDirtyChang
     if (dirty && !window.confirm(copy.discard)) return;
     setBusy(true);
     try {
-      const [entry, snapshot] = await Promise.all([getGraphPoolEntry(name), getGraphCatalogSnapshot()]);
+      const [entry, snapshotResult] = await Promise.all([
+        getGraphPoolEntry(name),
+        getGraphCatalogSnapshot().then((value) => ({ value })).catch(() => null),
+      ]);
       if (!nodeGraphHasEditableShape(entry.graph) || !['0.2.0', '0.2.1'].includes(entry.graph.version)) throw new Error('Selected pool graph cannot be opened.');
-      const catalog = combineNodeTypeCatalogs(snapshot.selected, snapshot.global);
-      const sameAsSaved = JSON.stringify(entry.graph) === JSON.stringify(snapshot.graph.graph);
+      const snapshot = snapshotResult?.value;
+      const global = snapshot ? snapshot.global : await getNodeTypes().catch(() => null);
+      const catalog = combineNodeTypeCatalogs(snapshot?.selected || null, global);
+      const sameAsSaved = snapshot && JSON.stringify(entry.graph) === JSON.stringify(snapshot.graph.graph);
       const poolReadOnlyReason = entry.graph.version === '0.2.0' ? (lang === 'cn' ? '旧版 0.2.0 图；可预览转换草稿。' : 'Legacy 0.2.0 graph; preview a conversion draft.') : sameAsSaved
         ? graphCatalogReadOnlyReason(snapshot)
-        : snapshot.reason || nodeGraphReadOnlyReason({ ...snapshot.graph, graph: entry.graph, read_only: false, diagnostics: [] }, catalog.types);
+        : snapshot ? snapshot.reason || nodeGraphReadOnlyReason({ ...snapshot.graph, graph: entry.graph, read_only: false, diagnostics: [] }, catalog.types)
+          : (lang === 'cn' ? '部署所有者不可用；可预览图库文件。修复软件包后重新载入以编辑和运行。' : 'Deployment owner is unavailable; this graph file can be previewed. Repair the package and reload to edit or run.');
       editGeneration.current += 1;
       catalogReloadRequest.current += 1;
       setGraph(entry.graph); setRawGraph(null); setRevision(entry.revision); setSaved(JSON.stringify(entry.graph));

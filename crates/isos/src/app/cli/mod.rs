@@ -305,6 +305,9 @@ pub(crate) enum PackageCommand {
   /// Edit deployment-local TOML for one exact installed package pin.
   Configure {
     pin: String,
+    /// Offer the selected service's verified setup helper before editing.
+    #[arg(long)]
+    service: Option<String>,
   },
   /// Inspect, validate, or import package configuration.
   Config {
