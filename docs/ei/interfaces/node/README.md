@@ -9,6 +9,7 @@ Browse documents and subfolders here.
 - [Parent folder](../)
 - Subfolders:
   - [cognition/](cognition/)
+  - [design/](design/README.md)
   - [evidence/](evidence/)
   - [governance/](governance/)
   - [io/](io/)
@@ -28,3 +29,5 @@ EI publishes the following `<layer>/<group>` node contracts. Each group fixes ty
 | `governance` | [monitor](governance/monitor.md), [safety](governance/safety.md) |
 
 The [isolated cognition library](../../interfaces.md#cognition_isolated_library) is a direct-call interface without graph routes. The [IsOS–EI server interface](../../../isos/interfaces/server/ei.md) owns setup and run-fenced owner exchanges.
+
+For per-node behavior, see the [node design index](design/README.md).

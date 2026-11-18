@@ -8,13 +8,7 @@ Browse documents and subfolders here.
 
 - [Parent folder](../README.md)
 - Documents in this folder:
-  - [hardware/base group](base.md)
-  - [hardware/camera group](camera.md)
-  - [hardware/gripper group](gripper.md)
   - [EOS hardware runtime design](hardware.md)
-  - [hardware/manipulator group](manipulator.md)
-  - [hardware/mock group](mock.md)
-  - [hardware/torso group](torso.md)
 
 </details>
 <!-- doc-navigation:end -->

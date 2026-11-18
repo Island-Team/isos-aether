@@ -24,7 +24,7 @@
 
 [English](../docs/contract.md) · [文档](README_cn.md)
 
-IsOS 管理仓库根目录的 [`contract/`](../contract/)；EI 和 EOS 只读使用这些共享契约。所属[接口页面](isos/interfaces/README_cn.md)通过易读的 JSON 示例解释公开载荷；契约文件是用于校验和生成的机器可读源码。产品和 EI 的出厂配置位于仓库根目录的 [`config/`](../config/) 中，包括 [`config/defaults/`](../config/defaults/)；安装后的产品保留自己的 `share/isos/` 布局。
+IsOS 管理仓库根目录的 [`contract/`](../contract)；EI 和 EOS 只读使用这些共享契约。所属[接口页面](isos/interfaces/README_cn.md)通过易读的 JSON 示例解释公开载荷；契约文件是用于校验和生成的机器可读源码。产品和 EI 的出厂配置位于仓库根目录的 [`config/`](../config) 中，包括 [`config/defaults/`](../config/defaults)；安装后的产品保留自己的 `share/isos/` 布局。
 
 | 源码目录 | 所属组件与内容 | 源码状态 |
 | --- | --- | --- |

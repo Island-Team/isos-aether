@@ -17,7 +17,7 @@
 
 [节点目录](../README_cn.md) · [English](../../../../../docs/ei/interfaces/node/io/input.md#io_input) · [层目录](../../../interfaces_cn.md#readme_cn--io) · [EI 节点边界](../../../../isos/interfaces/server/ei_cn.md#node_cn)
 
-[共享节点契约](../../../../node/interfaces/README_cn.md)定义类型身份、设置、端口、路由和注册规则；EI 负责本组节点的行为。本目录说明该组节点的 EI 行为，运行职责见[组设计](../../../core/io/input.md)。
+[共享节点契约](../../../../node/interfaces/README_cn.md)定义类型身份、设置、端口、路由和注册规则；EI 负责本组节点的行为。本目录说明该组节点的 EI 行为，运行职责见[组设计](../design/io/input.md)。
 
 <a id="io_input_cn--arm-status"></a>
 <a id="arm-status"></a>

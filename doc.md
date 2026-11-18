@@ -12,11 +12,11 @@ Each entry gives the role of one English Markdown file in one sentence.
 - `docs/ei/core/README.md` — Introduces the docs ei design scope and links to its related pages.
 - `docs/ei/core/architecture.md` — Explains the design and responsibilities of EI architecture.
 - `docs/ei/core/roadmap.md` — Describes planned EI architecture and qualification gates.
-- `docs/ei/core/cognition/context.md` — Explains the design and responsibilities of Context and prompt assembly.
-- `docs/ei/core/cognition/decision.md` — Explains the design and responsibilities of Decision: from Mission meaning to safe primitive execution.
-- `docs/ei/core/cognition/intent.md` — Explains the design and responsibilities of Cognition / intent.
-- `docs/ei/core/cognition/missions.md` — Explains the design and responsibilities of MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",.
-- `docs/ei/core/cognition/state.md` — Explains the design and responsibilities of Cognition / state.
+- `docs/ei/interfaces/node/design/cognition/context.md` — Explains the design and responsibilities of Context and prompt assembly.
+- `docs/ei/interfaces/node/design/cognition/decision.md` — Explains the design and responsibilities of Decision: from Mission meaning to safe primitive execution.
+- `docs/ei/interfaces/node/design/cognition/intent.md` — Explains the design and responsibilities of Cognition / intent.
+- `docs/ei/interfaces/node/design/cognition/missions.md` — Explains the design and responsibilities of MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",.
+- `docs/ei/interfaces/node/design/cognition/state.md` — Explains the design and responsibilities of Cognition / state.
 - `docs/ei/core/cognition/coordination.md` — Explains the design and responsibilities of Coordinated profile execution.
 - `docs/ei/core/cognition/memory.md` — Explains the design and responsibilities of memory.
 - `docs/ei/core/optional/memory.md` — Explains the design and responsibilities of Vector recall in the memory layer.
@@ -29,11 +29,11 @@ Each entry gives the role of one English Markdown file in one sentence.
 - `docs/ei/core/runtime/runtime.md` — Explains the design of EI runtime design.
 - `docs/ei/core/runtime/sandbox.md` — Explains the design and responsibilities of Sandbox layer.
 - `docs/ei/core/runtime/supervisor.md` — Explains the design and responsibilities of Supervised task lifecycle.
-- `docs/ei/core/evidence/perception.md` — Explains the design and responsibilities of perception.
-- `docs/ei/core/governance/monitor.md` — Explains the design of Governance / monitor.
-- `docs/ei/core/governance/safety.md` — Explains the design and responsibilities of safety.
-- `docs/ei/core/io/input.md` — Explains the design and responsibilities of Io / input.
-- `docs/ei/core/io/link.md` — Explains the design and responsibilities of link.
+- `docs/ei/interfaces/node/design/evidence/perception.md` — Explains the design and responsibilities of perception.
+- `docs/ei/interfaces/node/design/governance/monitor.md` — Explains the design of Governance / monitor.
+- `docs/ei/interfaces/node/design/governance/safety.md` — Explains the design and responsibilities of safety.
+- `docs/ei/interfaces/node/design/io/input.md` — Explains the design and responsibilities of Io / input.
+- `docs/ei/interfaces/node/design/io/link.md` — Explains the design and responsibilities of link.
 - `docs/ei/interfaces/server.md` — Defines the EI server interface.
 - `docs/ei/interfaces/node/README.md` — Indexes the EI node group interfaces.
 - `docs/ei/interfaces/node/cognition/context.md` — Defines the EI node context interface.
@@ -59,19 +59,19 @@ Each entry gives the role of one English Markdown file in one sentence.
 - `docs/eos/core/hardware/hardware.md` — Explains the design and responsibilities of EOS hardware runtime design.
 - `docs/eos/core/process/process.md` — Explains the design and responsibilities of Rust v2 process spine.
 - `docs/eos/core/skills/host-rust.md` — Explains the design and responsibilities of EOS skill host status.
-- `docs/eos/core/dispatcher/arm.md` — Explains the design and responsibilities of dispatcher/arm group.
-- `docs/eos/core/dispatcher/base.md` — Explains the design and responsibilities of Base primitive binding node.
-- `docs/eos/core/dispatcher/control.md` — Explains the design and responsibilities of Shared control dispatcher node.
-- `docs/eos/core/dispatcher/manipulator.md` — Explains the design and responsibilities of Manipulator primitive binding node.
-- `docs/eos/core/hardware/base.md` — Explains the design and responsibilities of hardware/base group.
-- `docs/eos/core/hardware/camera.md` — Explains the design and responsibilities of hardware/camera group.
-- `docs/eos/core/hardware/gripper.md` — Explains the design and responsibilities of hardware/gripper group.
-- `docs/eos/core/hardware/manipulator.md` — Explains the design and responsibilities of hardware/manipulator group.
-- `docs/eos/core/hardware/mock.md` — Explains the design and responsibilities of hardware/mock group.
-- `docs/eos/core/hardware/torso.md` — Explains the design and responsibilities of hardware/torso group.
-- `docs/eos/core/interface/egress.md` — Explains the design and responsibilities of interface/egress group.
-- `docs/eos/core/interface/ingress.md` — Explains the design and responsibilities of interface/ingress group.
-- `docs/eos/core/skill/demo.md` — Explains the design and responsibilities of skill/demo group.
+- `docs/eos/interfaces/node/design/dispatcher/arm.md` — Explains the design and responsibilities of dispatcher/arm group.
+- `docs/eos/interfaces/node/design/dispatcher/base.md` — Explains the design and responsibilities of Base primitive binding node.
+- `docs/eos/interfaces/node/design/dispatcher/control.md` — Explains the design and responsibilities of Shared control dispatcher node.
+- `docs/eos/interfaces/node/design/dispatcher/manipulator.md` — Explains the design and responsibilities of Manipulator primitive binding node.
+- `docs/eos/interfaces/node/design/hardware/base.md` — Explains the design and responsibilities of hardware/base group.
+- `docs/eos/interfaces/node/design/hardware/camera.md` — Explains the design and responsibilities of hardware/camera group.
+- `docs/eos/interfaces/node/design/hardware/gripper.md` — Explains the design and responsibilities of hardware/gripper group.
+- `docs/eos/interfaces/node/design/hardware/manipulator.md` — Explains the design and responsibilities of hardware/manipulator group.
+- `docs/eos/interfaces/node/design/hardware/mock.md` — Explains the design and responsibilities of hardware/mock group.
+- `docs/eos/interfaces/node/design/hardware/torso.md` — Explains the design and responsibilities of hardware/torso group.
+- `docs/eos/interfaces/node/design/interface/egress.md` — Explains the design and responsibilities of interface/egress group.
+- `docs/eos/interfaces/node/design/interface/ingress.md` — Explains the design and responsibilities of interface/ingress group.
+- `docs/eos/interfaces/node/design/skill/demo.md` — Explains the design and responsibilities of skill/demo group.
 - `docs/eos/interfaces/server.md` — Defines the EOS server interface.
 - `docs/eos/interfaces/node/README.md` — Indexes the EOS node group interfaces.
 - `docs/eos/interfaces/node/dispatcher/arm.md` — Defines the EOS node arm interface.
@@ -158,3 +158,11 @@ Each entry gives the role of one English Markdown file in one sentence.
 - `ui/tests/fixtures/log_cursors/README.md` — Introduces the ui tests fixtures log cursors scope and links to its related pages.
 
 ## docs
+- `docs/ei/interfaces/node/design/README.md` — Indexes EI node design pages.
+- `docs/eos/interfaces/node/design/README.md` — Indexes EOS node design pages.
+- `docs/ei/core/cognition/context.md` — Describes shared context subsystem design and links to its node behavior.
+- `docs/ei/core/cognition/decision.md` — Describes shared decision subsystem design and links to its node behavior.
+- `docs/ei/core/cognition/missions.md` — Describes shared missions subsystem design and links to its node behavior.
+- `docs/ei/core/evidence/perception.md` — Describes shared perception subsystem design and links to its node behavior.
+- `docs/ei/core/governance/safety.md` — Describes shared safety subsystem design and links to its node behavior.
+- `docs/ei/core/io/link.md` — Describes shared link subsystem design and links to its node behavior.

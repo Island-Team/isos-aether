@@ -8,11 +8,7 @@ Browse documents and subfolders here.
 
 - [Parent folder](../README.md)
 - Documents in this folder:
-  - [dispatcher/arm group](arm.md)
-  - [Base primitive binding node](base.md)
-  - [Shared control dispatcher node](control.md)
   - [V2 dispatcher tree](dispatcher.md)
-  - [Manipulator primitive binding node](manipulator.md)
 
 </details>
 <!-- doc-navigation:end -->

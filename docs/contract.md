@@ -24,7 +24,7 @@ Browse documents and subfolders here.
 
 [中文](../docs_cn/contract_cn.md) · [Documentation](README.md)
 
-IsOS manages the root [`contract/`](../contract/) tree. EI and EOS consume these shared contracts read-only. The owning [interface pages](isos/interfaces/README.md) explain public payloads with readable JSON examples; contract files are the machine-readable source for validation and generation. Product and EI factory configuration live under root [`config/`](../config/), including [`config/defaults/`](../config/defaults/). The installed product keeps its own `share/isos/` layout.
+IsOS manages the root [`contract/`](../contract) tree. EI and EOS consume these shared contracts read-only. The owning [interface pages](isos/interfaces/README.md) explain public payloads with readable JSON examples; contract files are the machine-readable source for validation and generation. Product and EI factory configuration live under root [`config/`](../config), including [`config/defaults/`](../config/defaults). The installed product keeps its own `share/isos/` layout.
 
 | Source directory | Owner and contents | Source status |
 | --- | --- | --- |

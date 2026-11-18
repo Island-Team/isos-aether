@@ -176,9 +176,9 @@
                       "version": "0.2.6"
                     },
                     "settings": {
-                      "device_id": "cam-0",
+                      "device_id": "robocasa/camera/agentview-left",
                       "frequency_hz": 30,
-                      "service_instance": "native"
+                      "service_instance": "robocasa"
                     },
                     "type": "mujoco-v2"
                   },
@@ -186,7 +186,7 @@
                     "jpeg"
                   ],
                   "description": "camera",
-                  "frame_id": "cam-0",
+                  "frame_id": "robocasa/camera/agentview-left",
                   "health_timing": {
                     "poll_interval_ms": 100,
                     "stale_after_ms": 500
@@ -195,7 +195,7 @@
                   "label": "Front camera",
                   "node_type": "eos.hardware.camera.device@v0.2",
                   "observation": {
-                    "max_payload_bytes": 12582912,
+                    "max_payload_bytes": 20971520,
                     "max_rate_hz": 30
                   },
                   "package": {

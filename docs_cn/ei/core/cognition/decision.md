@@ -10,10 +10,8 @@
 - 同级文档：
   - [上下文与提示词组装](context.md)
   - [协同 profile 执行](coordination.md)
-  - [cognition / intent 节点组](intent.md)
   - [EI 记忆与召回](memory.md)
   - [任务队列与生命周期](missions.md)
-  - [cognition / state 节点组](state.md)
 
 </details>
 <!-- doc-navigation:end -->
@@ -184,13 +182,4 @@ stateDiagram-v2
 
 **相关：** 核心总览、上下文、Mission、注册表、安全、记忆 与 协调。
 
-## 注册节点行为
-
-**输入：** selected、snapshot。**输出：** proposal、plan_state。[阶段数据流设计](../runtime/pipeline.md)描述 EI 运行值。图端口、设置及连线优先级和频率的契约归 IsOS 所有。
-
-**算法与故障：** 把选中任务与有界上下文和模型通道绑定；按当前计划验证结构化输出。模型超时、畸形回复或取消只产生失败或重试，不产生已接纳动作。
-
-
-## ei.cognition.decision.planner@v0.2
-
-结合选中的任务和上下文快照，产生原语提案与规划状态。 [节点接口](../../interfaces/node/cognition/decision_cn.md#cognition_decision_cn--planner)
+[节点设计](../../interfaces/node/design/cognition/decision.md)描述已注册节点的行为。

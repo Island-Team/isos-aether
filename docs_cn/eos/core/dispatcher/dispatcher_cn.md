@@ -8,10 +8,6 @@
 
 - [上级目录](../README_cn.md)
 - 同级文档：
-  - [dispatcher/arm 分组](arm_cn.md)
-  - [底盘原语绑定节点](base_cn.md)
-  - [共享控制调度器节点](control_cn.md)
-  - [机械臂原语绑定节点](manipulator_cn.md)
   - [已路由连接的调度](scheduler_cn.md)
 
 </details>
