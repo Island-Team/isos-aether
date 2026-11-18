@@ -77,9 +77,7 @@ Browse documents and subfolders here.
   - [Context and prompt assembly](context.md)
   - [Coordinated profile execution](coordination.md)
   - [Decision: from Mission meaning to safe primitive execution](decision.md)
-  - [Cognition / intent](intent.md)
   - [memory](memory.md)
-  - [Cognition / state](state.md)
 
 </details>
 <!-- doc-navigation:end -->
@@ -183,13 +181,4 @@ Method: unit tests with stub input — plain `MissionQueue` instances (no server
 
 Pass criteria: exit 0, all tests green. Both files are deterministic (injected clock, no I/O), so any failure is a contract break, not flakiness.
 
-## Registered node behavior
-
-**Inputs:** intent, optional result. **Outputs:** selected, lifecycle. The [stage dataflow design](../runtime/pipeline.md) describes EI runtime values. IsOS owns the graph port and setting contract, including wire priority and frequency.
-
-**Algorithm and failure:** Validate identity, revision and queue capacity; checkpoint accepted transitions, then select eligible work by mission policy. Empty queue waits. Stale revisions fail; shutdown persists terminal or suspended state.
-
-
-## ei.cognition.missions.queue@v0.2
-
-Selects the mission from owner-injected intent and exposes lifecycle state. [Node interface](../../interfaces/node/cognition/missions.md#cognition_missions--queue)
+[Node design](../../interfaces/node/design/cognition/missions.md) describes the registered node behavior.

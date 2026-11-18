@@ -10,10 +10,8 @@ Browse documents and subfolders here.
 - Documents in this folder:
   - [Coordinated profile execution](coordination.md)
   - [Decision: from Mission meaning to safe primitive execution](decision.md)
-  - [Cognition / intent](intent.md)
   - [memory](memory.md)
   - [MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",](missions.md)
-  - [Cognition / state](state.md)
 
 </details>
 <!-- doc-navigation:end -->
@@ -209,13 +207,4 @@ There is no fixed Mission history or Plan-step count limit. When Mission-owned t
 
 `ContextSnapshot` exposes the rendered sections, structured user groups, observation provenance, omission flags, retention priority, and observed change frequency. `uv run --project ei python scripts/ei/print_prompt.py` from the repository root previews every lane from the runtime builders; `--json` prints the structured form.
 
-## Registered node behavior
-
-**Inputs:** observations, optional body and memory. **Outputs:** snapshot. The [stage dataflow design](../runtime/pipeline.md) describes EI runtime values. IsOS owns the graph port and setting contract, including wire priority and frequency.
-
-**Algorithm and failure:** Read immutable snapshots, order sections deterministically, enforce one total token budget, and state omissions. Missing optional sources produce absent sections. Stop discards pending rendering without changing source evidence.
-
-
-## ei.cognition.context.builder@v0.2
-
-Builds a context snapshot from admitted observations for the planner. [Node interface](../../interfaces/node/cognition/context.md#cognition_context--builder)
+[Node design](../../interfaces/node/design/cognition/context.md) describes the registered node behavior.

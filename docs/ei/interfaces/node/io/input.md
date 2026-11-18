@@ -17,7 +17,7 @@ Browse documents and subfolders here.
 
 [Node groups](../README.md) · [中文](../../../../../docs_cn/ei/interfaces/node/io/input_cn.md#io_input_cn) · [Layer](../../../interfaces.md#readme--io) · [EI node boundary](../../../../isos/interfaces/server/ei.md#node)
 
-The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../../../core/io/input.md) explains their runtime roles.
+The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../design/io/input.md) explains their runtime roles.
 
 <a id="io_input--arm-status"></a>
 <a id="arm-status"></a>

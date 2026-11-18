@@ -53,7 +53,7 @@ IO stages receive owner-bound inputs and connect EI to its declared peer boundar
 
 Node groups in this layer:
 
-- [input](io/input.md)
+- [input](../interfaces/node/design/io/input.md)
 - [link](io/link.md)
 
 ## evidence
@@ -72,9 +72,9 @@ Node groups in this layer:
 
 - [context](cognition/context.md)
 - [decision](cognition/decision.md)
-- [intent](cognition/intent.md)
+- [intent](../interfaces/node/design/cognition/intent.md)
 - [missions](cognition/missions.md)
-- [state](cognition/state.md)
+- [state](../interfaces/node/design/cognition/state.md)
 
 ## governance
 
@@ -82,7 +82,7 @@ Governance applies EI safety and observation policy after the preceding stages. 
 
 Node groups in this layer:
 
-- [monitor](governance/monitor.md)
+- [monitor](../interfaces/node/design/governance/monitor.md)
 - [safety](governance/safety.md)
 
 ## core

@@ -20,7 +20,7 @@ Browse documents and subfolders here.
 
 [Node groups](../README.md) · [中文](../../../../../docs_cn/ei/interfaces/node/cognition/state_cn.md#cognition_state_cn) · [Layer](../../../interfaces.md#readme--cognition) · [EI node boundary](../../../../isos/interfaces/server/ei.md#node)
 
-The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../../../core/cognition/state.md) explains their runtime roles.
+The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../design/cognition/state.md) explains their runtime roles.
 
 <a id="cognition_state--arm-status"></a>
 <a id="arm-status"></a>

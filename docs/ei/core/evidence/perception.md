@@ -42,13 +42,4 @@ EOS resource streams retry after transport and decode failures. A disconnect lea
 
 Body and world snapshots preserve source precision and attribution. Semantic status projection, omission of numeric telemetry and binary image bodies, and promotion of current hearing are model-facing transformations only. Missing devices, disabled cameras or microphones, empty scenes, and non-pickable detections remain explicit states rather than disappearing through truth-value filtering.
 
-## Registered node behavior
-
-**Inputs:** resource, result, optional hearing. **Outputs:** observations. The [stage dataflow design](../runtime/pipeline.md) describes EI runtime values. IsOS owns the graph port and setting contract, including wire priority and frequency.
-
-**Algorithm and failure:** Validate source identity and event shape; preserve event order, coalesce replaceable state by key, and count bounded omissions. Malformed evidence is rejected and logged, never converted into an empty success.
-
-
-## ei.evidence.perception.admission@v0.2
-
-Admits a verified resource bundle as observations for cognition. [Node interface](../../interfaces/node/evidence/perception.md#evidence_perception--admission)
+[Node design](../../interfaces/node/design/evidence/perception.md) describes the registered node behavior.

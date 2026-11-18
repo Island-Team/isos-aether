@@ -14,9 +14,7 @@ Browse documents and subfolders here.
   - [dispatcher/](dispatcher/)
   - [gateway/](gateway/)
   - [hardware/](hardware/)
-  - [interface/](interface/)
   - [process/](process/)
-  - [skill/](skill/)
   - [skills/](skills/)
 
 </details>

@@ -10,10 +10,8 @@ Browse documents and subfolders here.
 - Documents in this folder:
   - [Context and prompt assembly](context.md)
   - [Coordinated profile execution](coordination.md)
-  - [Cognition / intent](intent.md)
   - [memory](memory.md)
   - [MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",](missions.md)
-  - [Cognition / state](state.md)
 
 </details>
 <!-- doc-navigation:end -->
@@ -182,13 +180,4 @@ Coordination currently does not persist live board, auction, or lease state for 
 
 **Related:** core overview, context, missions, registry, safety, memory, and coordination.
 
-## Registered node behavior
-
-**Inputs:** selected, snapshot. **Outputs:** proposal, plan_state. The [stage dataflow design](../runtime/pipeline.md) describes EI runtime values. IsOS owns the graph port and setting contract, including wire priority and frequency.
-
-**Algorithm and failure:** Bind the selected mission to a bounded context and model lane; validate structured output against the current plan. A model timeout, malformed reply, or canceled call yields failure or retry policy, never an admitted action.
-
-
-## ei.cognition.decision.planner@v0.2
-
-Combines the selected mission and context snapshot into a primitive proposal and plan state. [Node interface](../../interfaces/node/cognition/decision.md#cognition_decision--planner)
+[Node design](../../interfaces/node/design/cognition/decision.md) describes the registered node behavior.

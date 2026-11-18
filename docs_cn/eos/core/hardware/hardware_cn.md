@@ -8,13 +8,7 @@
 
 - [上级目录](../README_cn.md)
 - 同级文档：
-  - [hardware/base 分组](base_cn.md)
-  - [hardware/camera 分组](camera_cn.md)
-  - [hardware/gripper 分组](gripper_cn.md)
   - [开发 EOS 硬件适配器](hardware-guide_cn.md)
-  - [hardware/manipulator 分组](manipulator_cn.md)
-  - [hardware/mock 分组](mock_cn.md)
-  - [hardware/torso 分组](torso_cn.md)
 
 </details>
 <!-- doc-navigation:end -->

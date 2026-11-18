@@ -8,6 +8,7 @@ Browse documents and subfolders here.
 
 - [Parent folder](../)
 - Subfolders:
+  - [design/](design/README.md)
   - [dispatcher/](dispatcher/)
   - [hardware/](hardware/)
   - [interface/](interface/)
@@ -28,3 +29,5 @@ EOS publishes the following `<layer>/<group>` node contracts. Each group fixes t
 | `hardware` | [mock](hardware/mock.md), [camera](hardware/camera.md), [base](hardware/base.md), [manipulator](hardware/manipulator.md), [gripper](hardware/gripper.md), [torso](hardware/torso.md) |
 
 The [general hardware](../../interfaces.md#general_hardware), [arm control](../../interfaces.md#arm_control), and [arm observation](../../interfaces.md#arm_monitor) contracts define payload semantics and owner routes. The [IsOS–EOS server interface](../../../isos/interfaces/server/eos.md) owns setup, lifecycle, and package handoff.
+
+For per-node behavior, see the [node design index](design/README.md).

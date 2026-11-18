@@ -29,11 +29,4 @@ EOS 来源可解码机身部件、机器人状态、场景对象、视觉检测�
 
 EOS 资源流在传输或解码失败后重试。断连不会把最后的快照标记为新鲜；有效的新样本才能替换它。合并高频状态不改变听觉、故障或操作结果等事件。Stop 使来源任务结束并取消阻塞等待，不生成最终观测。缺失设备、禁用相机或麦克风、空场景和不可拾取检测都保持显式状态。
 
-## 注册节点行为
-
-输入为 `resource`、`result` 和可选 `hearing`，输出为 `observations`。感知验证来源身份与事件结构，保持事件顺序，按键合并可替换状态并计数省略。错误证据被拒绝并记录，不能变成空成功。[阶段数据流](../runtime/pipeline.md)描述 EI 内部值；图端口和设置由 IsOS 定义。
-
-
-## ei.evidence.perception.admission@v0.2
-
-将已验证的资源包接纳为认知层观测。 [节点接口](../../interfaces/node/evidence/perception_cn.md#evidence_perception_cn--admission)
+[节点设计](../../interfaces/node/design/evidence/perception.md)描述已注册节点的行为。

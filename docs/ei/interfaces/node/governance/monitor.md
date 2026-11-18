@@ -17,7 +17,7 @@ Browse documents and subfolders here.
 
 [Node groups](../README.md) · [中文](../../../../../docs_cn/ei/interfaces/node/governance/monitor_cn.md#governance_monitor_cn) · [Layer](../../../interfaces.md#readme--governance) · [EI node boundary](../../../../isos/interfaces/server/ei.md#node)
 
-The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../../../core/governance/monitor.md) explains their runtime roles.
+The [Shared node contracts](../../../../node/interfaces/README.md) define type identity, settings, ports, routes, and registry rules; EI owns this group’s node behavior. This catalog describes the EI behavior for the nodes in this group; the [group design](../design/governance/monitor.md) explains their runtime roles.
 
 <a id="governance_monitor--arm-status"></a>
 <a id="arm-status"></a>

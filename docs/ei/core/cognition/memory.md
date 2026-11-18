@@ -9,9 +9,7 @@ Browse documents and subfolders here.
   - [Context and prompt assembly](context.md)
   - [Coordinated profile execution](coordination.md)
   - [Decision: from Mission meaning to safe primitive execution](decision.md)
-  - [Cognition / intent](intent.md)
   - [MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",](missions.md)
-  - [Cognition / state](state.md)
 
 </details>
 <!-- doc-navigation:end -->

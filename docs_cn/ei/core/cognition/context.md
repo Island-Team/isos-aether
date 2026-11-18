@@ -10,10 +10,8 @@
 - 同级文档：
   - [协同 profile 执行](coordination.md)
   - [决策：从 Mission 语义到安全原语执行](decision.md)
-  - [cognition / intent 节点组](intent.md)
   - [EI 记忆与召回](memory.md)
   - [任务队列与生命周期](missions.md)
-  - [cognition / state 节点组](state.md)
 
 </details>
 <!-- doc-navigation:end -->
@@ -213,13 +211,4 @@ Mission 历史及 Plan 步数没有固定上限。Mission 所属文本达到动�
 
 `ContextSnapshot` 暴露渲染区段、结构化 user 分组、观测来源、省略标志、保留优先级和观测到的变化频率。在仓库根目录运行 `uv run --project ei python scripts/ei/print_prompt.py`，使用运行时构建器预览所有 lane；`--json` 输出结构化形式。
 
-## 注册节点行为
-
-**输入：** observations、可选 body 与 memory。**输出：** snapshot。[阶段数据流设计](../runtime/pipeline.md)描述 EI 运行值。图端口、设置及连线优先级和频率的契约归 IsOS 所有。
-
-**算法与故障：** 读取不可变快照，确定性排序区段，执行单一 token 总预算并说明遗漏。可选来源缺失时省略区段。停止时丢弃待渲染工作，不改变来源证据。
-
-
-## ei.cognition.context.builder@v0.2
-
-将已准入的观测整理成供规划器使用的上下文快照。 [节点接口](../../interfaces/node/cognition/context_cn.md#cognition_context_cn--builder)
+[节点设计](../../interfaces/node/design/cognition/context.md)描述已注册节点的行为。

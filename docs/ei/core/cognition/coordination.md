@@ -10,10 +10,8 @@ Browse documents and subfolders here.
 - Documents in this folder:
   - [Context and prompt assembly](context.md)
   - [Decision: from Mission meaning to safe primitive execution](decision.md)
-  - [Cognition / intent](intent.md)
   - [memory](memory.md)
   - [MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",](missions.md)
-  - [Cognition / state](state.md)
 
 </details>
 <!-- doc-navigation:end -->

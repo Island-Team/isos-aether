@@ -9,6 +9,7 @@
 - [上级目录](../)
 - 下级目录：
   - [cognition/](cognition/)
+  - [design/](design/README_cn.md)
   - [evidence/](evidence/)
   - [governance/](governance/)
   - [io/](io/)
@@ -28,3 +29,5 @@ EI 发布以下 `<layer>/<group>` 节点契约。每个分组固定类型身份�
 | `governance` | [monitor](governance/monitor_cn.md)、[safety](governance/safety_cn.md) |
 
 [隔离认知库](../../interfaces_cn.md#cognition_isolated_library_cn)是没有图路线的直接调用接口。[IsOS–EI 服务端接口](../../../isos/interfaces/server/ei_cn.md)定义设置与受运行围栏约束的所有者交换。
+
+节点行为设计参见[节点设计索引](design/README_cn.md)。

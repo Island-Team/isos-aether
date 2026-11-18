@@ -52,7 +52,7 @@ IO 阶段接收所有者边界输入，并按声明的连接与其他所有者�
 
 本层的节点组：
 
-- [input](io/input.md)
+- [input](../interfaces/node/design/io/input.md)
 - [link](io/link.md)
 
 ## evidence
@@ -71,9 +71,9 @@ IO 阶段接收所有者边界输入，并按声明的连接与其他所有者�
 
 - [context](cognition/context.md)
 - [decision](cognition/decision.md)
-- [intent](cognition/intent.md)
+- [intent](../interfaces/node/design/cognition/intent.md)
 - [missions](cognition/missions.md)
-- [state](cognition/state.md)
+- [state](../interfaces/node/design/cognition/state.md)
 
 ## governance
 
@@ -81,7 +81,7 @@ IO 阶段接收所有者边界输入，并按声明的连接与其他所有者�
 
 本层的节点组：
 
-- [monitor](governance/monitor.md)
+- [monitor](../interfaces/node/design/governance/monitor.md)
 - [safety](governance/safety.md)
 
 ## core
