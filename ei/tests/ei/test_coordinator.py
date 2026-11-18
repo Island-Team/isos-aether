@@ -5,15 +5,15 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ei.api.mission import MissionState
-from ei.contracts.actions import PrimitiveAck
-from ei.core.decision.coordination.bidders import BidderProfile
-from ei.core.decision.coordination.coordinator import Coordinator
-from ei.core.decision.profile_writer import ProfileWriter
-from ei.core.decision.profiles import ProfileStore
-from ei.core.missions import MissionQueue
-from ei.core.registry import PrimitiveRegistry
-from ei.internal.decision import ActionInvocation, GateVerdict, StepContext
+from ei.contracts.governance.safety import ActionInvocation, GateVerdict, StepContext
+from ei.contracts.io.link import PrimitiveAck
+from ei.core.cognition.decision.coordination_bidders import BidderProfile
+from ei.core.cognition.decision.coordination_coordinator import Coordinator
+from ei.core.cognition.decision.profile_writer import ProfileWriter
+from ei.core.cognition.decision.profiles import ProfileStore
+from ei.core.cognition.missions import MissionQueue
+from ei.core.system.models.mission import MissionState
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import (
   AgentPromptConfig,
   CoordinationConfig,

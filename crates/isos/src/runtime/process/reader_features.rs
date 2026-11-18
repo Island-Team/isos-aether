@@ -1,6 +1,6 @@
 //! Exact selected-reader admission for the authored graph and projected children.
 use crate::{
-  app::config::Paths, runtime::process::core_bins, runtime::owners::core_setup,
+  app::config::Paths, domain::packages, runtime::process::core_bins, runtime::owners::core_setup,
   domain::graph::graph_contract::Diagnostic, runtime::process::ProcessSpec,
 };
 use serde::Deserialize;
@@ -440,7 +440,7 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
   };
   let path = path.unwrap_or_else(|_| PathBuf::new());
   let mut claims = Claims::empty(core, binary, &path);
-  if core == "ei" && crate::domain::graph::generated_v2::ei_launch_env(graph).is_err() {
+  if core == "ei" && crate::domain::graph::generated::ei_launch_env(graph).is_err() {
     claims.hash = None;
     let pointer = "/cores/isos/layers/process/groups/component/nodes/ei";
     let role_path = if graph.pointer(&format!("{pointer}/settings/role")).is_some() {
@@ -459,7 +459,7 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
     ));
   }
   if core == "ei" {
-    claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
+    claims.hash = crate::domain::graph::generated::ei_chain_digest(graph).ok();
   }
   let advertised = if core == "eos" {
     Some(probe(&path, "aether-profile", "eos", true, None)?)
@@ -499,7 +499,7 @@ fn setup(paths: &Paths, core: &'static str, graph: &Value) -> Result<Claims, Dia
 
 fn nodes(graph: &Value, core: &str) -> Vec<(String, String, Option<Value>)> {
   let mut found = Vec::new();
-  let unified = graph["version"] == "0.2.0";
+  let unified = graph["version"] == "0.2.1" && graph["cores"].get(core).is_none();
   let graph_core = if unified { "isos" } else { core };
   let Some(layers) = graph
     .pointer(&format!("/cores/{graph_core}/layers"))
@@ -508,7 +508,7 @@ fn nodes(graph: &Value, core: &str) -> Vec<(String, String, Option<Value>)> {
     return found;
   };
   for (layer_id, layer) in layers {
-    if unified && !layer_id.starts_with(if core == "eos" { "eos_" } else { "ei_" }) {
+    if unified && !layer_id.starts_with(&format!("{core}_")) {
       continue;
     }
     let Some(groups) = layer["groups"].as_object() else {
@@ -555,20 +555,18 @@ fn check_reader(
     ));
   }
   let builtins = &claims.node_types;
-  let registered: BTreeMap<&str, &Value> = catalog["types"]
-    .as_array()
-    .into_iter()
-    .flatten()
-    .filter_map(|item| item["id"].as_str().map(|id| (id, item)))
-    .collect();
+  let registered: Vec<&Value> = catalog["types"].as_array().into_iter().flatten().collect();
   for (path, id, pin) in nodes(graph, core) {
     let Some((_, suffix)) = id.rsplit_once("@v") else {
       continue;
     };
-    let contributed = registered
-      .get(id.as_str())
-      .and_then(|item| item.get("package"));
-    if contributed.is_some() && pin.as_ref() != contributed {
+    let contributed = registered.iter().find(|item| {
+      item["id"] == id && item.get("package").is_some() && item.get("package") == pin.as_ref()
+    });
+    let has_other_package = registered
+      .iter()
+      .any(|item| item["id"] == id && item.get("package").is_some());
+    if has_other_package && contributed.is_none() && (pin.is_some() || !builtins.contains(&id)) {
       return Err(claims.diagnostic(
         "reader_package_pin_mismatch",
         format!("{path}/package"),
@@ -616,6 +614,40 @@ fn feature(
   ))
 }
 
+fn package_capabilities(paths: &Paths, graph: &Value, claims: &Claims) -> Result<(), Diagnostic> {
+  for (path, node_type, pin) in nodes(graph, claims.core) {
+    let Some(pin) = pin else { continue };
+    let (Some(id), Some(version)) = (pin["id"].as_str(), pin["version"].as_str()) else {
+      continue;
+    };
+    let Ok(verified) = packages::verify(paths, id, version) else {
+      return Err(claims.diagnostic(
+        "reader_package_pin_mismatch",
+        format!("{path}/package"),
+        "package",
+        graph["version"].as_str(),
+        Some(&node_type),
+        None,
+        Some(&pin),
+      ));
+    };
+    if let Some(compatibility) = &verified.release.compatibility {
+      for required in &compatibility.required_owner_capabilities {
+        if required.owner == claims.core {
+          feature(
+            claims,
+            graph,
+            &format!("{path}/package"),
+            Some(&node_type),
+            &required.capability,
+          )?;
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
 fn check_inner(
   paths: &Paths,
   graph: &Value,
@@ -623,6 +655,11 @@ fn check_inner(
   catalog: &Value,
   only_core: Option<&str>,
 ) -> Result<(), Diagnostic> {
+  // IsOS supervises verified package processes. This is a manager capability,
+  // independent of the optional EI and EOS owner binaries.
+  let mut isos_claims = Claims::empty("isos", "isos", Path::new("/unsupported-isos-package-owner"));
+  isos_claims.features.insert("package-process-v1".into());
+  package_capabilities(paths, graph, &isos_claims)?;
   let version = graph["version"].as_str().unwrap_or_default();
   let ei_route_path = if crate::domain::graph::graph_contract::uses_revisioned_generation(graph) {
     crate::domain::graph::edge_admission::admit(graph, catalog)
@@ -663,8 +700,7 @@ fn check_inner(
   }
   for (id, binary, graph_reader) in [
     ("eos", "aether-runtime", true),
-    ("config", "aether-config-server", true),
-    ("bridge", "aether-http-bridge", false),
+    ("bridge", "aether-server", true),
     ("ei", "ei", false),
   ] {
     if only_core.is_some_and(|owner| owner != if id == "ei" { "ei" } else { "eos" }) {
@@ -676,7 +712,7 @@ fn check_inner(
     let path = Path::new(&spec.settings.command[0]);
     let mut claims = Claims::empty(if id == "ei" { "ei" } else { "eos" }, binary, path);
     if id == "ei" {
-      claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
+      claims.hash = crate::domain::graph::generated::ei_chain_digest(graph).ok();
     }
     let pointer = format!("/cores/isos/layers/process/groups/component/nodes/{id}");
     let role_path = if graph.pointer(&format!("{pointer}/settings/role")).is_some() {
@@ -710,10 +746,13 @@ fn check_inner(
       error
     })?;
     if id == "ei" {
-      claims.hash = crate::domain::graph::generated_v2::ei_chain_digest(graph).ok();
+      claims.hash = crate::domain::graph::generated::ei_chain_digest(graph).ok();
     }
     if graph_reader {
       check_reader(&claims, graph, "eos", catalog)?;
+    }
+    if id == "eos" || id == "ei" {
+      package_capabilities(paths, graph, &claims)?;
     }
     if graph_reader && id == "eos" {
       feature(
@@ -733,15 +772,6 @@ fn check_inner(
         )?;
       }
     }
-    if id == "bridge" {
-      feature(
-        &claims,
-        graph,
-        &format!("{pointer}/node_type"),
-        None,
-        "vision-ws",
-      )?;
-    }
     if id == "ei" {
       for token in ["managed-config-v1", "eos-gateway-client-v2"] {
         feature(&claims, graph, &format!("{pointer}/node_type"), None, token)?;
@@ -758,8 +788,6 @@ fn check_inner(
       for (node_path, node_type, _) in nodes(graph, "eos") {
         let required = if node_type.starts_with("eos.dispatcher.primitive_") {
           Some("primitive-binding")
-        } else if node_type.starts_with("eos.interface.camera_gate") {
-          Some("vision-gate")
         } else {
           None
         };
@@ -854,7 +882,7 @@ mod tests {
 
   #[test]
   fn unified_owner_nodes_are_selected_by_layer_prefix() {
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{
       "eos_hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"isos.eos_hardware.camera@v0.2"}}}}},
       "ei_io":{"groups":{"link":{"nodes":{"gateway":{"node_type":"isos.ei_io.gateway@v0.2"}}}}},
       "process":{"groups":{"component":{"nodes":{"eos":{"node_type":"isos.process.component@v0.2"}}}}}
@@ -867,26 +895,39 @@ mod tests {
     assert!(ei[0].0.contains("/ei_io/"));
   }
 
+  #[test]
+  fn direct_owner_nodes_take_precedence_over_legacy_unified_layers() {
+    let graph = json!({"version":"0.2.1","cores":{
+      "isos":{"layers":{"eos_hardware":{"groups":{"old":{"nodes":{
+        "legacy":{"node_type":"isos.eos_hardware.legacy@v0.2"}}}}}}},
+      "eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{
+        "front":{"node_type":"eos.hardware.camera.device@v0.2"}}}}}}}
+    }});
+    let selected = nodes(&graph, "eos");
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].1, "eos.hardware.camera.device@v0.2");
+  }
+
   fn claims() -> Claims {
     Claims::empty("eos", "aether-runtime", Path::new("/missing"))
   }
 
   fn reply() -> Value {
     json!({"binary":"aether-runtime","product_version":"fixture",
-            "graph_version":"0.2.0","node_type_version":"0.2",
-            "supported_graph_versions":["0.2.0"],
+            "graph_version":"0.2.1","node_type_version":"0.2",
+            "supported_graph_versions":["0.2.1"],
             "supported_node_type_versions":["0.2"],
             "supported_node_types":["isos.eos_hardware.camera@v0.2"],
-            "features":["vision-gate"]})
+            "features":["primitive-binding"]})
   }
 
   #[test]
   fn exact_arrays_and_features_admit_only_claimed_types() {
     let selected = parse_claims(claims(), &reply(), true, false).unwrap();
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"isos.eos_hardware.camera@v0.2"}}}}}}}}});
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"isos.eos_hardware.camera@v0.2"}}}}}}}}});
     let catalog = json!({"types":[{"id":"isos.eos_hardware.camera@v0.2"}]});
     check_reader(&selected, &graph, "eos", &catalog).unwrap();
-    feature(&selected, &graph, "/version", None, "vision-gate").unwrap();
+    feature(&selected, &graph, "/version", None, "primitive-binding").unwrap();
     let error = feature(&selected, &graph, "/version", None, "data-idl").unwrap_err();
     assert_eq!(error.code, "reader_feature_unsupported");
     assert_eq!(error.context["reader"]["requested"]["feature"], "data-idl");
@@ -904,7 +945,7 @@ mod tests {
   #[test]
   fn eos_runtime_without_managed_grant_feature_is_rejected_at_its_process_node() {
     let selected = parse_claims(claims(), &reply(), true, false).unwrap();
-    let graph = json!({"version":"0.2.0"});
+    let graph = json!({"version":"0.2.1"});
     let path = "/cores/isos/layers/process/groups/component/nodes/eos/node_type";
     let error = feature(&selected, &graph, path, None, "managed-control-grants").unwrap_err();
     assert_eq!(error.code, "reader_feature_unsupported");
@@ -929,7 +970,7 @@ mod tests {
       "reader_identity_invalid"
     );
     let mut duplicate = reply();
-    duplicate["supported_graph_versions"] = json!(["0.2.0", "0.2.0"]);
+    duplicate["supported_graph_versions"] = json!(["0.2.1", "0.2.1"]);
     assert_eq!(
       parse_claims(claims(), &duplicate, true, false)
         .unwrap_err()
@@ -951,7 +992,7 @@ mod tests {
     let mut reply = reply();
     reply["supported_node_types"] = json!(["isos.eos_process.worker@v0.2"]);
     let selected = parse_claims(claims(), &reply, true, false).unwrap();
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_process":{"groups":{"worker":{"nodes":{"sim":{"node_type":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}}}}}}}}});
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"eos_process":{"groups":{"worker":{"nodes":{"sim":{"node_type":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}}}}}}}}});
     let catalog = json!({"types":[{"id":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}]});
     check_reader(&selected, &graph, "eos", &catalog).unwrap();
     let wrong = json!({"types":[{"id":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.0"}}]});
@@ -961,12 +1002,25 @@ mod tests {
   }
 
   #[test]
+  fn unpinned_builtin_remains_valid_when_package_contributes_same_id() {
+    let mut reply = reply();
+    reply["supported_node_types"] = json!(["isos.eos_process.worker@v0.2"]);
+    let selected = parse_claims(claims(), &reply, true, false).unwrap();
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"eos_process":{"groups":{"worker":{"nodes":{"sim":{"node_type":"isos.eos_process.worker@v0.2"}}}}}}}}});
+    let catalog = json!({"types":[
+      {"id":"isos.eos_process.worker@v0.2"},
+      {"id":"isos.eos_process.worker@v0.2","package":{"id":"sample/worker","version":"0.1.1"}}
+    ]});
+    check_reader(&selected, &graph, "eos", &catalog).unwrap();
+  }
+
+  #[test]
   fn ei_runtime_must_not_claim_graph_arrays() {
     let claims = Claims::empty("ei", "ei", Path::new("/missing"));
     let normal = json!({"binary":"ei","product_version":"fixture","features":["managed-config-v1","eos-gateway-client-v2"]});
     parse_claims(claims.clone(), &normal, false, false).unwrap();
     let mut invalid = normal;
-    invalid["supported_graph_versions"] = json!(["0.2.0"]);
+    invalid["supported_graph_versions"] = json!(["0.2.1"]);
     assert_eq!(
       parse_claims(claims, &invalid, false, false)
         .unwrap_err()

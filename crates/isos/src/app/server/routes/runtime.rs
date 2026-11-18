@@ -4,39 +4,46 @@ use super::*;
 pub(crate) async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
   authorized(&app, &headers)?;
   let graph_path = app.paths.node_graph_path(&app.deployment);
-  let packages = packages::list(&app.paths)
-    .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?;
-  let mut issues: Vec<String> = Vec::new();
-  let revision = match fs::read(&graph_path) {
-    Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-      Ok(graph) => {
-        if let Err(error) = process::validate_value(&app.paths, &graph) {
-          tracing::warn!(%error, "graph setup validation failed");
-          let diagnostic = admission_diagnostic(&error);
-          issues.push(format!(
-            "{}: {}",
-            diagnostic["path"].as_str().unwrap_or("/"),
-            diagnostic["code"].as_str().unwrap_or("invalid_graph")
-          ));
+  let graph_path_for_validation = graph_path.clone();
+  let paths = app.paths.clone();
+  let (packages, revision, mut issues) = tokio::task::spawn_blocking(move || {
+    let packages = packages::list(&paths)?;
+    let mut issues: Vec<String> = Vec::new();
+    let revision = match fs::read(&graph_path_for_validation) {
+      Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+        Ok(graph) => {
+          if let Err(error) = process::validate_value(&paths, &graph) {
+            tracing::warn!(%error, "graph setup validation failed");
+            let diagnostic = admission_diagnostic(&error);
+            issues.push(format!(
+              "{}: {}",
+              diagnostic["path"].as_str().unwrap_or("/"),
+              diagnostic["code"].as_str().unwrap_or("invalid_graph")
+            ));
+          }
+          Some(revision(&bytes))
         }
-        Some(revision(&bytes))
+        Err(error) => {
+          tracing::warn!(%error, "graph setup parse failed");
+          issues.push("graph is invalid".into());
+          Some(revision(&bytes))
+        }
+      },
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        issues.push("graph is missing".into());
+        None
       }
-      Err(error) => {
-        tracing::warn!(%error, "graph setup parse failed");
-        issues.push("graph is invalid".into());
-        Some(revision(&bytes))
-      }
-    },
-    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-      issues.push("graph is missing".into());
-      None
-    }
-    Err(error) => return Err(internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error)),
-  };
+      Err(error) => return Err(anyhow::Error::from(error)),
+    };
+    Ok::<_, anyhow::Error>((packages, revision, issues))
+  })
+  .await
+  .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?
+  .map_err(|error| internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error))?;
   let paths = app.paths.clone();
   let deployment = app.deployment.clone();
   let process = match tokio::task::spawn_blocking(move || {
-    crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+    crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
   })
   .await
   {
@@ -93,33 +100,81 @@ pub(crate) async fn process_control(
     op,
     control.revision,
   )
-  .map_err(|error| {
-    if let Some(remote) = error.downcast_ref::<crate::runtime::manager::RemoteDiagnosticError>()
-      && remote.data["diagnostics"].is_array()
-    {
-      let status = if matches!(
-        remote.data["diagnostics"][0]["code"].as_str(),
-        Some("generated_commit_uncertain" | "log_scope_publish_failed")
-      ) {
+  .map_err(control_error)?;
+  ok(result)
+}
+
+fn control_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+  if let Some(remote) = error.downcast_ref::<crate::runtime::manager::RemoteDiagnosticError>()
+    && remote.data["diagnostics"].is_array()
+  {
+    let code = remote.data["diagnostics"][0]["code"]
+      .as_str()
+      .unwrap_or("manager_operation_failed")
+      .to_owned();
+    let status = match code.as_str() {
+      "generated_commit_uncertain" | "log_scope_publish_failed" => {
         StatusCode::INTERNAL_SERVER_ERROR
-      } else {
-        StatusCode::UNPROCESSABLE_ENTITY
-      };
-      let code = remote.data["diagnostics"][0]["code"]
-        .as_str()
-        .unwrap_or("manager_operation_failed")
-        .to_owned();
-      fail(
+      }
+      "run_conflict" => StatusCode::CONFLICT,
+      _ => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    if code == "run_conflict" {
+      let correlation_id = crate::runtime::manager::next_correlation_id();
+      tracing::warn!(
+        event_code = "http_run_conflict",
+        %correlation_id,
+        "Run rejected because an owner still holds a prior run"
+      );
+      return fail_with_correlation(
         status,
         code,
-        "manager operation rejected",
+        "owner still holds a run",
         remote.data.clone(),
-      )
-    } else {
-      internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error)
+        correlation_id,
+      );
     }
-  })?;
-  ok(result)
+    fail(
+      status,
+      code,
+      "manager operation rejected",
+      remote.data.clone(),
+    )
+  } else {
+    internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error)
+  }
+}
+
+#[cfg(test)]
+mod control_error_tests {
+  use super::*;
+
+  #[test]
+  fn owner_run_conflict_is_an_actionable_conflict() {
+    let error = anyhow::Error::new(crate::runtime::manager::RemoteDiagnosticError {
+      message: "internal owner detail".into(),
+      data: json!({"diagnostics":[{"path":"/owners/eos","code":"run_conflict","message":"EOS owner still holds a run; resolve its Stop proof before starting a new run","run_id":"r-prior","revision":"abc"}]}),
+    });
+    let (status, response) = control_error(error);
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(response.0["error"]["code"], "run_conflict");
+    assert_eq!(response.0["error"]["message"], "owner still holds a run");
+    assert!(
+      response.0["error"]["correlation_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty())
+    );
+    assert_eq!(
+      response.0["error"]["details"]["diagnostics"][0]["run_id"],
+      "r-prior"
+    );
+    assert!(
+      !response.0["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("internal")
+    );
+  }
 }
 
 pub(crate) async fn logs(
@@ -154,7 +209,7 @@ pub(crate) async fn logs(
     let paths = app.paths.clone();
     let deployment = app.deployment.clone();
     let status = tokio::task::spawn_blocking(move || {
-      crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+      crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
     })
     .await
     .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
@@ -204,7 +259,7 @@ pub(crate) async fn logs(
   let paths = app.paths.clone();
   let deployment = app.deployment.clone();
   let status = tokio::task::spawn_blocking(move || {
-    crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+    crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
   })
   .await
   .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;

@@ -6,10 +6,14 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.mission import MissionRecord
-from ei.api.model_io import ModelActivity, ModelExchange
-from ei.api.plan import (
+from ei.contracts.governance.safety import ActionInvocation, GateVerdict, StepContext
+from ei.contracts.io.link import PrimitiveAck
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.decision import DecisionPlanner, MissionFailedError
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.mission import MissionRecord
+from ei.core.system.models.model_io import ModelActivity, ModelExchange
+from ei.core.system.models.plan import (
   ActionRecord,
   PlanRecord,
   PlanStep,
@@ -17,12 +21,7 @@ from ei.api.plan import (
   StepOutcome,
   StepRecord,
 )
-from ei.contracts.actions import PrimitiveAck
-from ei.core.context import ContextBuilder
-from ei.core.decision import DecisionPlanner, MissionFailedError
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
-from ei.internal.decision import ActionInvocation, GateVerdict, StepContext
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import DecisionConfig, PromptConfig, load_prompt_config
 from ei.lib.vlm import ChatMessage, ModelResponse, Usage
 

@@ -18,6 +18,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal('ISOSUI_API_ORIGIN', 'http://127.0.0.1:16000');
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  // These legacy cursor tests exercise the HTTP fallback when WebSocket is unavailable.
+  vi.stubGlobal('WebSocket', undefined);
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -31,6 +33,32 @@ afterEach(async () => {
 });
 
 describe('P07 mounted panel with stub IsOS', () => {
+  it('follows new log pages over WebSocket without repeated HTTP log reads', async () => {
+    class Socket {
+      static all: Socket[] = [];
+      url: string;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor(url: string | URL) { this.url = String(url); Socket.all.push(this); }
+      close(): void { this.onclose?.(); }
+      emit(data: unknown): void { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); }
+    }
+    vi.stubGlobal('WebSocket', Socket);
+    const fetchMock = vi.fn(async (url: string) => url.includes('/process-status')
+      ? reply({ state: 'running', run_id: 'r7', run_id_state: 'known', processes: [] })
+      : reply(page('r7', 'eos_ready', [event('deployment_ready', 'r7')])));
+    vi.stubGlobal('fetch', fetchMock);
+    const { IsosLogsPanel } = await import('./IsosLogsPanel');
+    await act(async () => root.render(<IsosLogsPanel lang="en" onClose={() => undefined} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(Socket.all).toHaveLength(1);
+    expect(new URL(Socket.all[0].url).searchParams.get('cursor')).toBe('lc1.r7');
+    await act(async () => Socket.all[0].emit({ type: 'page', page: page('r7', 'eos_ready', [event('deployment_stopped', 'r7')]) }));
+    expect(container.textContent).toContain('deployment_stopped');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2400); });
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes('/logs'))).toHaveLength(1);
+  });
   it('pins a manager package failure outside source filters and separates browser logs', async () => {
     const fetchMock = vi.fn(async (url: string) => url.includes('/process-status')
       ? reply({ state: 'stopped', run_id: null, run_id_state: 'none', processes: [] })
@@ -95,7 +123,7 @@ describe('P07 mounted panel with stub IsOS', () => {
     expect(container.textContent).not.toContain('deployment_stopped');
   });
 
-  it('retains rows through collector loss, backs off for 30 seconds, then resumes', async () => {
+  it('retains rows through collector loss and resumes promptly after reattach', async () => {
     let logCalls = 0;
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/process-status')) return reply({ state: 'running', run_id: 'r7', run_id_state: 'known', processes: [] });
@@ -109,13 +137,58 @@ describe('P07 mounted panel with stub IsOS', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
     expect(container.textContent).toContain('deployment_ready');
     expect(container.textContent).toContain('Cannot reach IsOS');
-    await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
     expect(logCalls).toBe(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(logCalls).toBe(3);
     expect(container.textContent).toContain('deployment_stopped');
     expect(container.textContent).not.toContain('Cannot reach IsOS');
     expect(fetchMock.mock.calls.filter(([url]) => url.includes('/process-status'))).toHaveLength(2);
+  });
+
+  it('rechecks status and logs immediately when a disconnected tab becomes visible', async () => {
+    let logCalls = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/process-status')) return reply({ state: 'running', run_id: 'r7', run_id_state: 'known', processes: [] });
+      logCalls += 1;
+      if (logCalls === 1) throw new Error('collector offline');
+      return reply(page('r7', 'eos_ready', [event('eos_reattached', 'r7')]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { IsosLogsPanel } = await import('./IsosLogsPanel');
+    await act(async () => root.render(<IsosLogsPanel lang="en" onClose={() => undefined} />));
+    expect(logCalls).toBe(1);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(logCalls).toBe(2);
+    expect(container.textContent).toContain('eos_reattached');
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes('/process-status'))).toHaveLength(2);
+  });
+
+  it('abandons a stalled log read when the tab becomes visible again', async () => {
+    let releaseStalled!: (value: ReturnType<typeof reply>) => void;
+    const stalled = new Promise<ReturnType<typeof reply>>((resolve) => { releaseStalled = resolve; });
+    let logCalls = 0;
+    const fetchMock = vi.fn((url: string, _options?: RequestInit) => {
+      if (url.includes('/process-status')) return Promise.resolve(reply({ state: 'running', run_id: 'r7', run_id_state: 'known', processes: [] }));
+      logCalls += 1;
+      return logCalls === 1 ? stalled : Promise.resolve(reply(page('r7', 'eos_ready', [event('eos_reattached', 'r7')])));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { IsosLogsPanel } = await import('./IsosLogsPanel');
+    await act(async () => root.render(<IsosLogsPanel lang="en" onClose={() => undefined} />));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(logCalls).toBe(2);
+    const firstLog = fetchMock.mock.calls.find(([url]) => url.includes('/logs'))?.[1];
+    expect(firstLog?.signal?.aborted).toBe(true);
+    await act(async () => releaseStalled(reply(page('r7', 'eos_ready', [event('stale_detail', 'r7')]))));
+    expect(container.textContent).toContain('eos_reattached');
+    expect(container.textContent).not.toContain('stale_detail');
   });
 
   it('marks old rows stale on typed 503 without relabeling them as current', async () => {
@@ -150,7 +223,7 @@ describe('P07 mounted panel with stub IsOS', () => {
     await act(async () => root.render(<IsosLogsPanel lang="en" onClose={() => undefined} />));
     await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
     expect(container.textContent).toContain('Cursor invalid');
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     const urls = fetchMock.mock.calls.map(([url]) => url).filter((url) => url.includes('/logs'));
     expect(urls).toHaveLength(3);
     expect(new URL(urls[1]).searchParams.get('cursor')).toBe('lc1.r7');

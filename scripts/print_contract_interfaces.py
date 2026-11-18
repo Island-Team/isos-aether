@@ -13,8 +13,8 @@ from generate_north_http_openapi import collect_types, descriptor_set, ref, rend
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICE_FILES = ("eos/gateway.proto", "eos/skills.proto", "eos/workflow.proto",
-                 "eos/capabilities.proto")
+SERVICE_FILES = ("gateway.proto", "skills.proto", "workflow.proto",
+                 "capabilities.proto")
 
 
 def contracts_root(explicit: str | None) -> Path:
@@ -25,25 +25,27 @@ def contracts_root(explicit: str | None) -> Path:
     for key in ("EOS_CONTRACTS", "ISLAND_SHARE"):
       if os.environ.get(key):
         candidates.append(Path(os.environ[key]))
-    candidates.append(ROOT / "share/eos")
+    candidates.append(ROOT / "contract")
   for candidate in candidates:
     if not candidate.is_absolute():
       raise ValueError(f"contracts root must be absolute: {candidate}")
+    if (candidate / "contract/schemas/eos.manifest.json").is_file():
+      return candidate / "contract"
     if candidate.is_dir():
       return candidate
   raise ValueError("cannot resolve contracts root")
 
 
 def generated_root(root: Path) -> Path:
-  if (root / "schemas/eos/contracts.manifest.json").is_file():
-    return root / "schemas/eos"
-  if (root / "contracts.manifest.json").is_file():
+  if (root / "schemas/eos.manifest.json").is_file():
+    return root / "schemas"
+  if (root / "eos.manifest.json").is_file():
     return root
   raise ValueError(f"no generated EOS contracts under {root}")
 
 
 def load_contracts(root: Path) -> dict:
-  manifest_path = root / "contracts.manifest.json"
+  manifest_path = root / "eos.manifest.json"
   manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
   groups = {"primitives": [], "bodyDevices": [], "resources": [], "acknowledgement": None}
   role_groups = {"primitive": "primitives", "body-device": "bodyDevices",
@@ -69,7 +71,7 @@ def load_contracts(root: Path) -> dict:
 
 
 def render(root: Path) -> dict:
-  descriptor, http_option, _ = descriptor_set(ROOT / "share/eos/contracts")
+  descriptor, http_option, _ = descriptor_set(ROOT / "contract/proto")
   messages, enums = collect_types(descriptor)
   services = []
   for file in descriptor.file:

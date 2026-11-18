@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { dataTypeColor, frequencyPattern, interfaceVisual, nodeVisualStyle, portFamily, portVisual, nodeSummary, priorityColor } from './node-visuals';
+import { dataTypeColor, frequencyPattern, interfaceVisual, nodeInteractionRoles, nodeVisualStyle, portFamily, portVisual, nodeSummary, priorityColor } from './node-visuals';
 import type { NodeTypeDefinition } from '@/services/isos/node-graph';
 
 const definition = (core: string, layer: string, group: string): NodeTypeDefinition => ({ id: `${core}.${layer}.${group}@v0.2`, core, layer, group, kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [], outputs: [] });
 describe('node visual semantics', () => {
+  it('uses explicit interaction roles and infers only live pub/sub roles for older catalogs', () => {
+    const base = definition('eos', 'hardware', 'camera');
+    expect(nodeInteractionRoles({ ...base, interaction_roles: ['action', 'service'] })).toEqual(['action', 'service']);
+    expect(nodeInteractionRoles({ ...base, interaction_roles: [], outputs: [{ name: 'frame', data_type: 'image', required: true }] })).toEqual([]);
+    expect(nodeInteractionRoles({ ...base, inputs: [{ name: 'frame', data_type: 'image', required: true }], outputs: [{ name: 'frame', data_type: 'image', required: true }] })).toEqual(['subscriber', 'publisher']);
+    expect(nodeInteractionRoles({ ...base, inputs: [{ name: 'link', data_type: 'image', required: true, transport: 'none', delivery_mode: 'declaration' }] })).toEqual([]);
+    expect(nodeInteractionRoles(undefined)).toEqual([]);
+  });
   it('uses independent transport shapes, exact type colors, and rate patterns', () => {
-    const slow = { name: 'preview', data_type: 'vision_frame', required: false, expected_rate_hz: 0.1, transport: 'websocket' } as const;
-    const fast = { ...slow, expected_rate_hz: 60 };
+    const slow = { name: 'preview', data_type: 'vision_frame', required: false, frequency_hz: 0.1, transport: 'websocket' } as const;
+    const fast = { ...slow, frequency_hz: 60 };
     expect(portVisual(slow).className).toContain('transport--websocket');
     expect(portVisual({ ...slow, transport: 'http', delivery_mode: 'event' }).className).toContain('transport--http');
     expect(portVisual({ ...slow, transport: 'http', delivery_mode: 'event' }).className).toContain('delivery--event');
@@ -29,12 +37,12 @@ describe('node visual semantics', () => {
   });
   it('uses a stable layer hue and group shade without changing port semantics', () => {
     const camera = nodeVisualStyle(definition('eos', 'hardware', 'camera'));
-    const mujoco = nodeVisualStyle(definition('eos', 'hardware', 'mujoco'));
-    expect(camera['--node-layer']).toBe(mujoco['--node-layer']);
-    expect(camera['--node-group-light']).not.toBe(mujoco['--node-group-light']);
-    expect(nodeVisualStyle(definition('eos', 'hardware', 'mujoco'))).toEqual(mujoco);
-    expect(nodeVisualStyle(definition('ei', 'common', 'mujoco'))['--node-layer']).not.toBe(mujoco['--node-layer']);
-    expect(mujoco['--node-group-dark']).toMatch(/^hsl\(194 /);
+    const driver = nodeVisualStyle(definition('eos', 'hardware', 'base'));
+    expect(camera['--node-layer']).toBe(driver['--node-layer']);
+    expect(camera['--node-group-light']).not.toBe(driver['--node-group-light']);
+    expect(nodeVisualStyle(definition('eos', 'hardware', 'base'))).toEqual(driver);
+    expect(nodeVisualStyle(definition('ei', 'common', 'base'))['--node-layer']).not.toBe(driver['--node-layer']);
+    expect(driver['--node-group-dark']).toMatch(/^hsl\(194 /);
     expect(portFamily('CameraFrame')).toBe('camera');
   });
   it('summarizes only declared settings, exact pins, and typed connections', () => {

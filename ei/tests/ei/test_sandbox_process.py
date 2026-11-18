@@ -6,11 +6,10 @@ import asyncio
 import signal
 from argparse import Namespace
 
-import pytest
-
 import ei.main as main_module
+import pytest
+from ei.lib.layout import Layout
 from ei.main import start_sandbox, stop_sandbox, validate_managed_config
-from island.path import Layout
 
 
 @pytest.mark.asyncio

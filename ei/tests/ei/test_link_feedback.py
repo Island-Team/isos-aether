@@ -7,10 +7,10 @@ from pathlib import Path
 
 import grpc
 import pytest
-
-from ei.contracts.actions import TerminalStatus
-from ei.core.link import EosClient, LinkPrimitiveError
+from ei.contracts.io.link import TerminalStatus
+from ei.core.io.link import EosClient, LinkPrimitiveError
 from ei.lib.config import GatewayConfig
+
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 REVISION = "a" * 64

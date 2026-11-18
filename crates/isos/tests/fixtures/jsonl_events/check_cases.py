@@ -40,7 +40,7 @@ raw = {
     "level": "info",
     "source": "eos",
     "core": "eos",
-    "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/sim",
+    "node_path": "/cores/isos/layers/eos_process/groups/driver/nodes/sim",
     "event_code": "eos_ready",
     "run_id": "r7-cde",
     "correlation_id": None,
@@ -101,7 +101,7 @@ assert not valid_child({**raw, "source": "bridge"})
 assert not valid_child({**raw, "run_id": "r-other"})
 assert not valid_child({**raw, "pid": 1})
 assert not valid_child({**raw, "node_path": raw["node_path"] + "/package"})
-assert not valid_child({**raw, "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/~2"})
+assert not valid_child({**raw, "node_path": "/cores/isos/layers/eos_process/groups/driver/nodes/~2"})
 assert not valid_child({**raw, "event_code": "eos_unknown_ready"})
 assert not valid_child({**raw, "event_code": "events_suppressed"})
 assert not valid_child({**raw, "event_code": "eos_events_suppressed", "fields": {"suppressed_count": 1}})

@@ -1,0 +1,160 @@
+# Documentation file guide
+
+Each entry gives the role of one English Markdown file in one sentence.
+
+## Documentation rules
+
+- Follow `docs/conventions.v1.4.0.md` and the owning component’s `start/`, `interfaces/`, and `core/` pages before changing behavior.
+- `docs/README.md` — Introduces the repository documentation scope and links to its related pages.
+- `docs/contributing.md` — Guides repository-wide code, contract, documentation, verification, and review contributions.
+- `docs/conventions.v1.4.0.md` — Sets the conventions v1 4 0 source, interface, documentation, testing, and publication rules.
+- `docs/ei/README.md` — Introduces the docs ei scope and links to its related pages.
+- `docs/ei/core/README.md` — Introduces the docs ei design scope and links to its related pages.
+- `docs/ei/core/architecture.md` — Explains the design and responsibilities of EI architecture.
+- `docs/ei/core/roadmap.md` — Describes planned EI architecture and qualification gates.
+- `docs/ei/core/cognition/context.md` — Explains the design and responsibilities of Context and prompt assembly.
+- `docs/ei/core/cognition/decision.md` — Explains the design and responsibilities of Decision: from Mission meaning to safe primitive execution.
+- `docs/ei/core/cognition/intent.md` — Explains the design and responsibilities of Cognition / intent.
+- `docs/ei/core/cognition/missions.md` — Explains the design and responsibilities of MissionRecord(id=<uuid4>, order="patrol the north dock", state="pending",.
+- `docs/ei/core/cognition/state.md` — Explains the design and responsibilities of Cognition / state.
+- `docs/ei/core/cognition/coordination.md` — Explains the design and responsibilities of Coordinated profile execution.
+- `docs/ei/core/cognition/memory.md` — Explains the design and responsibilities of memory.
+- `docs/ei/core/optional/memory.md` — Explains the design and responsibilities of Vector recall in the memory layer.
+- `docs/ei/core/runtime/contracts.md` — Explains the design and responsibilities of contracts.
+- `docs/ei/core/runtime/fleet.md` — Explains the design and responsibilities of fleet.
+- `docs/ei/core/runtime/io.md` — Explains the design and responsibilities of io.
+- `docs/ei/core/runtime/optional.md` — Explains the design and responsibilities of optional.
+- `docs/ei/core/runtime/pipeline.md` — Explains the design and responsibilities of EI stage dataflow design.
+- `docs/ei/core/runtime/registry.md` — Explains the design and responsibilities of registry.
+- `docs/ei/core/runtime/runtime.md` — Explains the design of EI runtime design.
+- `docs/ei/core/runtime/sandbox.md` — Explains the design and responsibilities of Sandbox layer.
+- `docs/ei/core/runtime/supervisor.md` — Explains the design and responsibilities of Supervised task lifecycle.
+- `docs/ei/core/evidence/perception.md` — Explains the design and responsibilities of perception.
+- `docs/ei/core/governance/monitor.md` — Explains the design of Governance / monitor.
+- `docs/ei/core/governance/safety.md` — Explains the design and responsibilities of safety.
+- `docs/ei/core/io/input.md` — Explains the design and responsibilities of Io / input.
+- `docs/ei/core/io/link.md` — Explains the design and responsibilities of link.
+- `docs/ei/interfaces/server.md` — Defines the EI server interface.
+- `docs/ei/interfaces/node/README.md` — Indexes the EI node group interfaces.
+- `docs/ei/interfaces/node/cognition/context.md` — Defines the EI node context interface.
+- `docs/ei/interfaces/node/cognition/decision.md` — Defines the EI node decision interface.
+- `docs/ei/interfaces/node/cognition/intent.md` — Defines the EI node intent interface.
+- `docs/ei/interfaces/node/cognition/missions.md` — Defines the EI node missions interface.
+- `docs/ei/interfaces/node/cognition/state.md` — Defines the EI node state interface.
+- `docs/ei/interfaces/node/evidence/perception.md` — Defines the EI node perception interface.
+- `docs/ei/interfaces/node/governance/monitor.md` — Defines the EI node monitor interface.
+- `docs/ei/interfaces/node/governance/safety.md` — Defines the EI node safety interface.
+- `docs/ei/interfaces/node/io/input.md` — Defines the EI node input interface.
+- `docs/ei/interfaces/node/io/link.md` — Defines the EI node link interface.
+- `docs/ei/interfaces.md` — Interface contract.
+- `docs/eos/README.md` — Introduces the docs eos scope and links to its related pages.
+- `docs/eos/core/README.md` — Introduces the docs eos design scope and links to its related pages.
+- `docs/eos/core/architecture.md` — Explains the design and responsibilities of EOS architecture.
+- `docs/eos/core/roadmap.md` — Describes planned EOS architecture and qualification gates.
+- `docs/eos/core/dispatcher/dispatcher.md` — Explains the design and responsibilities of V2 dispatcher tree.
+- `docs/eos/core/dispatcher/scheduler.md` — Explains the design and responsibilities of Routed connection scheduling.
+- `docs/eos/core/gateway/browser-results.md` — Explains the design and responsibilities of Browser primitive result routing.
+- `docs/eos/core/gateway/grpc-gateway.md` — Explains the design and responsibilities of R02 Rust gRPC gateway design.
+- `docs/eos/core/hardware/hardware-guide.md` — Explains the design and responsibilities of Develop EOS hardware adapters.
+- `docs/eos/core/hardware/hardware.md` — Explains the design and responsibilities of EOS hardware runtime design.
+- `docs/eos/core/process/process.md` — Explains the design and responsibilities of Rust v2 process spine.
+- `docs/eos/core/skills/host-rust.md` — Explains the design and responsibilities of EOS skill host status.
+- `docs/eos/core/dispatcher/arm.md` — Explains the design and responsibilities of dispatcher/arm group.
+- `docs/eos/core/dispatcher/base.md` — Explains the design and responsibilities of Base primitive binding node.
+- `docs/eos/core/dispatcher/control.md` — Explains the design and responsibilities of Shared control dispatcher node.
+- `docs/eos/core/dispatcher/manipulator.md` — Explains the design and responsibilities of Manipulator primitive binding node.
+- `docs/eos/core/hardware/base.md` — Explains the design and responsibilities of hardware/base group.
+- `docs/eos/core/hardware/camera.md` — Explains the design and responsibilities of hardware/camera group.
+- `docs/eos/core/hardware/gripper.md` — Explains the design and responsibilities of hardware/gripper group.
+- `docs/eos/core/hardware/manipulator.md` — Explains the design and responsibilities of hardware/manipulator group.
+- `docs/eos/core/hardware/mock.md` — Explains the design and responsibilities of hardware/mock group.
+- `docs/eos/core/hardware/torso.md` — Explains the design and responsibilities of hardware/torso group.
+- `docs/eos/core/interface/egress.md` — Explains the design and responsibilities of interface/egress group.
+- `docs/eos/core/interface/ingress.md` — Explains the design and responsibilities of interface/ingress group.
+- `docs/eos/core/skill/demo.md` — Explains the design and responsibilities of skill/demo group.
+- `docs/eos/interfaces/server.md` — Defines the EOS server interface.
+- `docs/eos/interfaces/node/README.md` — Indexes the EOS node group interfaces.
+- `docs/eos/interfaces/node/dispatcher/arm.md` — Defines the EOS node arm interface.
+- `docs/eos/interfaces/node/hardware/base.md` — Defines the EOS node base interface.
+- `docs/eos/interfaces/node/hardware/camera.md` — Defines the EOS node camera interface.
+- `docs/eos/interfaces/node/hardware/gripper.md` — Defines the EOS node gripper interface.
+- `docs/eos/interfaces/node/hardware/manipulator.md` — Defines the EOS node manipulator interface.
+- `docs/eos/interfaces/node/hardware/mock.md` — Defines the EOS node mock interface.
+- `docs/eos/interfaces/node/hardware/torso.md` — Defines the EOS node torso interface.
+- `docs/eos/interfaces/node/interface/egress.md` — Defines the EOS node egress interface.
+- `docs/eos/interfaces/node/interface/ingress.md` — Defines the EOS node ingress interface.
+- `docs/eos/interfaces/node/skill/demo.md` — Defines the EOS node demo interface.
+- `docs/eos/interfaces.md` — Interface contract.
+- `docs/eos/models.md` — Interface contract.
+- `docs/changelog.md` — Records completed delivery work and earlier release plans.
+- `docs/isos/README.md` — Introduces the docs isos scope and links to its related pages.
+- `docs/isos/core/README.md` — IsOS README guide.
+- `docs/isos/core/architecture.md` — IsOS architecture guide.
+- `docs/isos/core/roadmap.md` — Describes planned IsOS architecture and qualification gates.
+- `docs/isos/core/cli.md` — IsOS cli guide.
+- `docs/isos/core/config.md` — IsOS config guide.
+- `docs/isos/core/logger.md` — IsOS logger guide.
+- `docs/isos/core/pkg.md` — IsOS pkg guide.
+- `docs/isos/core/server.md` — IsOS server guide.
+- `docs/isos/core/service.md` — IsOS service guide.
+- `docs/isos/core/ui/tui.md` — IsOS TUI guide.
+- `docs/isos/core/ui/webui.md` — IsOS WebUI guide.
+- `docs/isos/interfaces/README.md` — Introduces the docs isos interfaces scope and links to its related pages.
+- `docs/isos/interfaces/contract-catalog.md` — Defines the independent shared contract catalog and validation rules.
+- `docs/isos/interfaces/api/README.md` — Interface contract.
+- `docs/isos/interfaces/api/client.md` — Client interaction contracts.
+- `docs/isos/interfaces/api/http.md` — Interface contract.
+- `docs/isos/interfaces/core.md` — Introduces the docs isos interfaces core scope and links to its related pages.
+- `docs/isos/interfaces/manager.md` — Introduces the docs isos interfaces manager scope and links to its related pages.
+- `docs/isos/interfaces/node/README.md` — Introduces the docs isos interfaces node scope and links to its related pages.
+- `docs/isos/interfaces/node/ui/button.md` — Node interface contract.
+- `docs/isos/interfaces/node/ui/monitor.md` — Node interface contract.
+- `docs/isos/interfaces/node/ui/vision.md` — Node interface contract.
+- `docs/isos/interfaces/package/README.md` — Interface contract.
+- `docs/isos/interfaces/server/README.md` — Interface contract.
+- `docs/isos/interfaces/server/ei.md` — Interface contract.
+- `docs/isos/interfaces/server/eos.md` — Interface contract.
+- `docs/isos/start/quick-start.md` — Guides first use and operation of First use.
+- `docs/node/README.md` — Shared node documentation.
+- `docs/node/interfaces/README.md` — Node interface contract.
+- `docs/node/interfaces/graph.md` — Node interface contract.
+- `docs/node/interfaces/registry.md` — Node interface contract.
+- `docs/node/interfaces/type.md` — Node interface contract.
+- `docs/release.md` — Unified product release and qualification.
+- `docs/contract.md` — Maps shared contract sources, generated artifacts, configuration, and installed resources to their owners.
+- Treat the owning `interfaces/` page as the authority for public behavior; use `design/` for rationale and `start/` for first use.
+- Keep English and Chinese pages, examples, links, and headings aligned, and label future behavior as target design.
+- Update contracts, implementation, fixtures, tests, and first-use guidance together for public changes.
+- Record reproducible checks and outcomes in the owning guide, and keep credentials and private field evidence out of public documentation.
+
+## Other repository Markdown
+
+- `AGENTS.md` — Sets repository instructions for agents, including ownership, change workflow, checks, and documentation alignment.
+- `CONTRIBUTORS.md` — Records contributor information for the repository.
+- `README.md` — Introduces the repository and links to setup and documentation.
+- `crates/isos/tests/fixtures/control_grants/README.md` — Introduces the crates isos tests fixtures control grants scope and links to its related pages.
+- `crates/isos/tests/fixtures/dependent_stop/README.md` — Introduces the crates isos tests fixtures dependent stop scope and links to its related pages.
+- `crates/isos/tests/fixtures/ei_stage_reader/README.md` — Introduces the crates isos tests fixtures ei stage reader scope and links to its related pages.
+- `crates/isos/tests/fixtures/generated_config_preflight/README.md` — Introduces the crates isos tests fixtures generated config preflight scope and links to its related pages.
+- `crates/isos/tests/fixtures/jsonl_events/README.md` — Introduces the crates isos tests fixtures jsonl events scope and links to its related pages.
+- `crates/isos/tests/fixtures/log_cursors/README.md` — Introduces the crates isos tests fixtures log cursors scope and links to its related pages.
+- `crates/isos/tests/fixtures/package_verification/README.md` — Introduces the crates isos tests fixtures package verification scope and links to its related pages.
+- `crates/isos/tests/fixtures/r04_skill_events/README.md` — Introduces the crates isos tests fixtures r04 skill events scope and links to its related pages.
+- `crates/isos/tests/fixtures/reader_features/README.md` — Introduces the crates isos tests fixtures reader features scope and links to its related pages.
+- `crates/isos/tests/fixtures/skill_selection/README.md` — Introduces the crates isos tests fixtures skill selection scope and links to its related pages.
+- `ei/tests/benchmarks/README.md` — Introduces the ei tests benchmarks scope and links to its related pages.
+- `ei/tests/fixtures/jsonl_events/README.md` — Introduces the ei tests fixtures jsonl events scope and links to its related pages.
+- `examples/README.md` — Introduces the examples scope and links to its related pages.
+- `contract/README.md` — Maps the shared contract catalogs and their source files.
+- `contract/proto/README.md` — Introduces the EOS contract scope and links to its related pages.
+- `contract/proto/southbound/README.md` — Introduces the EOS southbound contract scope and links to its related pages.
+- `contract/node/README.md` — Introduces the node contract scope and links to its related pages.
+- `tests/fixtures/edge_contract/README.md` — Introduces the tests fixtures edge contract scope and links to its related pages.
+- `tests/fixtures/jsonl_events/README.md` — Introduces the tests fixtures jsonl events scope and links to its related pages.
+- `tests/fixtures/q01_vision_provenance/README.md` — Introduces the tests fixtures q01 vision provenance scope and links to its related pages.
+- `tests/fixtures/r02_grpc_gateway/README.md` — Introduces the tests fixtures r02 grpc gateway scope and links to its related pages.
+- `tests/fixtures/r03_admission_revision/README.md` — Introduces the tests fixtures r03 admission revision scope and links to its related pages.
+- `ui/tests/fixtures/browser_results/README.md` — Introduces the ui tests fixtures browser results scope and links to its related pages.
+- `ui/tests/fixtures/log_cursors/README.md` — Introduces the ui tests fixtures log cursors scope and links to its related pages.
+
+## docs

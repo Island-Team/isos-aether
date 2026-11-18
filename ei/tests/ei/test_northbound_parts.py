@@ -10,13 +10,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import websockets
-
-from ei.api.status import HealthState
-from ei.contracts.endpoints import ResourceKind
-from ei.contracts.perception.world.asr import AsrSnapshot
-from ei.contracts.perception.world.detection import Detection, DetectionSnapshot
-from ei.contracts.perception.world.state import WorldEntity, WorldStateSnapshot
-from ei.core.perception.admission import Admission
+from ei.contracts.evidence.perception import (
+  AsrSnapshot,
+  Detection,
+  DetectionSnapshot,
+  WorldEntity,
+  WorldStateSnapshot,
+)
+from ei.contracts.io.link import ResourceKind
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.status import HealthState
 from ei.io import PART_PATHS, NorthboundServer, PartStore
 from ei.io.northbound import NorthboundBindError
 from ei.io.state import ServerState

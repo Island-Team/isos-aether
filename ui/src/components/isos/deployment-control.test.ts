@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import type { ProcessStatus, StopControlReply } from '@/services/isos/node-graph';
+import type { RunControlReply, StopControlReply } from '@/services/isos/node-graph';
 
 const mocks = vi.hoisted(() => ({ run: vi.fn(), stop: vi.fn() }));
 vi.mock('@/services/isos/node-graph', async (importOriginal) => ({
@@ -8,14 +8,14 @@ vi.mock('@/services/isos/node-graph', async (importOriginal) => ({
   stopProcesses: mocks.stop,
 }));
 
-const runB: ProcessStatus = { schema_version: '1.0.0', state: 'running', run_id: 'B', run_id_state: 'known', processes: [] };
+const runB: RunControlReply = { started: ['eos'], active_revision: 'a'.repeat(64), run_id: 'B' };
 const stoppedB: StopControlReply = { stopped: ['eos'], terminal: { run_id: 'B', outcome: 'confirmed', reason_code: null, processes: [{ id: 'eos', outcome: 'confirmed', reason_code: null }] } };
 
 afterEach(() => { vi.clearAllMocks(); });
 
 it('sends a final Stop for late Run B even if the first Stop transport fails', async () => {
   const { runDeployment, stopDeploymentConverged } = await import('./deployment-control');
-  let finishRun!: (status: ProcessStatus) => void;
+  let finishRun!: (status: RunControlReply) => void;
   mocks.run.mockImplementation(() => new Promise((resolve) => { finishRun = resolve; }));
   mocks.stop.mockRejectedValueOnce(new Error('connection lost')).mockResolvedValueOnce(stoppedB);
   const run = runDeployment('run', 'a'.repeat(64));
@@ -30,7 +30,7 @@ it('sends a final Stop for late Run B even if the first Stop transport fails', a
 
 it('uses the final Stop for Run B after the first Stop observed no run', async () => {
   const { runDeployment, stopDeploymentConverged } = await import('./deployment-control');
-  let finishRun!: (status: ProcessStatus) => void;
+  let finishRun!: (status: RunControlReply) => void;
   mocks.run.mockImplementation(() => new Promise((resolve) => { finishRun = resolve; }));
   mocks.stop.mockResolvedValueOnce({ stopped: [], terminal: null }).mockResolvedValueOnce(stoppedB);
   const run = runDeployment('run', 'a'.repeat(64));

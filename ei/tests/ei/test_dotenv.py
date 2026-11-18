@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ei.lib.dotenv import load_env_file
+from ei.lib.layout import Layout
 from ei.main import load_dotenv
-from island.path import Layout
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -67,7 +67,8 @@ def test_load_dotenv_returns_names_without_writing_raw_stderr(
 def test_source_ei_checkout_reads_repository_root_only(tmp_path, monkeypatch) -> None:
   (tmp_path / "Cargo.toml").write_text("[workspace]\n")
   ei_root = tmp_path / "ei"
-  (ei_root / "src/ei").mkdir(parents=True)
+  ei_root.mkdir(parents=True)
+  (ei_root / "__init__.py").touch()
   (ei_root / "pyproject.toml").write_text("[project]\nname='ei'\n")
   layout = Layout.resolve(prefix=ei_root, mode="source", environ={})
   seen = []

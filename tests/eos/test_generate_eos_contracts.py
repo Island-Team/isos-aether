@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix="eos-contract-generation-test-") as dire
   output = Path(directory)
   first = run(output)
   assert first.returncode == 0, first.stderr
-  manifest_path = output / "contracts.manifest.json"
+  manifest_path = output / "eos.manifest.json"
   manifest = json.loads(manifest_path.read_text())
   assert manifest["schema_count"] == 40
   assert {entry["path"] for entry in manifest["schemas"] if entry["path"].endswith(".v1_1.json")} == {

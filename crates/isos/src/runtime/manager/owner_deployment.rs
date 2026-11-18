@@ -5,6 +5,91 @@ use std::os::{
   fd::AsRawFd,
   unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
 };
+use std::sync::{
+  Arc, Mutex, OnceLock,
+  atomic::{AtomicBool, Ordering},
+};
+
+struct StartupControl {
+  cancel: AtomicBool,
+  phase: Mutex<&'static str>,
+}
+
+fn startups() -> &'static Mutex<std::collections::BTreeMap<String, Arc<StartupControl>>> {
+  static STARTUPS: OnceLock<Mutex<std::collections::BTreeMap<String, Arc<StartupControl>>>> =
+    OnceLock::new();
+  STARTUPS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+}
+
+pub(super) fn register_startup(name: &str) -> Result<()> {
+  let mut active = startups()
+    .lock()
+    .map_err(|_| anyhow::anyhow!("startup registry poisoned"))?;
+  ensure!(
+    !active.contains_key(name),
+    "deployment startup is already in progress"
+  );
+  active.insert(
+    name.into(),
+    Arc::new(StartupControl {
+      cancel: AtomicBool::new(false),
+      phase: Mutex::new("checking_source"),
+    }),
+  );
+  Ok(())
+}
+
+pub(super) fn finish_startup(name: &str) {
+  if let Ok(mut active) = startups().lock() {
+    active.remove(name);
+  }
+}
+
+pub(super) fn cancel_startup(name: &str) {
+  if let Ok(active) = startups().lock()
+    && let Some(control) = active.get(name)
+  {
+    control.cancel.store(true, Ordering::SeqCst);
+  }
+}
+
+pub(super) fn cancel_all_startups_and_wait() -> Result<()> {
+  {
+    let active = startups()
+      .lock()
+      .map_err(|_| anyhow::anyhow!("startup registry poisoned"))?;
+    for control in active.values() {
+      control.cancel.store(true, Ordering::SeqCst);
+    }
+  }
+  let deadline = Instant::now() + Duration::from_secs(5);
+  loop {
+    if startups()
+      .lock()
+      .map_err(|_| anyhow::anyhow!("startup registry poisoned"))?
+      .is_empty()
+    {
+      return Ok(());
+    }
+    ensure!(
+      Instant::now() < deadline,
+      "startup cancellation did not finish before manager shutdown"
+    );
+    std::thread::sleep(Duration::from_millis(20));
+  }
+}
+
+fn startup_control(name: &str) -> Option<Arc<StartupControl>> {
+  startups().lock().ok()?.get(name).cloned()
+}
+
+fn startup_phase(name: &str, phase: &'static str) {
+  if let Some(control) = startup_control(name)
+    && let Ok(mut current) = control.phase.lock()
+  {
+    *current = phase;
+  }
+}
 
 struct ReceiptLock(fs::File);
 
@@ -42,6 +127,47 @@ fn emergency_marker_path(paths: &config::Paths, name: &str) -> std::path::PathBu
   paths.runtime.join(format!("{name}.emergency-stopped"))
 }
 
+fn cross_owner_edges(graph: &Value, source_core: &str, target_core: &str) -> Vec<Value> {
+  let mut edges = Vec::new();
+  let Some(layers) = graph["cores"][target_core]["layers"].as_object() else {
+    return edges;
+  };
+  for (layer, layer_value) in layers {
+    let Some(groups) = layer_value["groups"].as_object() else {
+      continue;
+    };
+    for (group, group_value) in groups {
+      let Some(nodes) = group_value["nodes"].as_object() else {
+        continue;
+      };
+      for (node_id, node) in nodes {
+        let Some(inputs) = node["inputs"].as_object() else {
+          continue;
+        };
+        for (input, binding) in inputs {
+          let (Some(source), Some(output)) = (binding["node"].as_str(), binding["output"].as_str())
+          else {
+            continue;
+          };
+          if source.split('/').next() == Some(source_core) {
+            edges.push(json!({"source":source,"output":output,
+              "target":format!("{target_core}/{layer}/{group}/{node_id}"),"input":input}));
+          }
+        }
+      }
+    }
+  }
+  edges
+}
+
+fn selected_owner_cores(graph: &Value) -> Vec<&'static str> {
+  let mut cores = vec!["eos"];
+  if core_setup::ei_owner_selected(graph) {
+    cores.push("ei");
+  }
+  cores
+}
+
 pub(crate) fn emergency_stopped(paths: &config::Paths, name: &str) -> bool {
   fs::read(emergency_marker_path(paths, name)).is_ok_and(|bytes| bytes == b"emergency_stop_v1")
     && interrupted_receipt(paths, name).is_ok_and(|receipt| receipt.is_none())
@@ -49,7 +175,7 @@ pub(crate) fn emergency_stopped(paths: &config::Paths, name: &str) -> bool {
 
 pub(super) fn is_current(source: &str) -> bool {
   serde_json::from_str::<Value>(source).is_ok_and(|graph| {
-    graph["version"] == "0.2.0"
+    graph["version"] == "0.2.1"
       && graph["cores"].get("isos").is_some()
       && graph["cores"].get("ei").is_some()
       && graph["cores"].get("eos").is_some()
@@ -230,8 +356,120 @@ fn identity_request(core: &str, op: &str, state: &Value) -> Value {
   json!({"core":core,"op":op,"run_id":state["run_id"],"revision":state["revision"]})
 }
 
+#[derive(Debug)]
+pub(super) struct OwnerRunConflict {
+  pub core: String,
+  pub run_id: Value,
+  pub revision: Value,
+}
+
+impl std::fmt::Display for OwnerRunConflict {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{} owner still holds a run; resolve its Stop proof before starting a new run",
+      self.core
+    )
+  }
+}
+
+impl std::error::Error for OwnerRunConflict {}
+
+fn ensure_idle_owner(core: &str, health: &Value) -> Result<()> {
+  if !health["run_id"].is_null() || !health["revision"].is_null() {
+    return Err(anyhow::Error::new(OwnerRunConflict {
+      core: core.to_owned(),
+      run_id: health["run_id"].clone(),
+      revision: health["revision"].clone(),
+    }));
+  }
+  Ok(())
+}
+
+fn ensure_selected_owners_idle(paths: &config::Paths, graph: &Value) -> Result<()> {
+  for core in selected_owner_cores(graph) {
+    let health = crate::runtime::owners::owner_services::selected_identity(paths, core)
+      .with_context(|| format!("{core} owner health unavailable before Run"))?;
+    ensure_idle_owner(core, &health)?;
+  }
+  Ok(())
+}
+
+fn read_run_graph(
+  paths: &config::Paths,
+  name: &str,
+  expected: Option<&str>,
+) -> Result<(String, String, Value)> {
+  let source = fs::read_to_string(paths.node_graph_path(name))?;
+  ensure!(is_current(&source), "saved graph is not a three-core graph");
+  let revision = graph_contract::revision(source.as_bytes());
+  if let Some(expected) = expected {
+    ensure!(
+      expected == revision,
+      "saved graph revision changed; reload before run"
+    );
+  }
+  let graph = serde_json::from_str(&source)?;
+  Ok((source, revision, graph))
+}
+
+fn preflight_available_owners(paths: &config::Paths, graph: &Value) -> Result<()> {
+  // serve attaches owners concurrently. A missing health reply here can be a
+  // normal startup race; the mandatory check after admission handles it.
+  for core in selected_owner_cores(graph) {
+    if let Ok(health) = crate::runtime::owners::owner_services::selected_identity(paths, core) {
+      ensure_idle_owner(core, &health)?;
+    }
+  }
+  Ok(())
+}
+
+fn prepare_run_graph(
+  paths: &config::Paths,
+  name: &str,
+  source: &str,
+  revision: &str,
+  graph: &Value,
+  control: Option<&Arc<StartupControl>>,
+) -> Result<()> {
+  startup_phase(name, "building_source");
+  if let Some(control) = control {
+    crate::domain::packages::refresh_graph_sources_cancellable(paths, graph, &control.cancel)?;
+  } else {
+    crate::domain::packages::refresh_graph_sources(paths, graph)?;
+  }
+  ensure!(
+    !control.is_some_and(|control| control.cancel.load(Ordering::SeqCst)),
+    "deployment startup cancelled"
+  );
+  startup_phase(name, "validating_graph");
+  tracing::info!(
+    event_code = "deployment_graph_validation_started",
+    "Validating deployment graph before owner start"
+  );
+  validate_saved_graph(paths, name, source)?;
+  core_setup::prepare_run(paths, name, revision)?;
+  ensure!(
+    starter::revision(&paths.node_graph_path(name))? == revision,
+    "saved graph revision changed during core setup"
+  );
+  Ok(())
+}
+
 pub(super) fn status(paths: &config::Paths, name: &str) -> Result<Value> {
   let saved_revision = starter::revision(&paths.node_graph_path(name)).ok();
+  if let Some(control) = startup_control(name) {
+    let phase = *control
+      .phase
+      .lock()
+      .map_err(|_| anyhow::anyhow!("startup phase poisoned"))?;
+    return Ok(
+      json!({"schema_version":"0.1.0","saved_revision":saved_revision,
+      "active_revision":null,"state":if control.cancel.load(Ordering::SeqCst) {"stopping"} else {"starting"},
+      "startup_phase":phase,"last_error":null,"packages":[],"processes":[],
+      "run_id":null,"run_id_state":"unknown","terminal":null}),
+    );
+  }
   let Some(state) = selected(paths, name)? else {
     return Ok(
       json!({"schema_version":"0.1.0","saved_revision":saved_revision,"active_revision":null,"state":"stopped","last_error":null,"packages":[],"processes":[],"run_id":null,"run_id_state":"unknown","terminal":null}),
@@ -239,7 +477,48 @@ pub(super) fn status(paths: &config::Paths, name: &str) -> Result<Value> {
   };
   let mut processes = Vec::new();
   let mut healthy = state["pending"] != true;
-  for core in ["ei", "eos"] {
+  let mut failures = Vec::new();
+  let run_id = state["run_id"].as_str().context("run ID is missing")?;
+  let revision = state["revision"]
+    .as_str()
+    .context("run revision is missing")?;
+  // These are independent read-only checks. Keep their replies ordered for callers,
+  // but do not make a slow owner hold up every other health check in the queue.
+  let (owner_results, external_result, services_result) = std::thread::scope(|scope| {
+    let owners = ["ei", "eos"].map(|core| {
+      state["attempted"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item == core))
+        .then(|| {
+          let request = identity_request(core, "status", &state);
+          scope.spawn(move || call(paths, core, request))
+        })
+    });
+    let external = scope.spawn(|| super::isos_external::status(paths, name, run_id, revision));
+    let services = scope.spawn(|| super::package_services::status(paths, name, run_id, revision));
+    (
+      owners.map(|handle| {
+        handle.map(|handle| {
+          handle
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("owner status probe panicked")))
+        })
+      }),
+      external
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("external status probe panicked"))),
+      services
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("package service status probe panicked"))),
+    )
+  });
+  for (core, result) in ["ei", "eos"].into_iter().zip(owner_results) {
+    if !state["attempted"]
+      .as_array()
+      .is_some_and(|items| items.iter().any(|item| item == core))
+    {
+      continue;
+    }
     if state["stopped"]
       .as_array()
       .is_some_and(|items| items.iter().any(|item| item == core))
@@ -248,7 +527,7 @@ pub(super) fn status(paths: &config::Paths, name: &str) -> Result<Value> {
       processes.push(json!({"id":core,"core":core,"state":"stopped"}));
       continue;
     }
-    match call(paths, core, identity_request(core, "status", &state)) {
+    match result.context("attempted owner probe missing")? {
       Ok(reply) => {
         let state_name = reply["state"].as_str().unwrap_or("unknown");
         healthy &= matches!(state_name, "running" | "ready");
@@ -256,17 +535,46 @@ pub(super) fn status(paths: &config::Paths, name: &str) -> Result<Value> {
       }
       Err(error) => {
         healthy = false;
+        failures.push(format!("{core}: {error}"));
         processes
           .push(json!({"id":core,"core":core,"state":"unavailable","error":error.to_string()}));
       }
     }
   }
+  match external_result {
+    Ok(external) => {
+      healthy &= external["ready"] == true;
+      if let Some(children) = external["children"].as_array() {
+        processes.extend(children.iter().cloned());
+      }
+    }
+    Err(error) => {
+      healthy = false;
+      failures.push(format!("isos external: {error}"));
+      processes.push(
+        json!({"id":"isos-external","core":"isos","state":"unavailable","error":error.to_string()}),
+      );
+    }
+  }
+  match services_result {
+    Ok(services) => {
+      healthy &= services["ready"] == true;
+      if let Some(children) = services["children"].as_array() {
+        processes.extend(children.iter().cloned());
+      }
+    }
+    Err(error) => {
+      healthy = false;
+      failures.push(format!("package services: {error}"));
+      processes.push(json!({"id":"isos-package-services","core":"isos","state":"unavailable","error":error.to_string()}));
+    }
+  }
   Ok(
-    json!({"schema_version":"0.1.0","saved_revision":saved_revision,"active_revision":state["revision"],"state":if healthy {"running"} else {"degraded"},"last_error":if healthy {Value::Null} else {json!("one or more owner processes are unavailable")},"packages":[],"processes":processes,"run_id":state["run_id"],"run_id_state":"known","terminal":null}),
+    json!({"schema_version":"0.1.0","saved_revision":saved_revision,"active_revision":state["revision"],"state":if healthy {"running"} else {"degraded"},"last_error":if healthy {Value::Null} else if failures.is_empty() {json!("deployment startup or owner Stop is incomplete")} else {json!(failures.join("; "))},"packages":[],"processes":processes,"run_id":state["run_id"],"run_id_state":"known","terminal":null}),
   )
 }
 
-pub(super) fn stop(paths: &config::Paths, name: &str) -> Result<Value> {
+pub(crate) fn stop(paths: &config::Paths, name: &str) -> Result<Value> {
   let _lock = ReceiptLock::take(paths, name)?;
   stop_unlocked(paths, name)
 }
@@ -283,6 +591,16 @@ fn stop_unlocked(paths: &config::Paths, name: &str) -> Result<Value> {
     .map(str::to_owned)
     .collect();
   let mut failures = Vec::new();
+  if let Err(error) = super::isos_external::stop(
+    paths,
+    name,
+    state["run_id"].as_str().context("run ID is missing")?,
+    state["revision"]
+      .as_str()
+      .context("run revision is missing")?,
+  ) {
+    failures.push(format!("isos external: {error}"));
+  }
   for core in ["ei", "eos"] {
     if state["attempted"]
       .as_array()
@@ -302,6 +620,16 @@ fn stop_unlocked(paths: &config::Paths, name: &str) -> Result<Value> {
       Err(error) => failures.push(format!("{core}: {error}")),
     }
   }
+  if let Err(error) = super::package_services::stop_candidate_services(
+    paths,
+    name,
+    state["run_id"].as_str().context("run ID is missing")?,
+    state["revision"]
+      .as_str()
+      .context("run revision is missing")?,
+  ) {
+    failures.push(format!("package services: {error}"));
+  }
   ensure!(
     failures.is_empty(),
     "owner Stop unconfirmed: {}",
@@ -311,37 +639,60 @@ fn stop_unlocked(paths: &config::Paths, name: &str) -> Result<Value> {
   Ok(json!({"stopped":stopped,"terminal":{"outcome":"confirmed","run_id":state["run_id"]}}))
 }
 
-pub(super) fn run(
+pub(crate) fn run(
   paths: &config::Paths,
   name: &str,
   expected: Option<&str>,
   restart: bool,
 ) -> Result<Value> {
   let _lock = ReceiptLock::take(paths, name)?;
-  let path = paths.node_graph_path(name);
-  let source = fs::read_to_string(&path)?;
-  ensure!(is_current(&source), "saved graph is not a three-core graph");
-  let revision = graph_contract::revision(source.as_bytes());
-  if let Some(expected) = expected {
-    ensure!(
-      expected == revision,
-      "saved graph revision changed; reload before run"
-    );
-  }
-  validate_saved_graph(paths, name, &source)?;
-  core_setup::prepare_run(paths, name, &revision)?;
+  let control = startup_control(name);
   ensure!(
-    starter::revision(&path)? == revision,
-    "saved graph revision changed during core setup"
+    !control
+      .as_ref()
+      .is_some_and(|control| control.cancel.load(Ordering::SeqCst)),
+    "deployment startup cancelled"
   );
+  let (source, revision, graph) = read_run_graph(paths, name, expected)?;
+  // Reject a surviving, fenced owner before source refresh and graph admission.
+  // Restart must first complete Stop for the selected run, so its preflight stays
+  // at the final check below. An owner service can still be attaching while
+  // serve opens its API, so a missing health reply is deferred to that check.
+  // Recheck there to fence races during validation.
+  if selected(paths, name)?.is_none() {
+    preflight_available_owners(paths, &graph)?;
+  }
+  prepare_run_graph(paths, name, &source, &revision, &graph, control.as_ref())?;
   if selected(paths, name)?.is_some() {
     ensure!(restart, "deployment is already running; use Restart");
     stop_unlocked(paths, name)?;
   }
-  let graph: Value = serde_json::from_str(&source)?;
+  let verified = crate::domain::packages::verify_graph_packages(paths, &graph)?;
+  super::isos_external::supports(&graph, &verified)?;
+  // A surviving owner may still fence an older run after IsOS lost its receipt.
+  // Catch that conflict before writing a new receipt or starting sidecars.
+  ensure_selected_owners_idle(paths, &graph)?;
+  let packages: Vec<Value> = verified
+    .iter()
+    .map(|package| {
+      json!({"id":package.release.id,"version":package.release.version,
+      "path":package.store,"payload_root":package.root})
+    })
+    .collect();
   let run_id = next_run_id();
+  ensure!(
+    !control
+      .as_ref()
+      .is_some_and(|control| control.cancel.load(Ordering::SeqCst)),
+    "deployment startup cancelled"
+  );
+  startup_phase(name, "starting_owners");
+  tracing::info!(
+    event_code = "deployment_owners_starting",
+    "Starting deployment owners"
+  );
   let mut requests = Vec::new();
-  for core in ["eos", "ei"] {
+  for core in selected_owner_cores(&graph) {
     let executable = if core == "eos" {
       crate::runtime::process::core_bins::resolve("aether-runtime")?
     } else {
@@ -353,8 +704,14 @@ pub(super) fn run(
     let digest = hex::encode(Sha256::digest(fs::read(&executable)?));
     let projection = crate::domain::graph::single_core::owner_projection(&graph, core)?;
     let mut endpoints = core_setup::endpoints(paths, name, &graph)?;
+    if core == "eos" {
+      endpoints["ei_owner_socket"] =
+        json!({"path":crate::runtime::owners::owner_services::socket(paths, "ei")});
+      endpoints["eos_to_ei_edges"] = Value::Array(cross_owner_edges(&graph, "eos", "ei"));
+    }
     if core == "ei" {
       endpoints["eos_owner"] = json!({"transport":"uds","path":crate::runtime::owners::owner_services::socket(paths, "eos")});
+      endpoints["ei_to_eos_edges"] = Value::Array(cross_owner_edges(&graph, "ei", "eos"));
       if graph
         .pointer("/cores/ei/layers/governance/groups/monitor/nodes/arm_status")
         .is_some()
@@ -365,7 +722,7 @@ pub(super) fn run(
         endpoints["arm_monitor"] = json!({"joint_names": names});
       }
     }
-    let request = json!({"core":core,"op":"run","run_id":run_id,"revision":revision,"graph":projection,"endpoints":endpoints,"packages":[],"launch":{"sha256":digest,"args":[],"env":{}}});
+    let request = json!({"core":core,"op":"run","run_id":run_id,"revision":revision,"graph":projection,"endpoints":endpoints,"packages":packages,"launch":{"sha256":digest,"args":[],"env":{}}});
     requests.push((core, request));
   }
   let mut state =
@@ -377,20 +734,37 @@ pub(super) fn run(
     Err(error) => return Err(error.into()),
   }
   let mut started = Vec::new();
+  let package_handoff = match super::package_services::start_candidate_services(
+    paths, name, &graph, &run_id, &revision, &verified,
+  ) {
+    Ok(handoff) => handoff,
+    Err(error) => {
+      let _ = stop_unlocked(paths, name);
+      return Err(error);
+    }
+  };
   for (core, request) in requests {
+    let mut request = request;
+    if core == "eos" {
+      request["endpoints"]["package_services"] = package_handoff.clone();
+    }
     state["attempted"].as_array_mut().unwrap().push(json!(core));
     config::atomic_write(&state_path(paths, name), &serde_json::to_vec(&state)?)?;
     match call(paths, core, request) {
       Ok(_) => started.push(core),
       Err(error) => {
-        if started.is_empty() {
-          // The failed owner may still have accepted the run before its reply was lost.
-          return Err(error);
-        }
+        // The failed owner may have accepted Run before its reply was lost.
+        // The durable attempted list lets Stop fence that owner as well.
         let _ = stop_unlocked(paths, name);
         return Err(error);
       }
     }
+  }
+  if let Err(error) =
+    super::isos_external::start(paths, name, &graph, &run_id, &revision, &verified)
+  {
+    let _ = stop_unlocked(paths, name);
+    return Err(error);
   }
   state["pending"] = json!(false);
   config::atomic_write(&state_path(paths, name), &serde_json::to_vec(&state)?)?;
@@ -400,6 +774,90 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn new_run_preflight_rejects_owner_holding_prior_run() {
+    ensure_idle_owner("eos", &json!({"run_id":null,"revision":null})).unwrap();
+    let error = ensure_idle_owner(
+      "eos",
+      &json!({"run_id":"r-prior","revision":"a".repeat(64)}),
+    )
+    .unwrap_err();
+    let conflict = error.downcast_ref::<OwnerRunConflict>().unwrap();
+    assert_eq!(conflict.core, "eos");
+    assert_eq!(conflict.run_id, "r-prior");
+    assert_eq!(conflict.revision, "a".repeat(64));
+    assert!(error.to_string().contains("resolve its Stop proof"));
+  }
+
+  #[test]
+  fn startup_status_hides_prior_run_and_shows_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = config::Paths {
+      config: dir.path().join("config"),
+      data: dir.path().join("data"),
+      runtime: dir.path().join("run"),
+    };
+    let name = "startup-status-test";
+    fs::create_dir_all(&paths.runtime).unwrap();
+    config::atomic_write(
+      &state_path(&paths, name),
+      &serde_json::to_vec(&json!({
+        "run_id":"r-old","revision":"a".repeat(64),"pending":false,"attempted":[],"stopped":[]
+      }))
+      .unwrap(),
+    )
+    .unwrap();
+    register_startup(name).unwrap();
+    startup_phase(name, "building_source");
+    let pending = status(&paths, name).unwrap();
+    assert_eq!(pending["state"], "starting");
+    assert_eq!(pending["startup_phase"], "building_source");
+    assert!(pending["run_id"].is_null());
+    cancel_startup(name);
+    let stopping = status(&paths, name).unwrap();
+    assert_eq!(stopping["state"], "stopping");
+    assert!(stopping["run_id"].is_null());
+    finish_startup(name);
+  }
+
+  #[test]
+  fn empty_ei_shell_does_not_start_or_report_ei_owner() {
+    let hardware_only = json!({"version":"0.2.1","cores":{
+      "isos":{"layers":{}},"ei":{"layers":{}},
+      "eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{}}}}}}}
+    }});
+    assert_eq!(selected_owner_cores(&hardware_only), vec!["eos"]);
+    let mut with_ei = hardware_only;
+    with_ei["cores"]["ei"]["layers"]["governance"] = json!({"groups":{}});
+    assert_eq!(selected_owner_cores(&with_ei), vec!["eos", "ei"]);
+  }
+
+  #[test]
+  fn owner_route_projection_contains_only_declared_cross_core_inputs() {
+    let graph: Value = serde_json::from_slice(
+      &fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+          .join("../../tests/fixtures/graph/demo-only.nodes.json"),
+      )
+      .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+      cross_owner_edges(&graph, "ei", "eos"),
+      vec![
+        json!({"source":"ei/governance/safety/gate","output":"activation",
+        "target":"eos/interface/ingress/trigger","input":"activation"})
+      ]
+    );
+    assert_eq!(
+      cross_owner_edges(&graph, "eos", "ei"),
+      vec![
+        json!({"source":"eos/interface/egress/arm_status","output":"observation",
+        "target":"ei/io/input/arm_status","input":"observation"})
+      ]
+    );
+  }
   use std::io::{Read, Write};
   use std::os::unix::net::UnixListener;
 

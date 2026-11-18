@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-  DataClass, DeliveryMode, NodeProfile, NodeTypeRegistry, PortSource, PortSources, PortTransport,
+  DataClass, DeliveryMode, NodeKind, NodeProfile, NodeTypeRegistry, PortSource, PortTransport,
   Profile, ProfileError,
 };
 
@@ -66,11 +66,11 @@ fn class_for(
   if is_fixed_data(data_type) || class == Some(DataClass::Command) {
     return EosEdgeClass::FixedSafety;
   }
-  if source.node_type == "isos.eos_hardware.camera@v0.2"
+  if source.kind == NodeKind::Camera
     && output == "frame"
-    && target.node_type == "isos.eos_interface.camera_gate@v0.2"
+    && target.node_type == "eos.interface.egress.vision_flow@v0.2"
     && input == "frame"
-    && class == Some(DataClass::Image)
+    && data_type == "image_frame@v0.2"
   {
     return EosEdgeClass::EosLocal;
   }
@@ -90,17 +90,10 @@ fn validate_qos(source: &PortSource, class: EosEdgeClass, path: &str) -> Result<
       )));
     }
   }
-  if let Some(rate) = source.frequency_hz {
-    if !rate.is_finite() || rate <= 0.0 {
-      return Err(ProfileError(format!(
-        "{path}/frequency_hz: frequency must be finite and positive"
-      )));
-    }
-    if class != EosEdgeClass::EosLocal {
-      return Err(ProfileError(format!(
-        "{path}/frequency_hz: user frequency cap is forbidden on a fixed or unrouted edge"
-      )));
-    }
+  if source.frequency_hz.is_some() {
+    return Err(ProfileError(format!(
+      "{path}/frequency_hz: authored edge frequency is forbidden; use destination input desired_rate_hz.max"
+    )));
   }
   Ok(())
 }
@@ -150,14 +143,7 @@ pub(crate) fn validate(
           ))
         })?;
       for (index, source) in sources.values().iter().enumerate() {
-        let path = pointer(
-          target,
-          input_name,
-          match sources {
-            PortSources::One(_) => None,
-            PortSources::Many(_) => Some(index),
-          },
-        );
+        let path = pointer(target, input_name, sources.is_many().then_some(index));
         if profile.node(&source.node).is_none()
           && (crate::external_bridge_input(target, target_type, input, input_name, &source.node)
             || (input.transport == Some(PortTransport::None)
@@ -175,6 +161,16 @@ pub(crate) fn validate(
             producer.node_type
           ))
         })?;
+        if matches!(
+          target.node_type.as_str(),
+          "eos.hardware.base.device@v0.2" | "eos.hardware.manipulator.device@v0.2"
+        ) && input_name == "command"
+          && (producer_type.core != "eos" || producer_type.layer != "dispatcher")
+        {
+          return Err(ProfileError(format!(
+            "{path}: hardware commands require an EOS Dispatcher source"
+          )));
+        }
         let output = producer_type
           .outputs
           .iter()
@@ -240,7 +236,7 @@ pub(crate) fn validate(
           transport: input_transport,
           class,
           priority: source.priority.unwrap_or(0),
-          frequency_hz: source.frequency_hz,
+          frequency_hz: sources.desired_rate_hz().and_then(|rate| rate.max),
         });
       }
     }

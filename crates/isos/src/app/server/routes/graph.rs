@@ -36,7 +36,7 @@ pub(crate) async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) 
           "revision":"",
           "graph":crate::domain::graph::starter::draft(&app.paths, &app.deployment)
               .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?,
-          "read_only":false,"diagnostics":[],"pool_name":pool_name,"missing_file":true
+          "read_only":false,"diagnostics":[],"warnings":[],"pool_name":pool_name,"missing_file":true
       }));
     }
     Err(error) => return Err(internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error)),
@@ -56,9 +56,11 @@ pub(crate) async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) 
   let diagnostics: Vec<_> = graph_contract::admission_diagnostic(&saved.value, Some(&catalog))
     .into_iter()
     .collect();
+  let warnings =
+    crate::domain::graph::edge_admission::missing_input_warnings(&saved.value, &catalog);
   ok(
     json!({"revision":saved.revision,"graph":saved.value,"pool_name":pool_name,"missing_file":false,
-    "read_only":!diagnostics.is_empty(),"diagnostics":diagnostics}),
+    "read_only":!diagnostics.is_empty(),"diagnostics":diagnostics,"warnings":warnings}),
   )
 }
 
@@ -76,8 +78,35 @@ pub(crate) async fn new_node_graph(State(app): State<Arc<App>>, headers: HeaderM
     "graph":crate::domain::graph::starter::draft(&app.paths, &app.deployment)
       .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?,
     "read_only":false,
-    "diagnostics":[]
+    "diagnostics":[],
+    "warnings":[]
   }))
+}
+
+/// Return a conversion draft fenced by the exact saved bytes. Saving it uses
+/// the normal graph-pool PUT revision fence, so concurrent edits cannot vanish.
+pub(crate) async fn convert_node_graph(
+  State(app): State<Arc<App>>,
+  headers: HeaderMap,
+  axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
+) -> ApiResult {
+  authorized(&app, &headers)?;
+  let expected = query
+    .get("revision")
+    .ok_or_else(|| err(StatusCode::BAD_REQUEST, "conversion requires revision"))?;
+  let bytes = fs::read(app.paths.node_graph_path(&app.deployment))
+    .map_err(|error| internal_err(StatusCode::NOT_FOUND, &error))?;
+  let graph = graph_contract::convert_020(&bytes, expected).map_err(|error| {
+    let status = if error.to_string().contains("revision changed") {
+      StatusCode::CONFLICT
+    } else {
+      StatusCode::UNPROCESSABLE_ENTITY
+    };
+    internal_err(status, &error)
+  })?;
+  ok(
+    json!({"revision":expected,"graph":graph,"pool_name":app.paths.bound_graph_name(&app.deployment)}),
+  )
 }
 
 #[cfg(test)]
@@ -149,7 +178,7 @@ pub(crate) fn apply_error(error: graph_apply::ApplyError) -> (StatusCode, Json<V
     graph_apply::ApplyError::OutcomeUncertain => diagnostic_failure(
       StatusCode::INTERNAL_SERVER_ERROR,
       "generated configuration publication is uncertain",
-      json!(crate::domain::graph::generated_v2::commit_uncertain()),
+      json!(crate::domain::graph::generated::commit_uncertain()),
     ),
   }
 }
@@ -234,7 +263,7 @@ pub(crate) async fn validate_node_graph_inner(
 }
 
 fn validate_node_graph_sync(app: &App, edit: NodeGraphEdit) -> ApiResult {
-  if edit.graph["version"] != "0.2.0" {
+  if edit.graph["version"] != "0.2.1" {
     return ok(json!({"valid":false,"diagnostics":[
       graph_contract::version_diagnostic(&edit.graph).expect("unsupported graph version")]}));
   }
@@ -244,9 +273,12 @@ fn validate_node_graph_sync(app: &App, edit: NodeGraphEdit) -> ApiResult {
     revision: graph_contract::revision(&bytes),
     graph: edit.graph,
     bytes,
+    warnings: Vec::new(),
   };
   match graph_apply::prepare(&app.paths, &app.deployment, &proposal) {
-    Ok(prepared) => ok(json!({"valid":true,"diagnostics":[],"edges":prepared.edges})),
+    Ok(prepared) => {
+      ok(json!({"valid":true,"diagnostics":[],"warnings":prepared.warnings,"edges":prepared.edges}))
+    }
     Err(diagnostic) => ok(json!({"valid":false,"diagnostics":[
       graph_apply::public_diagnostic(&diagnostic)]})),
   }
@@ -290,10 +322,12 @@ fn apply_node_graph_sync(app: &App, edit: NodeGraphEdit) -> ApiResult {
     let proposal = graph_apply::apply_pool(&app.paths, &app.deployment, &pool_name, expected)
       .map_err(apply_error)?;
     record(app, "graph", "Applied graph pool file");
-    return ok(json!({"revision":proposal.revision,"graph":proposal.graph,"pool_name":pool_name}));
+    return ok(
+      json!({"revision":proposal.revision,"graph":proposal.graph,"pool_name":pool_name,"warnings":proposal.warnings}),
+    );
   }
   let graph = edit.graph;
-  if graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.1" {
     let diagnostic = graph_contract::version_diagnostic(&graph).expect("unsupported graph version");
     return Err(diagnostic_failure(
       StatusCode::UNPROCESSABLE_ENTITY,
@@ -310,7 +344,7 @@ fn apply_node_graph_sync(app: &App, edit: NodeGraphEdit) -> ApiResult {
   let proposal =
     graph_apply::apply_new(&app.paths, &app.deployment, graph, expected).map_err(apply_error)?;
   record(app, "graph", "Applied node graph revision");
-  ok(json!({"revision":proposal.revision,"graph":proposal.graph}))
+  ok(json!({"revision":proposal.revision,"graph":proposal.graph,"warnings":proposal.warnings}))
 }
 
 #[cfg(test)]

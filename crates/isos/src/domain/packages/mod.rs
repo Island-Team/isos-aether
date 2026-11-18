@@ -1,6 +1,10 @@
 //! Verified local package store. Only explicit install changes the store.
 
 mod pin;
+mod replay;
+mod publication;
+pub mod updates;
+pub mod package_config;
 pub use pin::collect_pins;
 use crate::{
   app::auth,
@@ -17,11 +21,72 @@ use std::{
   io::{Read, Write},
   os::unix::fs::{MetadataExt, PermissionsExt},
   os::unix::net::UnixStream,
+  os::unix::process::CommandExt,
   path::{Component, Path, PathBuf},
-  process::Command,
+  process::{Command, Stdio},
+  sync::atomic::{AtomicBool, Ordering},
+  thread,
+  time::{Duration, Instant},
 };
 
 pub const CATALOG: &str = "https://www.os-island.com";
+
+/// Facts shown to the operator before fetching an archive. The approval digest
+/// binds the exact catalog identity and selected asset, not merely its name.
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadPreview {
+  pub id: String,
+  pub version: String,
+  pub publisher: String,
+  pub source_url: Option<String>,
+  pub url: String,
+  pub size_bytes: u64,
+  pub sha256: String,
+  pub trust: &'static str,
+  pub approval: String,
+}
+
+pub fn download_preview(release: &Release) -> Result<DownloadPreview> {
+  release.validate()?;
+  let asset = release.select_asset(&release::Platform::current())?;
+  let approval = digest(&canonical_json(&serde_json::json!({
+    "id": release.id,
+    "version": release.version,
+    "source_commit": release.source_commit,
+    "source_url": release.source_url,
+    "url": asset.url,
+    "size_bytes": asset.size_bytes,
+    "sha256": asset.sha256,
+  }))?);
+  Ok(DownloadPreview {
+    id: release.id.clone(),
+    version: release.version.clone(),
+    publisher: release.id.split('/').next().unwrap_or("").to_owned(),
+    source_url: release.source_url.clone(),
+    url: asset.url.clone(),
+    size_bytes: asset.size_bytes,
+    sha256: asset.sha256.clone(),
+    trust: "approved_catalog",
+    approval,
+  })
+}
+
+pub fn install_approved(paths: &Paths, release: &Release, approval: &str) -> Result<PathBuf> {
+  let preview = download_preview(release)?;
+  if approval != preview.approval {
+    return Err(failure(
+      &release.id,
+      &release.version,
+      "package_download_unapproved",
+      "approval",
+    ));
+  }
+  install_archive(paths, release, false, None)
+}
+
+pub fn install_local(paths: &Paths, release: &Release, source: &Path) -> Result<PathBuf> {
+  install_archive(paths, release, true, Some(source))
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Receipt {
@@ -31,6 +96,8 @@ pub struct Receipt {
   pub source_commit: Option<String>,
   pub asset_sha256: Option<String>,
   pub local_link: Option<PathBuf>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub source_checkout: Option<PathBuf>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub source_kind: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,6 +173,52 @@ pub struct VerifiedPackage {
   pub sidecar: Option<PathBuf>,
 }
 
+/// A package that publishes camera node-set profiles bounds camera source IDs.
+/// Packages without such profiles retain their own device discovery contract.
+pub fn camera_source_declared(
+  package: &VerifiedPackage,
+  node_type: &str,
+  service: &str,
+  device: &str,
+) -> bool {
+  let templates: Vec<_> = package
+    .release
+    .node_contributions
+    .as_ref()
+    .into_iter()
+    .flat_map(|contributions| &contributions.node_sets)
+    .flat_map(|set| &set.nodes)
+    .filter(|template| {
+      template.profile["node_type"] == node_type
+        && template.profile["adapter"]["settings"]["service_instance"].is_string()
+        && template.profile["adapter"]["settings"]["device_id"].is_string()
+    })
+    .collect();
+  templates.is_empty()
+    || templates.iter().any(|template| {
+      template.profile["adapter"]["settings"]["service_instance"] == service
+        && template.profile["adapter"]["settings"]["device_id"] == device
+    })
+}
+
+pub fn has_camera_sources(package: &VerifiedPackage, node_type: &str) -> bool {
+  package
+    .release
+    .node_contributions
+    .as_ref()
+    .is_some_and(|contributions| {
+      contributions
+        .node_sets
+        .iter()
+        .flat_map(|set| &set.nodes)
+        .any(|template| {
+          template.profile["node_type"] == node_type
+            && template.profile["adapter"]["settings"]["service_instance"].is_string()
+            && template.profile["adapter"]["settings"]["device_id"].is_string()
+        })
+    })
+}
+
 pub fn package_path(paths: &Paths, id: &str, version: &str) -> Result<PathBuf> {
   let (namespace, name) = validate_identity(id, version)?;
   Ok(
@@ -163,8 +276,12 @@ fn sidecar_bytes(release: &Release) -> Result<Option<Vec<u8>>> {
       canonical_json(&serde_json::json!({
           "package":{"id":release.id,"version":release.version},
           "node_types":contributions.node_types,
+          "libraries":contributions.libraries,
+          "port_routes":contributions.port_routes,
+          "bridge_adapters":contributions.bridge_adapters,
           "safety_adapters":contributions.safety_adapters,
           "adapter_families":contributions.adapter_families,
+          "adapters":release.adapters,
           "data_types":contributions.data_types,
       }))
     })
@@ -350,11 +467,11 @@ fn checked_manifest_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn validate_payload(root: &Path, release: &Release) -> Result<()> {
-  if is_published_mujoco_release(release) {
-    checked_file(root, "bin/eos-mujoco-sim", true)?;
-    checked_file(root, "assets/scene.xml", false)?;
-  }
+  package_config::validate_package_files(root, release)?;
   if let Some(contributions) = &release.node_contributions {
+    for service in &contributions.runtime_services {
+      crate::domain::launch::validate_service_payload(root, release, service)?;
+    }
     for process in &contributions.processes {
       crate::domain::launch::validate_payload(root, release, process)?;
     }
@@ -366,70 +483,6 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
     }
   }
   Ok(())
-}
-
-pub(crate) fn is_published_mujoco_release(release: &Release) -> bool {
-  let Ok(support) = crate::domain::version::bundled() else {
-    return false;
-  };
-  let Some(pin) = support.external_package(&release.id, &release.version) else {
-    return false;
-  };
-  release.id == "island/mujoco-sim"
-    && release.version == "0.1.1"
-    && release.source_commit == "04b65882cd11b0aff8ce56473164691dbd662196"
-    && release
-      .assets
-      .iter()
-      .any(|asset| asset.sha256 == pin.asset_sha256)
-}
-
-fn published_mujoco_release(
-  bytes: &[u8],
-  mut value: serde_json::Value,
-) -> Result<serde_json::Value> {
-  let support = crate::domain::version::bundled()?;
-  let pin = support
-    .external_package("island/mujoco-sim", "0.1.1")
-    .ok_or_else(|| anyhow::anyhow!("unsupported_package_contract"))?;
-  ensure!(
-    value["schema_version"] == 4
-      && value["id"] == "island/mujoco-sim"
-      && value["version"] == "0.1.1"
-      && value["source_commit"] == "04b65882cd11b0aff8ce56473164691dbd662196"
-      && value["assets"][0]["sha256"] == pin.asset_sha256
-      && digest(bytes) == pin.manifest_sha256,
-    "unsupported_package_contract"
-  );
-  value["contract"] = serde_json::json!(support.package_contract);
-  value["schema_version"] = serde_json::json!(support.package_schema);
-  let node_types = value["node_contributions"]["node_types"]
-    .as_array_mut()
-    .ok_or_else(|| anyhow::anyhow!("unsupported_package_contract"))?;
-  let mut current = node_types
-    .iter()
-    .find(|node| node["id"] == "eos.process.mujoco@v0.1")
-    .cloned()
-    .ok_or_else(|| anyhow::anyhow!("unsupported_package_contract"))?;
-  current["id"] = serde_json::json!("isos.eos_process.mujoco@v0.2");
-  current["core"] = serde_json::json!("isos");
-  current["layer"] = serde_json::json!("eos_process");
-  for direction in ["inputs", "outputs"] {
-    for port in current[direction].as_array_mut().into_iter().flatten() {
-      // This reviewed mapping applies only to the exact pinned published release above.
-      let contract = match port["data_type"].as_str() {
-        Some("status") => "mujoco-status",
-        Some("health") => "mujoco-health",
-        _ => return Err(anyhow::anyhow!("unsupported_package_contract")),
-      };
-      port["contract"] = serde_json::json!({"owner":"eos","id":contract,"version":"1.0"});
-    }
-  }
-  *node_types = vec![current];
-  value["node_contributions"]["processes"] = serde_json::json!([
-    {"node_type":"isos.eos_process.mujoco@v0.2","entrypoint":"bin/eos-mujoco-sim","lifecycle_adapter":"mujoco-v2","resources":[{"setting":"scene","kind":"scene","descriptor":"@isos-published-mujoco-scenes"}],"host_inputs":[{"name":"MUJOCO_ROOT","kind":"directory","required":true}]}
-  ]);
-  Ok(value)
 }
 
 /// Revalidate an exact schema-2 receipt and return only verified payload paths.
@@ -458,7 +511,7 @@ pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage>
     || receipt.version != version
     || !matches!(
       receipt.source_kind.as_deref(),
-      Some("approved_catalog" | "local_candidate" | "local_link")
+      Some("approved_catalog" | "local_candidate" | "local_link" | "local_source")
     )
   {
     return Err(failure(id, version, "package_invalid_manifest", "manifest"));
@@ -494,6 +547,9 @@ pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage>
   let asset = release
     .select_asset(&release::Platform::current())
     .map_err(|_| failure(id, version, "package_platform_mismatch", "asset"))?;
+  if (receipt.source_kind.as_deref() == Some("local_source")) != receipt.source_checkout.is_some() {
+    return Err(failure(id, version, "package_invalid_manifest", "manifest"));
+  }
   if receipt.local_link.is_some() {
     if receipt.source_kind.as_deref() != Some("local_link") || receipt.asset_sha256.is_some() {
       return Err(failure(id, version, "package_invalid_manifest", "manifest"));
@@ -583,6 +639,16 @@ pub fn verify_declared_adapter_libraries(root: &Path, release: &Release) -> Resu
       )
     })?;
   }
+  if let Some(contributions) = &release.node_contributions {
+    for library in &contributions.libraries {
+      verify_adapter_file(&root, &library.path, &library.sha256).with_context(|| {
+        format!(
+          "node library {} in {}@{}",
+          library.path, release.id, release.version
+        )
+      })?;
+    }
+  }
   Ok(())
 }
 
@@ -656,7 +722,11 @@ fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>> {
     .arg(url)
     .output()
     .with_context(|| "curl is required to fetch releases")?;
-  ensure!(result.status.success(), "package download failed");
+  ensure!(
+    result.status.success(),
+    "package download failed for {url}: {}",
+    String::from_utf8_lossy(&result.stderr).trim()
+  );
   Ok(result.stdout)
 }
 
@@ -675,19 +745,23 @@ pub fn catalog_release(id: &str, version: &str) -> Result<Release> {
     "catalog release lacks the current IsOS package contract; use a local reviewed manifest",
   )?;
   release.validate()?;
+  ensure!(release.id == id, "catalog returned a different package ID");
+  ensure!(
+    version == "latest" || release.version == version,
+    "catalog returned a different package version"
+  );
   Ok(release)
 }
 
 pub fn read_manifest(path: &Path) -> Result<Release> {
   let bytes = read_bounded(path, 4_194_304)?;
-  let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
-  if value["schema_version"] == 4 {
-    value = published_mujoco_release(&bytes, value)?;
-  }
+  let value: serde_json::Value = serde_json::from_slice(&bytes)?;
   let support = crate::domain::version::bundled()?;
   ensure!(
     value["contract"] == support.package_contract
-      && value["schema_version"] == support.package_schema,
+      && (value["schema_version"] == support.package_schema
+        || value["schema_version"] == "0.2.0"
+        || value["schema_version"] == "0.1.0"),
     "unsupported_package_contract"
   );
   let release: Release = serde_json::from_value(value)?;
@@ -698,62 +772,6 @@ pub fn read_manifest(path: &Path) -> Result<Release> {
 #[cfg(test)]
 mod contract_tests {
   use super::*;
-
-  #[test]
-  fn pinned_published_mujoco_release_is_readable_but_edits_are_rejected() {
-    let temp = tempfile::tempdir().unwrap();
-    let manifest = temp.path().join("release.json");
-    let published = include_bytes!("../../../tests/fixtures/packages/mujoco_published_0_1_1.json");
-    fs::write(&manifest, published).unwrap();
-    let release = read_manifest(&manifest).unwrap();
-    assert!(is_published_mujoco_release(&release));
-    assert_eq!(release.schema_version, "0.1.0");
-    let sidecar: serde_json::Value =
-      serde_json::from_slice(&sidecar_bytes(&release).unwrap().unwrap()).unwrap();
-    let current: Vec<_> = sidecar["node_types"]
-      .as_array()
-      .unwrap()
-      .iter()
-      .filter(|node| node["id"] == "isos.eos_process.mujoco@v0.2")
-      .collect();
-    assert_eq!(current.len(), 1);
-    let payload = temp.path().join("payload");
-    fs::create_dir_all(payload.join("bin")).unwrap();
-    fs::create_dir_all(payload.join("assets")).unwrap();
-    fs::create_dir_all(payload.join("assets/scenes/navigation")).unwrap();
-    fs::write(payload.join("assets/scene.xml"), b"<mujoco/>").unwrap();
-    fs::write(
-      payload.join("assets/scenes/navigation/scene.xml"),
-      b"<mujoco model='navigation'/>",
-    )
-    .unwrap();
-    assert!(validate_payload(&payload, &release).is_err());
-    let binary = payload.join("bin/eos-mujoco-sim");
-    fs::write(&binary, b"#!/bin/sh\n").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(validate_payload(&payload, &release).is_ok());
-    let process = &release.node_contributions.as_ref().unwrap().processes[0];
-    let resources = crate::domain::launch::option_resources(&payload, &release, process).unwrap();
-    assert_eq!(
-      resources
-        .iter()
-        .map(|item| item["id"].as_str().unwrap())
-        .collect::<Vec<_>>(),
-      ["pick-place", "navigation"]
-    );
-    fs::remove_file(payload.join("assets/scenes/navigation/scene.xml")).unwrap();
-    assert!(validate_payload(&payload, &release).is_err());
-    let mut edited = published.to_vec();
-    let index = edited.iter().position(|byte| *byte == b'M').unwrap();
-    edited[index] = b'X';
-    fs::write(&manifest, edited).unwrap();
-    assert!(
-      read_manifest(&manifest)
-        .unwrap_err()
-        .to_string()
-        .contains("unsupported_package_contract")
-    );
-  }
 
   #[test]
   fn old_numeric_schema_and_legacy_bundle_fail_before_publication() {
@@ -920,7 +938,7 @@ fn unpack_archive(archive: &Path, destination: &Path) -> Result<()> {
   Ok(())
 }
 
-pub fn install(
+fn install_archive(
   paths: &Paths,
   release: &Release,
   allow_unapproved: bool,
@@ -1018,6 +1036,7 @@ pub fn install(
           .to_ascii_lowercase(),
       ),
       local_link: None,
+      source_checkout: None,
       source_kind: Some(
         if source.is_some() {
           "local_candidate"
@@ -1050,44 +1069,1201 @@ pub fn install(
   Ok(target)
 }
 
+fn run_source_build(
+  command: &mut Command,
+  cancel: Option<&AtomicBool>,
+) -> Result<std::process::ExitStatus> {
+  let Some(cancel) = cancel else {
+    return command
+      .status()
+      .context("failed to execute package build.sh");
+  };
+  command.process_group(0);
+  let mut child = command
+    .spawn()
+    .context("failed to execute package build.sh")?;
+  loop {
+    if cancel.load(Ordering::SeqCst) {
+      let group = child.id() as i32;
+      unsafe {
+        libc::killpg(group, libc::SIGTERM);
+      }
+      let deadline = Instant::now() + Duration::from_millis(500);
+      while Instant::now() < deadline {
+        if child.try_wait()?.is_some() {
+          break;
+        }
+        thread::sleep(Duration::from_millis(20));
+      }
+      unsafe {
+        libc::killpg(group, libc::SIGKILL);
+      }
+      let _ = child.wait();
+      anyhow::bail!("source build cancelled");
+    }
+    if let Some(status) = child.try_wait()? {
+      return Ok(status);
+    }
+    thread::sleep(Duration::from_millis(20));
+  }
+}
+
 /// Build a local checkout into a candidate archive, then use the ordinary verifier and publisher.
 pub fn install_source(
   paths: &Paths,
   source: &Path,
   expected_id: Option<&str>,
+  expected_version: Option<&str>,
 ) -> Result<(Release, PathBuf)> {
+  install_source_with_cancel(paths, source, expected_id, expected_version, None)
+}
+
+fn install_source_with_cancel(
+  paths: &Paths,
+  source: &Path,
+  expected_id: Option<&str>,
+  expected_version: Option<&str>,
+  cancel: Option<&AtomicBool>,
+) -> Result<(Release, PathBuf)> {
+  ensure!(
+    !cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)),
+    "source build cancelled"
+  );
   ensure!(
     source.is_absolute(),
     "--source must be an absolute checkout path"
   );
   let source = checked_root(source)?;
+  let (before_commit, before_clean) = git_identity(&source)?;
+  ensure!(
+    before_clean,
+    "source checkout has uncommitted or untracked files"
+  );
   let script = checked_file(&source, "build.sh", true)?;
   let staging = tempfile::Builder::new()
     .prefix("isos-source-build-")
     .tempdir()?;
-  let status = Command::new(&script)
-    .arg("--output")
-    .arg(staging.path())
-    .current_dir(&source)
-    .status()
-    .context("failed to execute package build.sh")?;
+  let mut command = Command::new(&script);
+  command.arg("--output").arg(staging.path());
+  if let Some(version) = expected_version {
+    command.arg("--version").arg(version);
+  }
+  command.current_dir(&source);
+  let status = run_source_build(&mut command, cancel)?;
   ensure!(status.success(), "package build.sh failed: {status}");
+  ensure!(
+    !cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)),
+    "source build cancelled"
+  );
   let manifest = checked_file(staging.path(), "release.json", false)?;
-  let archive = checked_file(staging.path(), "asset.tar.gz", false)?;
   let release = read_manifest(&manifest)?;
+  let archive = checked_file(staging.path(), &selected_asset_name(&release)?, false)?;
   if let Some(id) = expected_id {
     ensure!(
       release.id == id,
       "source package ID differs from requested ID"
     );
   }
-  let path = install(paths, &release, true, Some(&archive))?;
+  if let Some(version) = expected_version {
+    ensure!(
+      release.version == version,
+      "source package version differs from requested version"
+    );
+  }
+  let (after_commit, after_clean) = git_identity(&source)?;
+  ensure!(
+    after_clean && before_commit == after_commit,
+    "source checkout changed during build"
+  );
+  ensure!(
+    release.source_commit == before_commit,
+    "manifest source_commit differs from source HEAD"
+  );
+  ensure!(
+    !cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)),
+    "source build cancelled"
+  );
+  let path = install_source_archive(paths, &release, &archive, &source)?;
   Ok((release, path))
+}
+
+/// Rebuild a source-marked package before admission. The old candidate remains
+/// usable until the replacement has passed all archive and payload checks.
+pub fn refresh_graph_sources(paths: &Paths, graph: &serde_json::Value) -> Result<()> {
+  refresh_graph_sources_inner(paths, graph, None)
+}
+
+pub fn refresh_graph_sources_cancellable(
+  paths: &Paths,
+  graph: &serde_json::Value,
+  cancel: &AtomicBool,
+) -> Result<()> {
+  refresh_graph_sources_inner(paths, graph, Some(cancel))
+}
+
+fn refresh_graph_sources_inner(
+  paths: &Paths,
+  graph: &serde_json::Value,
+  cancel: Option<&AtomicBool>,
+) -> Result<()> {
+  for pin in collect_pins(graph)? {
+    ensure!(
+      !cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)),
+      "source build cancelled"
+    );
+    if !package_path(paths, &pin.id, &pin.version)?
+      .join("receipt.json")
+      .exists()
+    {
+      continue;
+    }
+    let receipt = read_receipt(paths, &pin.id, &pin.version)?;
+    if let Some(source) = receipt.source_checkout {
+      let source = checked_root(&source)?;
+      let (source_commit, clean) = git_identity(&source)?;
+      ensure!(clean, "source checkout has uncommitted or untracked files");
+      if receipt.source_kind.as_deref() == Some("local_source")
+        && receipt.source_commit.as_deref() == Some(source_commit.as_str())
+        && verify(paths, &pin.id, &pin.version).is_ok()
+      {
+        let (after_commit, after_clean) = git_identity(&source)?;
+        ensure!(
+          after_clean && after_commit == source_commit,
+          "source checkout changed during cache verification"
+        );
+        tracing::info!(
+          event_code = "source_build_cached",
+          "Using verified local source package {}@{} at {}",
+          pin.id,
+          pin.version,
+          source_commit
+        );
+        continue;
+      }
+      tracing::info!(
+        event_code = "source_build_started",
+        "Building local source package {}@{}",
+        pin.id,
+        pin.version
+      );
+      if let Err(error) =
+        install_source_with_cancel(paths, &source, Some(&pin.id), Some(&pin.version), cancel)
+      {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+          tracing::warn!(
+            event_code = "source_build_cancelled",
+            "Local source package build cancelled: {}@{}",
+            pin.id,
+            pin.version
+          );
+        } else {
+          tracing::warn!(
+            event_code = "source_build_failed",
+            "Local source package build failed: {}@{}: {error:#}",
+            pin.id,
+            pin.version
+          );
+        }
+        return Err(error);
+      }
+      tracing::info!(
+        event_code = "source_build_completed",
+        "Local source package ready: {}@{}",
+        pin.id,
+        pin.version
+      );
+    }
+  }
+  Ok(())
+}
+
+fn read_receipt(paths: &Paths, id: &str, version: &str) -> Result<Receipt> {
+  let path = package_path(paths, id, version)?.join("receipt.json");
+  Ok(serde_json::from_slice(&read_bounded(&path, 65_536)?)?)
+}
+
+fn install_source_archive(
+  paths: &Paths,
+  release: &Release,
+  archive: &Path,
+  source: &Path,
+) -> Result<PathBuf> {
+  let target = package_path(paths, &release.id, &release.version)?;
+  if target.exists() {
+    let existing = read_receipt(paths, &release.id, &release.version)?;
+    ensure!(
+      matches!(
+        existing.source_kind.as_deref(),
+        Some("local_candidate" | "local_source")
+      ),
+      "source build cannot replace a published or linked package"
+    );
+  }
+  fs::create_dir_all(target.parent().unwrap())?;
+  let temporary = tempfile::Builder::new()
+    .prefix(".source-stage-")
+    .tempdir_in(target.parent().unwrap())?;
+  let isolated = Paths {
+    config: temporary.path().join("config"),
+    data: temporary.path().join("data"),
+    runtime: temporary.path().join("runtime"),
+  };
+  let built = install_local(&isolated, release, archive)?;
+  let mut receipt = read_receipt(&isolated, &release.id, &release.version)?;
+  receipt.source_kind = Some("local_source".into());
+  receipt.source_checkout = Some(source.to_owned());
+  config::atomic_write(&built.join("receipt.json"), &canonical_json(&receipt)?)?;
+  verify(&isolated, &release.id, &release.version)?;
+  if !target.exists() {
+    fs::rename(&built, &target)?;
+  } else {
+    let backup = target
+      .parent()
+      .unwrap()
+      .join(format!(".{}-source-backup", release.version));
+    ensure!(
+      !backup.exists(),
+      "previous source replacement needs recovery"
+    );
+    fs::rename(&target, &backup)?;
+    if let Err(error) = fs::rename(&built, &target) {
+      fs::rename(&backup, &target)?;
+      return Err(error.into());
+    }
+    fs::remove_dir_all(&backup)?;
+  }
+  verify(paths, &release.id, &release.version)?;
+  Ok(target)
+}
+
+fn git_identity(source: &Path) -> Result<(String, bool)> {
+  let top = Command::new("git")
+    .arg("-C")
+    .arg(source)
+    .args(["rev-parse", "--show-toplevel"])
+    .output()?;
+  ensure!(top.status.success(), "source is not a Git checkout");
+  let top = PathBuf::from(String::from_utf8(top.stdout)?.trim());
+  ensure!(
+    fs::canonicalize(top)? == fs::canonicalize(source)?,
+    "--source must be the Git checkout root"
+  );
+  let head = Command::new("git")
+    .arg("-C")
+    .arg(source)
+    .args(["rev-parse", "HEAD"])
+    .output()?;
+  ensure!(head.status.success(), "source is not a Git checkout");
+  let commit = String::from_utf8(head.stdout)?.trim().to_owned();
+  let status = Command::new("git")
+    .arg("-C")
+    .arg(source)
+    .args(["status", "--porcelain", "--untracked-files=normal"])
+    .output()?;
+  ensure!(
+    status.status.success(),
+    "cannot inspect source checkout status"
+  );
+  Ok((commit, status.stdout.is_empty()))
+}
+
+fn selected_asset_name(release: &Release) -> Result<String> {
+  let asset = release.select_asset(&release::Platform::current())?;
+  let name = asset
+    .name
+    .as_deref()
+    .or_else(|| asset.url.rsplit('/').next())
+    .ok_or_else(|| anyhow::anyhow!("selected asset has no filename"))?;
+  ensure!(
+    name.ends_with(".tar.gz")
+      && name.len() <= 200
+      && name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+      && asset.url.ends_with(&format!("/{name}")),
+    "selected asset filename is invalid or differs from URL"
+  );
+  Ok(name.to_owned())
+}
+
+fn checked_patch_version(version: &str) -> Result<u32> {
+  let patch = version
+    .strip_prefix("0.2.")
+    .ok_or_else(|| anyhow::anyhow!("checked package releases require version 0.2.x"))?;
+  ensure!(
+    !patch.is_empty()
+      && (patch == "0" || !patch.starts_with('0'))
+      && patch.bytes().all(|byte| byte.is_ascii_digit()),
+    "checked package releases require canonical version 0.2.x"
+  );
+  Ok(patch.parse()?)
+}
+
+fn checked_release_repository(release: &Release) -> Result<String> {
+  let source = release
+    .source_url
+    .as_deref()
+    .context("checked release requires source_url")?;
+  let repo = source
+    .strip_prefix("https://github.com/")
+    .unwrap_or("")
+    .trim_end_matches(".git")
+    .trim_end_matches('/');
+  ensure!(
+    repo.split('/').count() == 2
+      && repo.split('/').all(|part| {
+        !part.is_empty()
+          && part
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+      }),
+    "checked release source_url must identify one GitHub repository"
+  );
+  let expected_url = format!(
+    "https://github.com/{repo}/releases/tag/v{}",
+    release.version
+  );
+  ensure!(
+    release.release_url.as_deref() == Some(expected_url.as_str()),
+    "checked release_url must use its exact immutable version tag"
+  );
+  Ok(repo.to_owned())
+}
+
+/// The package repository owns a contiguous v0.2.x release sequence. A
+/// catalog record at the exact version also makes the candidate immutable.
+fn checked_release_sequence(
+  release: &Release,
+  github_tags: &[String],
+  catalog_status: u16,
+) -> Result<()> {
+  let candidate = checked_patch_version(&release.version)?;
+  let mut latest = None;
+  for tag in github_tags {
+    if let Some(version) = tag.strip_prefix('v')
+      && let Ok(patch) = checked_patch_version(version)
+      && patch != candidate
+    {
+      latest = Some(latest.map_or(patch, |previous: u32| previous.max(patch)));
+    }
+  }
+  let expected = latest.map_or(Ok(0), |patch: u32| {
+    patch
+      .checked_add(1)
+      .context("v0.2.x patch sequence exhausted")
+  })?;
+  ensure!(
+    candidate == expected,
+    "checked release must be the next v0.2.x patch: expected 0.2.{expected}"
+  );
+  ensure!(
+    catalog_status == 404,
+    "Island-port release lookup did not prove this exact version is unused (HTTP {catalog_status})"
+  );
+  Ok(())
+}
+
+/// A published release can finish a missing catalog submission after newer
+/// releases appear. Its exact assets are checked again by publish_checked.
+fn checked_catalog_recovery_status(published_exact: bool, catalog_status: u16) -> Result<()> {
+  ensure!(
+    catalog_status == 404,
+    "Island-port release lookup did not prove this exact version is unused (HTTP {catalog_status})"
+  );
+  ensure!(
+    published_exact,
+    "historical catalog recovery requires a published GitHub Release"
+  );
+  Ok(())
+}
+
+fn checked_git_tag(release: &Release, repo: &str, gh: &str) -> Result<()> {
+  let tag = format!("v{}", release.version);
+  let reference = Command::new(gh)
+    .args(["api", &format!("repos/{repo}/git/ref/tags/{tag}")])
+    .output()
+    .context("inspect candidate Git tag")?;
+  ensure!(reference.status.success(), "candidate Git tag is missing");
+  let reference: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+  let mut sha = reference["object"]["sha"]
+    .as_str()
+    .context("Git tag target SHA missing")?
+    .to_owned();
+  if reference["object"]["type"] == "tag" {
+    let annotated = Command::new(gh)
+      .args(["api", &format!("repos/{repo}/git/tags/{sha}")])
+      .output()
+      .context("inspect annotated Git tag")?;
+    ensure!(
+      annotated.status.success(),
+      "cannot inspect annotated Git tag"
+    );
+    let object: serde_json::Value = serde_json::from_slice(&annotated.stdout)?;
+    ensure!(
+      object["object"]["type"] == "commit",
+      "tag does not target a commit"
+    );
+    sha = object["object"]["sha"]
+      .as_str()
+      .context("annotated Git tag commit SHA missing")?
+      .to_owned();
+  } else {
+    ensure!(
+      reference["object"]["type"] == "commit",
+      "tag does not target a commit"
+    );
+  }
+  ensure!(
+    sha == release.source_commit,
+    "immutable tag differs from checked source_commit"
+  );
+  Ok(())
+}
+
+/// Read-only publication preflight. It never creates a tag, release, asset,
+/// catalog submission, or package record.
+fn checked_release_preflight(release: &Release, gh: &str) -> Result<bool> {
+  let repo = checked_release_repository(release)?;
+  let listing = Command::new(gh)
+    .args([
+      "release",
+      "list",
+      "--repo",
+      &repo,
+      "--limit",
+      "1000",
+      "--json",
+      "tagName,isDraft",
+    ])
+    .output()
+    .context("inspect GitHub releases")?;
+  ensure!(listing.status.success(), "cannot inspect GitHub releases");
+  let entries: Vec<serde_json::Value> = serde_json::from_slice(&listing.stdout)?;
+  ensure!(entries.len() < 1000, "GitHub release list may be truncated");
+  let tags: Vec<String> = entries
+    .iter()
+    .map(|entry| entry["tagName"].as_str().map(str::to_owned))
+    .collect::<Option<_>>()
+    .context("GitHub release list has a missing tag")?;
+  let published_exact = entries
+    .iter()
+    .any(|entry| entry["tagName"] == format!("v{}", release.version) && entry["isDraft"] == false);
+  checked_git_tag(release, &repo, gh)?;
+  let (namespace, name) = release.id.split_once('/').context("invalid package ID")?;
+  let url = format!(
+    "{CATALOG}/api/packages/v1/packages/{namespace}/{name}/releases/{}",
+    release.version
+  );
+  let response = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(10))
+    .redirect(reqwest::redirect::Policy::none())
+    .build()?
+    .get(url)
+    .send()
+    .context("inspect Island-port release")?;
+  if response.status().as_u16() == 200 {
+    ensure!(
+      published_exact,
+      "cataloged package has no published exact GitHub Release"
+    );
+    let body: serde_json::Value = response
+      .json()
+      .context("invalid existing Island-port record")?;
+    ensure!(
+      body["data"]["manifest"] == serde_json::to_value(release)?,
+      "existing Island-port record differs from checked release"
+    );
+    return Ok(true);
+  }
+  if published_exact {
+    checked_catalog_recovery_status(true, response.status().as_u16())?;
+  } else {
+    checked_release_sequence(release, &tags, response.status().as_u16())?;
+  }
+  Ok(false)
+}
+
+/// Probe verified native libraries in a separate EOS process. Loading a
+/// candidate library in the manager would execute untrusted constructors in
+/// the manager address space, even if no node instance is created.
+fn probe_native_adapters(paths: &Paths, release: &Release) -> Result<&'static str> {
+  let native_libraries: BTreeSet<&str> = release
+    .node_contributions
+    .as_ref()
+    .into_iter()
+    .flat_map(|contributions| &contributions.node_types)
+    .filter(|node| node["implementation"]["kind"] == "native_plugin")
+    .filter_map(|node| node["implementation"]["library"].as_str())
+    .collect();
+  if release.adapters.is_empty() && native_libraries.is_empty() {
+    return Ok("not_applicable");
+  }
+  let binary = if let Some(directory) = std::env::var_os("ISOS_AETHER_BIN_DIR") {
+    let directory = PathBuf::from(directory);
+    ensure!(
+      directory.is_absolute(),
+      "ISOS_AETHER_BIN_DIR must be absolute"
+    );
+    directory.join("aether-runtime")
+  } else {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/aether-runtime")
+  };
+  ensure!(
+    fs::metadata(&binary)
+      .is_ok_and(|metadata| { metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 }),
+    "EOS native ABI probe is unavailable: {}",
+    binary.display()
+  );
+  let verified = verify(paths, &release.id, &release.version)?;
+  let mut candidates = BTreeSet::new();
+  for adapter in &release.adapters {
+    let (library, _) = verify_adapter_file(&verified.root, &adapter.library, &adapter.sha256)?;
+    candidates.insert(library);
+  }
+  if let Some(contributions) = &release.node_contributions {
+    for name in native_libraries {
+      let library = contributions
+        .libraries
+        .iter()
+        .find(|library| library.path == name)
+        .with_context(|| format!("native node library {name} is undeclared"))?;
+      let (library, _) = verify_adapter_file(&verified.root, &library.path, &library.sha256)?;
+      candidates.insert(library);
+    }
+  }
+  for library in candidates {
+    let mut child = Command::new(&binary)
+      .arg("--probe-adapter")
+      .arg(&library)
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .spawn()
+      .with_context(|| format!("EOS adapter probe failed for {}", library.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      if child.try_wait()?.is_some() {
+        break;
+      }
+      if Instant::now() >= deadline {
+        let _ = child.kill();
+        let _ = child.wait();
+        anyhow::bail!("EOS adapter probe timed out for {}", library.display());
+      }
+      thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output()?;
+    ensure!(
+      output.status.success(),
+      "EOS adapter probe rejected {}: {}",
+      library.display(),
+      String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+      serde_json::from_slice(&output.stdout).context("EOS adapter probe returned invalid JSON")?;
+    let expected_abi = if release.schema_version == "0.2.1" {
+      "isos_node_v2"
+    } else {
+      "isos_node_v1"
+    };
+    ensure!(
+      report["ok"] == true && report["abi"] == expected_abi,
+      "EOS adapter probe returned incomplete proof for {}",
+      library.display()
+    );
+  }
+  Ok("passed")
+}
+
+/// Produce immutable candidate bytes and a local verification report. Runtime
+/// qualification is deliberately fail-closed until the owner replay can prove
+/// readiness, every declared interface, and Stop in this isolated deployment.
+pub fn check_source(
+  source: &Path,
+  expected_version: &str,
+  output: &Path,
+  graphs: &[PathBuf],
+  package_config_file: Option<&Path>,
+) -> Result<serde_json::Value> {
+  ensure!(
+    source.is_absolute() && output.is_absolute(),
+    "--source and --output must be absolute paths"
+  );
+  ensure!(
+    !output.exists() || fs::read_dir(output)?.next().is_none(),
+    "check output directory must be empty"
+  );
+  let graphs: Vec<PathBuf> = graphs
+    .iter()
+    .map(fs::canonicalize)
+    .collect::<std::io::Result<_>>()?;
+  let package_config_file = package_config_file.map(fs::canonicalize).transpose()?;
+  let source = checked_root(source)?;
+  checked_patch_version(expected_version)?;
+  let script = checked_file(&source, "build.sh", true)?;
+  let (source_commit, clean) = git_identity(&source)?;
+  ensure!(clean, "source checkout has uncommitted or untracked files");
+  fs::create_dir_all(output)?;
+  let log = output.join("build.log");
+  let command_output = Command::new(script)
+    .arg("--output")
+    .arg(output)
+    .arg("--version")
+    .arg(expected_version)
+    .current_dir(&source)
+    .output()
+    .context("failed to execute package build.sh")?;
+  let mut output_bytes = command_output.stdout;
+  output_bytes.extend_from_slice(&command_output.stderr);
+  config::atomic_write(&log, &output_bytes)?;
+  ensure!(
+    command_output.status.success(),
+    "package build failed; see {}",
+    log.display()
+  );
+  let manifest = checked_file(output, "release.json", false)?;
+  let release = read_manifest(&manifest)?;
+  let archive = checked_file(output, &selected_asset_name(&release)?, false)?;
+  ensure!(
+    release.version == expected_version,
+    "built release version differs from --version"
+  );
+  checked_patch_version(&release.version)?;
+  let (after_commit, after_clean) = git_identity(&source)?;
+  ensure!(
+    after_clean && after_commit == source_commit,
+    "source checkout changed during build"
+  );
+  ensure!(
+    source_commit == release.source_commit,
+    "manifest source_commit differs from source HEAD"
+  );
+  let store = output.join("isolated-store");
+  // Unix-domain socket names have a small kernel limit. Keep the isolated
+  // service runtime short even when the caller chooses a deep evidence path.
+  let runtime_dir = tempfile::Builder::new().prefix("isq-").tempdir()?;
+  let isolated = Paths {
+    config: store.join("config"),
+    data: store.join("data"),
+    runtime: runtime_dir.path().to_path_buf(),
+  };
+  let installed = install_local(&isolated, &release, &archive)?;
+  verify(&isolated, &release.id, &release.version)?;
+  let config_sha256 = if release.schema_version == "0.2.1" {
+    let file = package_config_file
+      .as_deref()
+      .context("schema 0.2.1 check requires --package-config")?;
+    let source = fs::read_to_string(file)?;
+    let selected = replay::selected_service_instances(&graphs, &release)?;
+    let declared = release
+      .node_contributions
+      .as_ref()
+      .context("release has no node contributions")?
+      .runtime_services
+      .iter()
+      .map(|service| service.config_service_type.as_str())
+      .collect::<std::collections::BTreeSet<_>>();
+    let covered = selected
+      .iter()
+      .map(String::as_str)
+      .collect::<std::collections::BTreeSet<_>>();
+    ensure!(
+      covered == declared,
+      "candidate graphs must cover every declared runtime service"
+    );
+    prepare_candidate_config(&isolated, &release, &graphs, file)?;
+    Some(digest(source.as_bytes()))
+  } else {
+    ensure!(
+      package_config_file.is_none(),
+      "legacy package check does not accept --package-config"
+    );
+    None
+  };
+  let owner_validation = if graphs.is_empty() {
+    "not_requested".to_owned()
+  } else {
+    let mut outcome = "passed".to_owned();
+    for (index, graph) in graphs.iter().enumerate() {
+      let value = crate::runtime::process::normalize_source(&fs::read_to_string(graph)?)?;
+      if let Err(error) = crate::runtime::process::validate_value(&isolated, &value) {
+        outcome = format!("failed: {error:#}");
+        break;
+      }
+      if release.schema_version == "0.2.1" {
+        let apply = crate::domain::graph::graph_apply::apply_new(
+          &isolated,
+          &replay::qualification_name(&value)?,
+          value,
+          "",
+        );
+        match apply {
+          Ok(applied) => {
+            let path = output.join(format!("graph-{index}/apply.json"));
+            config::atomic_write(
+              &path,
+              &serde_json::to_vec_pretty(
+                &serde_json::json!({"revision":applied.revision,"applied":true}),
+              )?,
+            )?;
+          }
+          Err(error) => {
+            outcome = format!("failed Apply: {error:?}");
+            break;
+          }
+        }
+      }
+    }
+    outcome
+  };
+  let preview = download_preview(&release)?;
+  let native_abi = match probe_native_adapters(&isolated, &release) {
+    Ok(status) => status.to_owned(),
+    Err(error) => format!("failed: {error:#}"),
+  };
+  let managed_replay = if owner_validation == "passed" {
+    let mut outcome = "passed".to_owned();
+    for (index, graph) in graphs.iter().enumerate() {
+      let replay_output = output.join(format!("graph-{index}"));
+      if let Err(error) = replay::managed_replay(&isolated, &release, graph, &replay_output) {
+        outcome = format!("failed: {error:#}");
+        break;
+      }
+    }
+    outcome
+  } else {
+    "not_admitted".to_owned()
+  };
+  let qualified = matches!(native_abi.as_str(), "passed" | "not_applicable")
+    && owner_validation == "passed"
+    && managed_replay == "passed";
+  let qualification_sha256 = if qualified {
+    ensure!(
+      !graphs.is_empty(),
+      "qualified package check requires candidate graphs"
+    );
+    let evidence_hashes = (0..graphs.len())
+      .map(|index| payload_digest(&output.join(format!("graph-{index}/managed-replay")), false))
+      .collect::<Result<Vec<_>>>()?;
+    let attestation = serde_json::json!({
+      "schema_version": 1,
+      "contract": "isos.package-qualification@v1",
+      "id": release.id,
+      "version": release.version,
+      "source_commit": source_commit,
+      "manifest_sha256": digest(&fs::read(&manifest)?),
+      "asset_sha256": digest(&fs::read(&archive)?),
+      "graph_sha256": graphs.iter().map(|graph| fs::read(graph).map(|bytes| digest(&bytes))).collect::<std::io::Result<Vec<_>>>()?,
+      "package_config_sha256": config_sha256,
+      "replay_evidence_sha256": evidence_hashes,
+      "isos_version": env!("CARGO_PKG_VERSION"),
+      "isos_build_sha256": digest(&fs::read(std::env::current_exe()?)?),
+      "eos_profile_sha256": digest(&fs::read(crate::runtime::process::core_bins::resolve("aether-profile")?)?),
+      "eos_runtime_sha256": digest(&fs::read(crate::runtime::process::core_bins::resolve("aether-runtime")?)?),
+      "static_verification": "passed",
+      "native_abi": native_abi,
+      "owner_validation": owner_validation,
+      "managed_replay": managed_replay
+    });
+    let bytes = canonical_json(&attestation)?;
+    config::atomic_write(&output.join("qualification.json"), &bytes)?;
+    Some(digest(&bytes))
+  } else {
+    None
+  };
+  let result = serde_json::json!({
+    "schema_version": 1,
+    "id": release.id,
+    "version": release.version,
+    "source": source,
+    "graphs": graphs,
+    "package_config": package_config_file,
+    "package_config_sha256": config_sha256,
+    "source_commit": source_commit,
+    "manifest_sha256": digest(&fs::read(&manifest)?),
+    "asset_sha256": digest(&fs::read(&archive)?),
+    "asset_name": archive.file_name().and_then(|name| name.to_str()),
+    "approval": preview.approval,
+    "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+    "isos_version": env!("CARGO_PKG_VERSION"),
+    "static_verification": "passed",
+    "native_abi": native_abi,
+    "publication_preflight": "deferred_to_release",
+    "owner_validation": owner_validation,
+    "isolated_install": installed,
+    "managed_replay": managed_replay,
+    "qualification_sha256": qualification_sha256,
+    "qualified": qualified
+  });
+  config::atomic_write(&output.join("check.json"), &canonical_json(&result)?)?;
+  Ok(result)
+}
+
+pub(super) fn prepare_candidate_config(
+  paths: &Paths,
+  release: &Release,
+  graphs: &[PathBuf],
+  file: &Path,
+) -> Result<()> {
+  let source = fs::read_to_string(file)?;
+  let selected = replay::selected_service_instances(graphs, release)?;
+  for graph in graphs {
+    let value = crate::runtime::process::normalize_source(&fs::read_to_string(graph)?)?;
+    let name = replay::qualification_name(&value)?;
+    paths.bind_graph(&name, &name)?;
+    let saved = package_config::show(paths, &name, &release.id, &release.version)?;
+    package_config::validate(&saved.descriptor, &source, &selected)?;
+    package_config::save(
+      paths,
+      &name,
+      &release.id,
+      &release.version,
+      &saved.revision,
+      &source,
+    )?;
+  }
+  Ok(())
+}
+
+pub fn release_checked(paths: &Paths, checked: &Path) -> Result<()> {
+  ensure!(checked.is_absolute(), "--checked must be an absolute path");
+  let checked = checked_root(checked)?;
+  let report_path = checked_file(&checked, "check.json", false)?;
+  let report: serde_json::Value = serde_json::from_slice(&read_bounded(&report_path, 65_536)?)?;
+  ensure!(report["schema_version"] == 1, "unsupported check report");
+  ensure!(
+    report["static_verification"] == "passed",
+    "static package check did not pass"
+  );
+  ensure!(
+    matches!(
+      report["native_abi"].as_str(),
+      Some("passed" | "not_applicable")
+    ),
+    "native ABI check did not pass"
+  );
+  ensure!(
+    report["owner_validation"] == "passed",
+    "owner graph validation did not pass"
+  );
+  ensure!(
+    report["publication_preflight"] == "deferred_to_release",
+    "unsupported publication preflight state"
+  );
+  ensure!(
+    report["managed_replay"] == "passed" && report["qualified"] == true,
+    "passing managed replay cannot be verified by this IsOS build; release refused"
+  );
+  let stage = tempfile::Builder::new()
+    .prefix("isos-checked-publication-")
+    .tempdir()?;
+  let manifest = publication::stage_file(
+    &checked_file(&checked, "release.json", false)?,
+    &stage.path().join("release.json"),
+  )?;
+  let release = read_manifest(&manifest)?;
+  ensure!(
+    report["id"] == release.id && report["version"] == release.version,
+    "checked report package identity differs from release manifest"
+  );
+  ensure!(
+    report["manifest_sha256"] == digest(&fs::read(&manifest)?),
+    "checked release manifest changed"
+  );
+  let asset_name = selected_asset_name(&release)?;
+  let asset = publication::stage_file(
+    &checked_file(&checked, &asset_name, false)?,
+    &stage.path().join(&asset_name),
+  )?;
+  release::verify_file(release.select_asset(&release::Platform::current())?, &asset)?;
+  ensure!(
+    report["asset_sha256"] == digest(&fs::read(&asset)?),
+    "checked release asset changed"
+  );
+  let qualification = publication::stage_file(
+    &checked_file(&checked, "qualification.json", false)?,
+    &stage.path().join("qualification.json"),
+  )?;
+  let qualification_bytes = read_bounded(&qualification, 65_536)?;
+  ensure!(
+    report["qualification_sha256"] == digest(&qualification_bytes),
+    "package qualification attestation changed"
+  );
+  let attestation: serde_json::Value = serde_json::from_slice(&qualification_bytes)?;
+  ensure!(
+    attestation["contract"] == "isos.package-qualification@v1"
+      && attestation["id"] == release.id
+      && attestation["version"] == release.version
+      && attestation["manifest_sha256"] == report["manifest_sha256"]
+      && attestation["asset_sha256"] == report["asset_sha256"]
+      && attestation["source_commit"] == report["source_commit"],
+    "qualification attestation differs from checked source"
+  );
+  let source = report["source"]
+    .as_str()
+    .context("checked source path missing")?;
+  let graph_paths = report["graphs"]
+    .as_array()
+    .context("checked graph paths missing")?;
+  ensure!(!graph_paths.is_empty(), "checked graphs missing");
+  let mut graphs = Vec::new();
+  for (index, path) in graph_paths.iter().enumerate() {
+    let path = path.as_str().context("checked graph path is invalid")?;
+    graphs.push(publication::stage_file(
+      Path::new(path),
+      &stage.path().join(format!("graph-{index}.json")),
+    )?);
+  }
+  let package_config_file = report["package_config"]
+    .as_str()
+    .map(|path| publication::stage_file(Path::new(path), &stage.path().join("package.toml")))
+    .transpose()?;
+  let source = checked_root(Path::new(source))?;
+  let (source_commit, clean) = git_identity(&source)?;
+  ensure!(
+    clean && source_commit == release.source_commit && report["source_commit"] == source_commit,
+    "checked source checkout changed or differs from release"
+  );
+  publication::verify_source_payload(&source, &release, &asset)?;
+  let graph_hashes: Vec<_> = graphs
+    .iter()
+    .map(|graph| fs::read(graph).map(|bytes| digest(&bytes)))
+    .collect::<std::io::Result<_>>()?;
+  ensure!(
+    attestation["graph_sha256"] == serde_json::json!(graph_hashes),
+    "checked graph changed"
+  );
+  let replay_hashes = (0..graphs.len())
+    .map(|index| {
+      payload_digest(
+        &checked.join(format!("graph-{index}/managed-replay")),
+        false,
+      )
+    })
+    .collect::<Result<Vec<_>>>()?;
+  ensure!(
+    attestation["replay_evidence_sha256"] == serde_json::json!(replay_hashes),
+    "checked replay evidence changed"
+  );
+  if release.schema_version == "0.2.1" {
+    let file = package_config_file
+      .as_deref()
+      .context("checked package config missing")?;
+    ensure!(
+      attestation["package_config_sha256"] == digest(&fs::read(file)?),
+      "checked package config changed"
+    );
+  }
+  let mut binary_hashes_match =
+    attestation["isos_build_sha256"] == digest(&fs::read(std::env::current_exe()?)?);
+  for (field, binary) in [
+    ("eos_profile_sha256", "aether-profile"),
+    ("eos_runtime_sha256", "aether-runtime"),
+  ] {
+    binary_hashes_match &= attestation[field]
+      == digest(&fs::read(crate::runtime::process::core_bins::resolve(
+        binary,
+      )?)?);
+  }
+  let gh = std::env::var("ISOS_GH").unwrap_or_else(|_| "gh".into());
+  if !binary_hashes_match {
+    publication::verify_published_assets(&gh, &release, &[&manifest, &asset, &qualification])
+      .context("qualification binaries changed; published release proof failed")?;
+  }
+  let rerun_dir = tempfile::Builder::new()
+    .prefix("isos-release-recheck-")
+    .tempdir()?;
+  let isolated = Paths {
+    config: rerun_dir.path().join("config"),
+    data: rerun_dir.path().join("data"),
+    runtime: rerun_dir.path().join("run"),
+  };
+  install_local(&isolated, &release, &asset)?;
+  verify(&isolated, &release.id, &release.version)?;
+  if let Some(file) = &package_config_file {
+    prepare_candidate_config(&isolated, &release, &graphs, file)?;
+  }
+  ensure!(
+    matches!(
+      probe_native_adapters(&isolated, &release)?,
+      "passed" | "not_applicable"
+    ),
+    "native ABI recheck failed"
+  );
+  for (index, graph) in graphs.iter().enumerate() {
+    let graph_value = crate::runtime::process::normalize_source(&fs::read_to_string(graph)?)?;
+    crate::runtime::process::validate_value(&isolated, &graph_value)?;
+    if release.schema_version == "0.2.1" {
+      crate::domain::graph::graph_apply::apply_new(
+        &isolated,
+        &replay::qualification_name(&graph_value)?,
+        graph_value.clone(),
+        "",
+      )
+      .map_err(|error| anyhow::anyhow!("fresh Apply failed: {error}"))?;
+    }
+    replay::managed_replay(
+      &isolated,
+      &release,
+      graph,
+      &rerun_dir.path().join(format!("graph-{index}")),
+    )?;
+  }
+  let already_cataloged = checked_release_preflight(&release, &gh)?;
+  publication::publish_checked(
+    paths,
+    &release,
+    publication::CheckedFiles {
+      manifest: &manifest,
+      archive: &asset,
+      qualification: &qualification,
+      graphs: &graphs,
+      package_config_file: package_config_file.as_deref(),
+    },
+    &gh,
+    already_cataloged,
+  )
 }
 
 #[cfg(test)]
 mod source_install_tests {
   use super::*;
+
+  #[test]
+  fn cancelled_source_build_reaps_its_process_group() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let worker_cancel = std::sync::Arc::clone(&cancel);
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || {
+      run_source_build(
+        Command::new("sh").arg("-c").arg("sleep 30"),
+        Some(&worker_cancel),
+      )
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    cancel.store(true, Ordering::SeqCst);
+    assert!(
+      worker
+        .join()
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled")
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+  }
+
+  #[test]
+  fn checked_release_versions_are_canonical_patch_versions() {
+    assert_eq!(checked_patch_version("0.2.0").unwrap(), 0);
+    assert_eq!(checked_patch_version("0.2.17").unwrap(), 17);
+    for version in [
+      "0.1.1",
+      "0.3.0",
+      "0.2.01",
+      "0.2.-1",
+      "0.2.1-beta",
+      "0.2.1.1",
+    ] {
+      assert!(checked_patch_version(version).is_err(), "{version}");
+    }
+  }
+
+  #[test]
+  fn dependency_library_does_not_require_node_abi() {
+    let release: Release = serde_json::from_value(serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.0", "id":"vendor/example",
+      "kind":"component", "version":"0.2.0", "source_commit":"a".repeat(40),
+      "node_contributions":{"libraries":[{"path":"lib/dependency.so","sha256":"b".repeat(64)}]},
+      "assets":[{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+        "url":"https://github.com/vendor/example/releases/download/v0.2.0/bundle.tar.gz",
+        "size_bytes":1,"sha256":"c".repeat(64)}]
+    }))
+    .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: temp.path().join("config"),
+      data: temp.path().join("data"),
+      runtime: temp.path().join("run"),
+    };
+    assert_eq!(
+      probe_native_adapters(&paths, &release).unwrap(),
+      "not_applicable"
+    );
+  }
+
+  #[test]
+  fn checked_release_preflight_requires_next_patch_and_unused_catalog_record() {
+    let mut release: Release = serde_json::from_value(serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.0", "id":"vendor/example",
+      "kind":"component", "version":"0.2.2", "source_commit":"a".repeat(40),
+      "source_url":"https://github.com/vendor/example",
+      "release_url":"https://github.com/vendor/example/releases/tag/v0.2.2",
+      "node_contributions":{},
+      "assets":[{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+        "url":"https://github.com/vendor/example/releases/download/v0.2.2/bundle.tar.gz",
+        "size_bytes":1,"sha256":"b".repeat(64)}]
+    }))
+    .unwrap();
+    assert_eq!(
+      checked_release_repository(&release).unwrap(),
+      "vendor/example"
+    );
+    let tags = [
+      "v0.1.1".to_owned(),
+      "v0.2.0".to_owned(),
+      "v0.2.1".to_owned(),
+    ];
+    checked_release_sequence(&release, &tags, 404).unwrap();
+    assert!(checked_release_sequence(&release, &tags, 200).is_err());
+    checked_release_sequence(
+      &release,
+      &[tags.as_slice(), &["v0.2.2".to_owned()]].concat(),
+      404,
+    )
+    .unwrap();
+    let later = [tags.as_slice(), &["v0.2.3".to_owned()]].concat();
+    assert!(checked_release_sequence(&release, &later, 404).is_err());
+    checked_catalog_recovery_status(true, 404).unwrap();
+    assert!(checked_catalog_recovery_status(false, 404).is_err());
+    assert!(checked_catalog_recovery_status(true, 503).is_err());
+    release.version = "0.2.4".into();
+    assert!(checked_release_sequence(&release, &tags, 404).is_err());
+    release.release_url = Some("https://github.com/vendor/example/releases/tag/v0.2.4".into());
+    assert!(checked_release_repository(&release).is_ok());
+    release.release_url = Some("https://github.com/vendor/example/releases/tag/v0.2.3".into());
+    assert!(checked_release_repository(&release).is_err());
+    release.version = "0.2.2".into();
+    let directory = tempfile::tempdir().unwrap();
+    let mock = directory.path().join("gh-missing");
+    fs::write(&mock, b"#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+      checked_git_tag(&release, "vendor/example", mock.to_str().unwrap())
+        .unwrap_err()
+        .to_string()
+        .contains("missing")
+    );
+    let mock = directory.path().join("gh-mismatch");
+    fs::write(&mock, b"#!/bin/sh\necho '{\"object\":{\"type\":\"commit\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}'\n").unwrap();
+    fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+      checked_git_tag(&release, "vendor/example", mock.to_str().unwrap())
+        .unwrap_err()
+        .to_string()
+        .contains("differs")
+    );
+    let mock = directory.path().join("gh-matching");
+    fs::write(
+      &mock,
+      format!(
+        "#!/bin/sh\necho '{{\"object\":{{\"type\":\"commit\",\"sha\":\"{}\"}}}}'\n",
+        release.source_commit
+      ),
+    )
+    .unwrap();
+    fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+    checked_git_tag(&release, "vendor/example", mock.to_str().unwrap()).unwrap();
+  }
 
   #[test]
   fn failed_source_build_publishes_no_package() {
@@ -1102,7 +2278,102 @@ mod source_install_tests {
       data: root.path().join("data"),
       runtime: root.path().join("run"),
     };
-    assert!(install_source(&paths, &checkout, None).is_err());
+    assert!(install_source(&paths, &checkout, None, None).is_err());
+    assert!(!paths.data.join("state/packages").exists());
+  }
+
+  #[test]
+  fn source_check_rejects_nested_directory_of_parent_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let nested = root.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    fs::write(nested.join("build.sh"), b"#!/bin/sh\nexit 0\n").unwrap();
+    assert!(
+      Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .arg("init")
+        .arg("-q")
+        .status()
+        .unwrap()
+        .success()
+    );
+    assert!(
+      Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["add", "nested/build.sh"])
+        .status()
+        .unwrap()
+        .success()
+    );
+    assert!(
+      Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args([
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "commit",
+          "-qm",
+          "fixture"
+        ])
+        .status()
+        .unwrap()
+        .success()
+    );
+    assert!(
+      git_identity(&nested)
+        .unwrap_err()
+        .to_string()
+        .contains("Git checkout root")
+    );
+  }
+
+  #[test]
+  fn release_rejects_unqualified_check_before_publication() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+      root.path().join("check.json"),
+      br#"{"schema_version":1,"static_verification":"passed","native_abi":"passed","owner_validation":"passed","publication_preflight":"deferred_to_release","qualified":true,"managed_replay":"passed"}"#,
+    )
+    .unwrap();
+    let paths = Paths {
+      config: root.path().join("config"),
+      data: root.path().join("data"),
+      runtime: root.path().join("run"),
+    };
+    assert!(release_checked(&paths, root.path()).is_err());
+  }
+
+  #[test]
+  fn download_approval_changes_with_selected_asset() {
+    let mut release: Release = serde_json::from_value(serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.0", "id":"vendor/sample",
+      "kind":"component", "version":"0.2.0", "source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "node_contributions":{},
+      "assets":[{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+        "url":"https://github.com/vendor/sample/releases/download/v0.2.0/asset.tar.gz",
+        "size_bytes":10,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]
+    })).unwrap();
+    let first = download_preview(&release).unwrap();
+    assert_eq!(first.trust, "approved_catalog");
+    assert_eq!(selected_asset_name(&release).unwrap(), "asset.tar.gz");
+    release.assets[0].name = Some("different.tar.gz".into());
+    assert!(selected_asset_name(&release).is_err());
+    release.assets[0].name = None;
+    release.assets[0].size_bytes += 1;
+    let changed = download_preview(&release).unwrap();
+    assert_ne!(first.approval, changed.approval);
+    let root = tempfile::tempdir().unwrap();
+    let paths = Paths {
+      config: root.path().join("config"),
+      data: root.path().join("data"),
+      runtime: root.path().join("run"),
+    };
+    assert!(install_approved(&paths, &release, &first.approval).is_err());
     assert!(!paths.data.join("state/packages").exists());
   }
 }
@@ -1211,6 +2482,7 @@ pub fn link_with_manifest(
         .map(|release| release.source_commit.clone()),
       asset_sha256: None,
       local_link: Some(source),
+      source_checkout: None,
       source_kind: release.as_ref().map(|_| "local_link".into()),
       release_sha256: release_bytes.as_ref().map(|bytes| digest(bytes)),
       payload_sha256: tree,
@@ -1335,6 +2607,11 @@ pub fn listing(paths: &Paths) -> Result<Vec<serde_json::Value>> {
           .and_then(|receipt| serde_json::to_value(receipt).ok())
           .unwrap_or_else(|| serde_json::json!({"id":id,"version":version}));
         row["available"] = serde_json::json!(checked.is_ok());
+        row["configurable"] = serde_json::json!(
+          checked
+            .as_ref()
+            .is_ok_and(|package| package.release.package_config.is_some())
+        );
         row["status"] = serde_json::json!(if checked.is_ok() {
           "verified"
         } else if receipt
@@ -1424,13 +2701,17 @@ pub fn search(query: &str) -> Result<serde_json::Value> {
 }
 
 pub fn publish(paths: &Paths, manifest_path: &Path) -> Result<()> {
+  let release = read_manifest(manifest_path)?;
+  ensure!(
+    release.schema_version != "0.2.0" && release.schema_version != "0.2.1",
+    "new package releases require a qualified isos pkg release --checked <directory>"
+  );
   let credentials = auth::read(paths)?;
   ensure!(
     credentials.user.role == "developer",
     "package publication requires an Island-port developer account; signed-in role is {}",
     credentials.user.role
   );
-  let release = read_manifest(manifest_path)?;
   let source_url = release
     .source_url
     .as_deref()
@@ -1483,6 +2764,10 @@ pub fn publish(paths: &Paths, manifest_path: &Path) -> Result<()> {
 /// Upload without replacing an existing GitHub asset, then submit metadata for review.
 pub fn upload(paths: &Paths, manifest_path: &Path, asset_path: &Path) -> Result<()> {
   let release = read_manifest(manifest_path)?;
+  ensure!(
+    release.schema_version != "0.2.0" && release.schema_version != "0.2.1",
+    "new package releases require isos pkg release --checked <directory>"
+  );
   let gh = std::env::var("ISOS_GH").unwrap_or_else(|_| "gh".into());
   github_upload(&release, manifest_path, asset_path, &gh)?;
   publish(paths, manifest_path)

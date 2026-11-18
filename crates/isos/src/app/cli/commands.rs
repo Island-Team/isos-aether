@@ -1,4 +1,6 @@
-use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
+use super::{
+  ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, PackageConfigCommand, ServiceCommand,
+};
 use crate::runtime::manager::{manager_session_id, next_correlation_id, service_call};
 use crate::{
   app::config, runtime::owners::core_setup, domain::graph::graph_contract,
@@ -8,7 +10,12 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
-use std::{fs, os::unix::net::UnixStream, path::Path};
+use std::{
+  fs,
+  io::{self, IsTerminal, Write},
+  os::unix::net::UnixStream,
+  path::Path,
+};
 
 pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Result<()> {
   match cmd {
@@ -33,16 +40,23 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
     ConfigCommand::Validate { file } => {
       let source = fs::read_to_string(&file)?;
       let graph = process::normalize_source(&source)?;
-      ensure!(graph["version"] == "0.2.0", "graph version must be 0.2.0");
+      ensure!(graph["version"] == "0.2.1", "graph version must be 0.2.1");
       let bytes = serde_json::to_vec_pretty(&graph)?;
       let proposal = graph_apply::Proposal {
         revision: graph_contract::revision(&bytes),
         graph,
         bytes,
+        warnings: Vec::new(),
       };
-      graph_apply::prepare(paths, name, &proposal)
+      let prepared = graph_apply::prepare(paths, name, &proposal)
         .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
       println!("valid node graph");
+      for warning in prepared.warnings {
+        println!(
+          "warning: {}: {}: {}",
+          warning.path, warning.code, warning.message
+        );
+      }
     }
     ConfigCommand::Apply { file, revision } => {
       apply_graph_file(paths, name, &file, revision.as_deref()).inspect_err(|_| {
@@ -111,9 +125,23 @@ pub(crate) fn clear_saved_setup_error(paths: &config::Paths, name: &str) -> Resu
 
 pub(crate) fn install_package(
   paths: &config::Paths,
-  args: InstallArgs,
+  mut args: InstallArgs,
   kind: Option<&str>,
 ) -> Result<()> {
+  if let Some(raw) = args.id.clone()
+    && let Some((id, version)) = raw.split_once('@')
+  {
+    ensure!(
+      !id.is_empty() && !version.is_empty() && !version.contains('@'),
+      "package must be namespace/name@version"
+    );
+    ensure!(
+      args.version == "latest" || args.version == version,
+      "package version conflicts with --version"
+    );
+    args.id = Some(id.to_owned());
+    args.version = version.to_owned();
+  }
   if let Some(source) = &args.source {
     ensure!(
       kind.is_none(),
@@ -124,10 +152,15 @@ pub(crate) fn install_package(
       "--source requires --allow-source-build"
     );
     ensure!(
-      args.manifest.is_none() && args.asset.is_none() && !args.allow_unapproved,
-      "--source cannot be combined with --manifest, --asset, or --allow-unapproved"
+      args.manifest.is_none()
+        && args.asset.is_none()
+        && !args.allow_unapproved
+        && args.approve_download.is_none(),
+      "--source cannot be combined with --manifest, --asset, --allow-unapproved, or --approve-download"
     );
-    let (release, path) = packages::install_source(paths, source, args.id.as_deref())?;
+    let expected_version = (args.version != "latest").then_some(args.version.as_str());
+    let (release, path) =
+      packages::install_source(paths, source, args.id.as_deref(), expected_version)?;
     println!(
       "installed {} {} at {}",
       release.id,
@@ -164,12 +197,57 @@ pub(crate) fn install_package(
       release.kind
     );
   }
-  let path = packages::install(
-    paths,
-    &release,
-    args.allow_unapproved,
-    args.asset.as_deref(),
-  )?;
+  if args.asset.is_none() {
+    ensure!(
+      args.manifest.is_none(),
+      "--manifest requires a local --asset; catalog downloads use an approved release"
+    );
+    ensure!(
+      !args.allow_unapproved,
+      "catalog download requires an approved release"
+    );
+    let preview = packages::download_preview(&release)?;
+    println!(
+      "Package: {}@{}\nPublisher: {}\nSource: {}\nAsset: {}\nSize: {} bytes\nSHA-256: {}\nTrust: {}\nApproval: {}",
+      preview.id,
+      preview.version,
+      preview.publisher,
+      preview.source_url.as_deref().unwrap_or("unspecified"),
+      preview.url,
+      preview.size_bytes,
+      preview.sha256,
+      preview.trust,
+      preview.approval
+    );
+    if let Some(approval) = &args.approve_download {
+      ensure!(
+        approval == &preview.approval,
+        "download approval does not match the selected release asset"
+      );
+    } else {
+      ensure!(
+        io::stdin().is_terminal(),
+        "noninteractive download requires --approve-download <approval digest>"
+      );
+      print!("Download this exact asset? Type yes: ");
+      io::stdout().flush()?;
+      let mut answer = String::new();
+      io::stdin().read_line(&mut answer)?;
+      ensure!(answer.trim() == "yes", "package download cancelled");
+    }
+  } else {
+    ensure!(
+      args.approve_download.is_none(),
+      "--approve-download applies only to catalog downloads"
+    );
+  }
+  let path = if let Some(asset) = args.asset.as_deref() {
+    ensure!(args.allow_unapproved, "--asset requires --allow-unapproved");
+    packages::install_local(paths, &release, asset)?
+  } else {
+    let approval = packages::download_preview(&release)?.approval;
+    packages::install_approved(paths, &release, &approval)?
+  };
   println!(
     "installed {} {} at {}",
     release.id,
@@ -180,8 +258,33 @@ pub(crate) fn install_package(
   Ok(())
 }
 
-pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
+pub(crate) fn package_command(
+  paths: &config::Paths,
+  deployment: &str,
+  cmd: PackageCommand,
+) -> Result<()> {
   match cmd {
+    PackageCommand::Check {
+      source,
+      version,
+      output,
+      graph,
+      package_config,
+    } => {
+      let result = packages::check_source(
+        &source,
+        &version,
+        &output,
+        &graph,
+        package_config.as_deref(),
+      )?;
+      println!("{}", serde_json::to_string_pretty(&result)?);
+      ensure!(
+        result["qualified"] == true,
+        "package check requires a passing managed Apply, readiness, interface, logs, and Stop replay before release"
+      );
+    }
+    PackageCommand::Release { checked } => packages::release_checked(paths, &checked)?,
     PackageCommand::Upload { manifest, asset } => packages::upload(paths, &manifest, &asset)?,
     PackageCommand::Search { query } => println!(
       "{}",
@@ -191,7 +294,169 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
       "{}",
       serde_json::to_string_pretty(&packages::catalog_release(&id, &version)?)?
     ),
+    PackageCommand::RefreshSources => {
+      let graph_path = paths.node_graph_path("default");
+      if graph_path.exists() {
+        let graph: Value = serde_json::from_slice(&fs::read(&graph_path)?)?;
+        packages::refresh_graph_sources(paths, &graph)?;
+        println!("source-installed packages for the bound graph are current");
+      } else {
+        println!("no bound graph; no source packages to refresh");
+      }
+    }
+    PackageCommand::Update => {
+      let snapshot = packages::updates::refresh(paths)?;
+      if snapshot.rows.is_empty() {
+        println!("no verified packages installed locally");
+      }
+      for row in snapshot.rows {
+        if let Some(version) = row.update_version {
+          println!(
+            "{}: {} available (installed: {})",
+            row.id,
+            version,
+            row.installed_versions.join(", ")
+          );
+        } else if let Some(error) = row.error {
+          println!("{}: {error}", row.id);
+        } else {
+          println!(
+            "{}: up to date (installed: {})",
+            row.id,
+            row.installed_versions.join(", ")
+          );
+        }
+      }
+    }
+    PackageCommand::Upgrade {
+      id,
+      approve_download,
+    } => {
+      ensure!(
+        id.is_some() || approve_download.is_none(),
+        "--approve-download requires one package ID"
+      );
+      let selected = packages::updates::selected(paths, id.as_deref())?;
+      if selected.is_empty() {
+        println!("no catalog upgrades in the local update list");
+      }
+      for row in selected {
+        let version = row
+          .update_version
+          .context("selected update lacks version")?;
+        let release = packages::catalog_release(&row.id, &version)?;
+        ensure!(
+          release.id == row.id && release.version == version,
+          "catalog release changed; run `isos pkg update` again"
+        );
+        install_package(
+          paths,
+          InstallArgs {
+            id: Some(row.id),
+            version,
+            manifest: None,
+            asset: None,
+            source: None,
+            allow_source_build: false,
+            allow_unapproved: false,
+            approve_download: approve_download.clone(),
+          },
+          None,
+        )?;
+      }
+    }
     PackageCommand::Install(args) => install_package(paths, args, None)?,
+    PackageCommand::Configure { pin } => {
+      let (id, version) = package_pin(&pin)?;
+      let saved = packages::package_config::show(paths, deployment, id, version)?;
+      let editor = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .find_map(|name| {
+          std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "nano".into());
+      let temp = tempfile::Builder::new()
+        .prefix("isos-package-config-")
+        .suffix(".toml")
+        .tempfile()?;
+      fs::write(temp.path(), &saved.toml)?;
+      let editor_parts = shlex::split(&editor).context("invalid VISUAL or EDITOR command")?;
+      let (program, arguments) = editor_parts
+        .split_first()
+        .context("VISUAL or EDITOR must name an editor")?;
+      let status = std::process::Command::new(program)
+        .args(arguments)
+        .arg(temp.path())
+        .status()
+        .context("could not start config editor; set VISUAL or EDITOR to an installed editor")?;
+      ensure!(status.success(), "config editor failed");
+      let source = fs::read_to_string(temp.path())?;
+      if source == saved.toml {
+        println!("package config unchanged for {id}@{version}");
+        return Ok(());
+      }
+      let updated = match packages::package_config::save(
+        paths,
+        deployment,
+        id,
+        version,
+        &saved.revision,
+        &source,
+      ) {
+        Ok(updated) => updated,
+        Err(error) => {
+          let draft = temp
+            .into_temp_path()
+            .keep()
+            .context("could not retain invalid package config draft")?;
+          bail!(
+            "package config was not saved: {error:#}\nYour edited draft is at {}. Correct it there, run `isos pkg config validate {id}@{version} {}`, then run `isos pkg config import {id}@{version} {} --revision {}`.",
+            draft.display(),
+            draft.display(),
+            draft.display(),
+            saved.revision
+          );
+        }
+      };
+      println!(
+        "saved {}@{} package config revision {}",
+        id, version, updated.revision
+      );
+    }
+    PackageCommand::Config { command } => match command {
+      PackageConfigCommand::Show { pin } => {
+        let (id, version) = package_pin(&pin)?;
+        let saved = packages::package_config::show(paths, deployment, id, version)?;
+        println!("{}", saved.toml);
+      }
+      PackageConfigCommand::Validate { pin, file } => {
+        let (id, version) = package_pin(&pin)?;
+        let saved = packages::package_config::show(paths, deployment, id, version)?;
+        packages::package_config::validate(&saved.descriptor, &fs::read_to_string(file)?, &[])?;
+        println!("valid package config for {id}@{version}");
+      }
+      PackageConfigCommand::Import {
+        pin,
+        file,
+        revision,
+      } => {
+        let (id, version) = package_pin(&pin)?;
+        let updated = packages::package_config::save(
+          paths,
+          deployment,
+          id,
+          version,
+          &revision,
+          &fs::read_to_string(file)?,
+        )?;
+        println!(
+          "saved {}@{} package config revision {}",
+          id, version, updated.revision
+        );
+      }
+    },
     PackageCommand::Link {
       id,
       version,
@@ -260,6 +525,14 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
     }
   }
   Ok(())
+}
+
+fn package_pin(pin: &str) -> Result<(&str, &str)> {
+  let (id, version) = pin
+    .rsplit_once('@')
+    .context("package pin must be namespace/name@version")?;
+  ensure!(!id.is_empty() && !version.is_empty(), "invalid package pin");
+  Ok((id, version))
 }
 
 fn configured_nodes(paths: &config::Paths, name: &str, group_kind: &str) -> Result<Vec<Value>> {
@@ -456,4 +729,29 @@ pub(crate) fn print_init_next_steps(mode: &str) {
   println!("  isos                               # open the workbench; cores stay stopped");
   println!("  In Graph, add a backend, then Check graph and Save graph before `isos run`.");
   println!("  Run `isos --help` for mode rules or `isos doctor` to check readiness.");
+}
+
+#[cfg(test)]
+mod package_update_cli_tests {
+  use super::*;
+
+  #[test]
+  fn package_upgrade_rejects_unscoped_script_approval() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = config::Paths {
+      config: home.path().join("config"),
+      data: home.path().join("data"),
+      runtime: home.path().join("run"),
+    };
+    let error = package_command(
+      &paths,
+      "default",
+      PackageCommand::Upgrade {
+        id: None,
+        approve_download: Some("digest".to_owned()),
+      },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("requires one package ID"));
+  }
 }

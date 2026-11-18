@@ -5,9 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
-
-from ei.contracts.limits import NumericRange
-from ei.core.registry import PrimitiveRegistry
+from ei.contracts.io.link import NumericRange
+from ei.core.system.registry import PrimitiveRegistry
 
 
 @dataclass(frozen=True)

@@ -6,15 +6,14 @@ import asyncio
 import json
 
 import pytest
-
-from ei.contracts.endpoints import ResourceKind
-from ei.contracts.perception.world.detection import DetectionSnapshot
-from ei.contracts.perception.world.state import WorldStateSnapshot
-from ei.core.link import EosClient, LinkPrimitiveError
-from ei.core.perception.admission import Admission
-from ei.core.perception.body import parts_perception_entry
+from ei.contracts.evidence.perception import DetectionSnapshot, WorldStateSnapshot
+from ei.contracts.io.link import ResourceKind
+from ei.core.evidence.perception.admission import Admission
+from ei.core.evidence.perception.body import parts_perception_entry
+from ei.core.io.link import EosClient, LinkPrimitiveError
 from ei.io import PartStore
 from ei.lib.config import GatewayConfig
+
 from tests.ei.stub.gateway import StubGateway, start_stub_gateway, stop_stub_gateway
 
 

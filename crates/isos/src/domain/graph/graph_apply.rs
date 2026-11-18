@@ -22,11 +22,13 @@ pub struct Proposal {
   pub graph: Value,
   pub bytes: Vec<u8>,
   pub revision: String,
+  pub warnings: Vec<Diagnostic>,
 }
 
 pub struct Prepared {
   pub files: Vec<(PathBuf, Vec<u8>)>,
   pub edges: Vec<edge_admission::Edge>,
+  pub warnings: Vec<Diagnostic>,
 }
 
 #[derive(Debug)]
@@ -34,7 +36,7 @@ pub enum ApplyError {
   NotFound,
   Conflict(String),
   Diagnostic(Diagnostic),
-  Generated(crate::domain::graph::generated_v2::Diagnostic),
+  Generated(crate::domain::graph::generated::Diagnostic),
   Filesystem(anyhow::Error),
   OutcomeUncertain,
 }
@@ -56,7 +58,7 @@ impl std::fmt::Display for ApplyError {
 }
 
 fn generated_error(error: anyhow::Error) -> ApplyError {
-  if let Some(diagnostic) = error.downcast_ref::<crate::domain::graph::generated_v2::Diagnostic>() {
+  if let Some(diagnostic) = error.downcast_ref::<crate::domain::graph::generated::Diagnostic>() {
     return ApplyError::Generated(diagnostic.clone());
   }
   ApplyError::Filesystem(error)
@@ -80,7 +82,7 @@ fn sync_graph_parent(path: &std::path::Path) -> Result<(), ApplyError> {
     }
   }
   #[cfg(debug_assertions)]
-  if crate::domain::graph::generated_v2::test_fail_parent_sync(path, "graph") {
+  if crate::domain::graph::generated::test_fail_parent_sync(path, "graph") {
     return Err(ApplyError::OutcomeUncertain);
   }
   fs::File::open(path.parent().unwrap())
@@ -243,7 +245,7 @@ fn eos_presence_diagnostic(graph: &Value) -> Option<Diagnostic> {
 }
 
 pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepared, Diagnostic> {
-  if proposal.graph["version"] == "0.2.0"
+  if proposal.graph["version"] == "0.2.1"
     && proposal.graph["cores"].get("ei").is_some()
     && proposal.graph["cores"].get("eos").is_some()
   {
@@ -258,8 +260,87 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
         "graph permits only isos, ei, and eos cores",
       ));
     }
-    packages::verify_graph_packages(paths, &proposal.graph)
+    let verified_packages = packages::verify_graph_packages(paths, &proposal.graph)
       .map_err(|error| package_diagnostic(&error))?;
+    for graph_instance in graph_contract::instances(&proposal.graph) {
+      if graph_instance.path.starts_with("eos/") {
+        let node = graph_instance.node;
+        let (Some(id), Some(version), Some(instance)) = (
+          node["package"]["id"].as_str(),
+          node["package"]["version"].as_str(),
+          node["adapter"]["settings"]["service_instance"].as_str(),
+        ) else {
+          continue;
+        };
+        if let Some(service) = verified_packages
+          .iter()
+          .find(|package| package.release.id == id && package.release.version == version)
+          .and_then(|package| package.release.node_contributions.as_ref())
+          .and_then(|contributions| {
+            contributions
+              .runtime_services
+              .iter()
+              .find(|service| service.config_service_type == instance)
+          })
+        {
+          service
+            .check_selected_node_settings(node)
+            .map_err(|error| {
+              diagnostic(
+                format!("{}/settings", graph_instance.pointer),
+                "required_node_setting_missing",
+                error.to_string(),
+              )
+            })?;
+        }
+      }
+    }
+    for instance in graph_contract::instances(&proposal.graph) {
+      let node = instance.node;
+      if node["node_type"] != "eos.hardware.camera.device@v0.2" {
+        continue;
+      }
+      let (Some(id), Some(version)) = (
+        node["package"]["id"].as_str(),
+        node["package"]["version"].as_str(),
+      ) else {
+        continue;
+      };
+      let Some(package) = verified_packages
+        .iter()
+        .find(|package| package.release.id == id && package.release.version == version)
+      else {
+        continue;
+      };
+      if !packages::has_camera_sources(package, "eos.hardware.camera.device@v0.2") {
+        continue;
+      }
+      let (Some(service), Some(device)) = (
+        node["adapter"]["settings"]["service_instance"].as_str(),
+        node["adapter"]["settings"]["device_id"].as_str(),
+      ) else {
+        return Err(diagnostic(
+          instance.pointer,
+          "camera_source_missing",
+          "select a package camera service and source",
+        ));
+      };
+      let declared = packages::camera_source_declared(
+        package,
+        "eos.hardware.camera.device@v0.2",
+        service,
+        device,
+      );
+      if !declared {
+        return Err(diagnostic(
+          instance.pointer,
+          "camera_source_unavailable",
+          "camera source is absent from the verified package service",
+        ));
+      }
+    }
+    crate::runtime::manager::isos_external::supports(&proposal.graph, &verified_packages)
+      .map_err(|error| diagnostic("/cores/isos", "owner_reader_unavailable", error.to_string()))?;
     let catalog = process::catalog_for_graph(paths, &proposal.graph)
       .map_err(|error| package_or_owner_diagnostic(&error, "/cores"))?;
     if let Some(problem) = graph_contract::admission_diagnostic(&proposal.graph, Some(&catalog)) {
@@ -267,6 +348,17 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     }
     let edges =
       edge_admission::admit(&proposal.graph, &catalog).map_err(|error| edge_diagnostic(*error))?;
+    let warnings = edge_admission::missing_input_warnings(&proposal.graph, &catalog)
+      .into_iter()
+      .map(edge_diagnostic)
+      .collect();
+    super::vision_bindings::bindings(&proposal.graph, &catalog, &edges).map_err(|message| {
+      diagnostic(
+        "/cores/isos/layers/ui/groups/vision",
+        "vision_path_invalid",
+        message,
+      )
+    })?;
     for role in ["eos", "ei"] {
       let reply = core_setup::call(
         paths,
@@ -290,7 +382,11 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     }
     let files = core_setup::render_graph(paths, name, &proposal.graph, &proposal.revision)
       .map_err(|error| package_or_owner_diagnostic(&error, "/cores"))?;
-    return Ok(Prepared { files, edges });
+    return Ok(Prepared {
+      files,
+      edges,
+      warnings,
+    });
   }
   Err(
     graph_contract::admission_diagnostic(&proposal.graph, None).unwrap_or_else(|| {
@@ -339,20 +435,21 @@ pub fn apply_new(
   if !expected_revision.is_empty() {
     check_digest(expected_revision)?;
   }
-  if graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.1" {
     return Err(ApplyError::Diagnostic(diagnostic(
       "/version",
       "unsupported_graph_version",
-      "writer requires graph 0.2.0",
+      "writer requires graph 0.2.1",
     )));
   }
   let bytes = serde_json::to_vec_pretty(&graph)
     .map_err(|error| ApplyError::Diagnostic(diagnostic("/", "invalid_graph", error.to_string())))?;
   let revision = graph_contract::revision(&bytes);
-  let proposal = Proposal {
+  let mut proposal = Proposal {
     graph,
     bytes,
     revision,
+    warnings: Vec::new(),
   };
   let _lock = lock::Lock::take(paths).map_err(ApplyError::Filesystem)?;
   let path = paths.node_graph_path(name);
@@ -372,9 +469,11 @@ pub fn apply_new(
       "node graph revision changed; reload before applying".into(),
     ));
   }
+  packages::refresh_graph_sources(paths, &proposal.graph).map_err(ApplyError::Filesystem)?;
   // The expected revision fences replacement of an obsolete saved graph.
   // Only the proposed graph is admitted against the current contract.
   let prepared = prepare(paths, name, &proposal).map_err(ApplyError::Diagnostic)?;
+  proposal.warnings = prepared.warnings.clone();
   if let Some(previous) = &previous
     && let Ok(saved) = graph_contract::parse(previous)
     && saved.value == proposal.graph
@@ -453,22 +552,25 @@ pub fn apply_pool(
       "graph pool revision changed; reload before applying".into(),
     ));
   }
-  if saved.value["version"] != "0.2.0" {
+  if saved.value["version"] != "0.2.1" {
     return Err(ApplyError::Diagnostic(diagnostic(
       "/version",
       "unsupported_graph_version",
-      "writer requires graph 0.2.0",
+      "writer requires graph 0.2.1",
     )));
   }
-  let proposal = Proposal {
+  let mut proposal = Proposal {
     graph: saved.value,
     bytes,
     revision: saved.revision,
+    warnings: Vec::new(),
   };
   paths
     .preflight_graph_binding(deployment)
     .map_err(ApplyError::Filesystem)?;
+  packages::refresh_graph_sources(paths, &proposal.graph).map_err(ApplyError::Filesystem)?;
   let prepared = prepare(paths, deployment, &proposal).map_err(ApplyError::Diagnostic)?;
+  proposal.warnings = prepared.warnings.clone();
   core_setup::write_revisioned(
     paths,
     deployment,
@@ -555,7 +657,7 @@ mod tests {
     paths.prepare().unwrap();
     let old = br#"{"version":"0.1.0","cores":{"eos":{}}}"#;
     config::atomic_write(&paths.node_graph_path("default"), old).unwrap();
-    let graph = json!({"version":"0.2.0","robot":{"id":"default","name":"New deployment"},"cores":{"isos":{"layers":{}}}});
+    let graph = json!({"version":"0.2.1","robot":{"id":"default","name":"New deployment"},"cores":{"isos":{"layers":{}}}});
     assert!(matches!(
       apply_new(&paths, "default", graph.clone(), ""),
       Err(ApplyError::Conflict(_))
@@ -580,7 +682,7 @@ mod tests {
     paths.prepare().unwrap();
     let old = b"{broken graph";
     config::atomic_write(&paths.node_graph_path("default"), old).unwrap();
-    let graph = json!({"version":"0.2.0","robot":{"id":"default","name":"New deployment"},"cores":{"isos":{"layers":{}}}});
+    let graph = json!({"version":"0.2.1","robot":{"id":"default","name":"New deployment"},"cores":{"isos":{"layers":{}}}});
     let revision = graph_contract::revision(old);
     let error = apply_new(&paths, "default", graph, &revision)
       .err()
@@ -606,12 +708,13 @@ mod tests {
     assert!(!path.exists(), "test home already has a graph");
     let bytes = fs::read(source).unwrap();
     let graph: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(graph["version"], "0.2.0");
+    assert_eq!(graph["version"], "0.2.1");
     let revision = graph_contract::revision(&bytes);
     let proposal = Proposal {
       graph,
       bytes,
       revision,
+      warnings: Vec::new(),
     };
     let prepared = prepare(&paths, "default", &proposal).unwrap();
     core_setup::write_revisioned(
@@ -629,7 +732,7 @@ mod tests {
 
   #[test]
   fn unified_prepare_names_missing_eos_owner_layer() {
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"ei_io":{}}}}});
+    let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"ei_io":{}}}}});
     let diagnostic = eos_presence_diagnostic(&graph).unwrap();
     assert_eq!(diagnostic.code, "owner_reader_unavailable");
     assert_eq!(diagnostic.path, "/cores/isos/layers/eos_dispatcher");
@@ -640,9 +743,9 @@ mod tests {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("default.nodes.json");
     let old =
-      b"{\"version\":\"0.2.0\",\"robot\":{\"id\":\"old\"},\"cores\":{\"isos\":{\"layers\":{}}}}";
+      b"{\"version\":\"0.2.1\",\"robot\":{\"id\":\"old\"},\"cores\":{\"isos\":{\"layers\":{}}}}";
     let new =
-      b"{\"version\":\"0.2.0\",\"robot\":{\"id\":\"new\"},\"cores\":{\"isos\":{\"layers\":{}}}}";
+      b"{\"version\":\"0.2.1\",\"robot\":{\"id\":\"new\"},\"cores\":{\"isos\":{\"layers\":{}}}}";
     config::atomic_write(&path, old).unwrap();
     config::atomic_write(&path, new).unwrap();
     *FAIL_GRAPH_PARENT_SYNC_FOR
@@ -664,17 +767,17 @@ mod tests {
 
   #[test]
   fn edge_diagnostic_keeps_structured_cli_and_http_context() {
-    let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_hardware":{"groups":{"camera":{"nodes":{"front":{"id":"front","node_type":"isos.eos_hardware.camera@v0.2"}}}}},"eos_interface":{"groups":{"gate":{"nodes":{"preview":{"id":"preview","node_type":"isos.eos_interface.camera_gate@v0.2","inputs":{"frame":{"node":"isos/eos_hardware/camera/front","output":"frame"}}}}}}}}}}});
+    let graph = json!({"version":"0.2.1","cores":{"eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"id":"front","node_type":"eos.hardware.camera.device@v0.2"}}}}},"interface":{"groups":{"egress":{"nodes":{"preview":{"id":"preview","node_type":"eos.interface.egress.vision_flow@v0.2","inputs":{"frame":{"node":"eos/hardware/camera/front","output":"frame"}}}}}}}}}}});
     let catalog = json!({"types":[
-      {"id":"isos.eos_hardware.camera@v0.2","core":"isos","layer":"eos_hardware","group":"camera","outputs":[{"name":"frame","data_type":"observation_ref","transport":"in_process"}],"inputs":[]},
-      {"id":"isos.eos_interface.camera_gate@v0.2","core":"isos","layer":"eos_interface","group":"gate","inputs":[{"name":"frame","data_type":"camera_frame","transport":"in_process"}],"outputs":[]}
+      {"id":"eos.hardware.camera.device@v0.2","core":"eos","layer":"hardware","group":"camera","outputs":[{"name":"frame","data_type":"observation_ref","transport":"in_process"}],"inputs":[]},
+      {"id":"eos.interface.egress.vision_flow@v0.2","core":"eos","layer":"interface","group":"egress","inputs":[{"name":"frame","data_type":"camera_frame","transport":"in_process"}],"outputs":[]}
     ],"data_types":[{"id":"observation_ref","version":"1.0","purpose":"Reference","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":1024},{"id":"camera_frame","version":"1.0","purpose":"Frame","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":1024}]});
     let error = edge_admission::admit(&graph, &catalog).unwrap_err();
     let diagnostic = edge_diagnostic(*error);
     let value = serde_json::to_value(&diagnostic).unwrap();
     assert_eq!(value["code"], "edge_type_mismatch");
-    assert_eq!(value["source"], "isos/eos_hardware/camera/front");
-    assert_eq!(value["target"], "isos/eos_interface/gate/preview");
+    assert_eq!(value["source"], "eos/hardware/camera/front");
+    assert_eq!(value["target"], "eos/interface/egress/preview");
     assert_eq!(value["input"], "frame");
     assert_eq!(value["source_data_type"], "observation_ref");
     assert_eq!(value["target_data_type"], "camera_frame");

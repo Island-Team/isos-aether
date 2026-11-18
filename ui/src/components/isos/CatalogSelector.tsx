@@ -11,7 +11,7 @@ export function unavailableSelections(options: NodeOptions | null): SettingOptio
 }
 
 /** The native list keeps keyboard and screen-reader selection behavior while search narrows its rows. */
-export function CatalogSelector({ group, label, value, lang, pin, help, onChange }: { group: SettingOptionGroup; label: string; value: string; lang: Language; pin?: { id: string; version: string }; help?: string; onChange: (value: string) => void }): React.ReactElement {
+export function CatalogSelector({ group, label, value, lang, pin, help, onChange, disabled = false }: { group: SettingOptionGroup; label: string; value: string; lang: Language; pin?: { id: string; version: string }; help?: string; onChange: (value: string) => void; disabled?: boolean }): React.ReactElement {
   const [query, setQuery] = useState('');
   const selectRef = useRef<HTMLSelectElement>(null);
   const selected = group.options.find((option) => option.value === value);
@@ -23,8 +23,8 @@ export function CatalogSelector({ group, label, value, lang, pin, help, onChange
   return <div className="node-graph-catalog-selector">
     {pin && <small>{lang === 'cn' ? '软件包' : 'Package'}: <code>{pin.id}@{pin.version}</code></small>}
     {help && <small>{help}</small>}
-    <label>{label} · {lang === 'cn' ? '搜索选项' : 'Search options'}<input type="search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); selectRef.current?.focus(); } else if (event.key === 'Escape') setQuery(''); }} /></label>
-    <label>{label}<select ref={selectRef} value={value} onChange={(event) => onChange(event.target.value)} aria-invalid={Boolean(unavailable)} aria-describedby={`${group.node_path}-${group.setting}-help`}>
+    <label>{label} · {lang === 'cn' ? '搜索选项' : 'Search options'}<input type="search" disabled={disabled} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); selectRef.current?.focus(); } else if (event.key === 'Escape') setQuery(''); }} /></label>
+    <label>{label}<select ref={selectRef} disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} aria-invalid={Boolean(unavailable)} aria-describedby={`${group.node_path}-${group.setting}-help`}>
       <option value="">—</option>
       {missing && <option value={value} disabled>{value} · {lang === 'cn' ? '不可用' : 'Unavailable'}</option>}
       {rows.map((option) => <option key={option.value} value={option.value} disabled={!option.available}>{option.label} ({option.value}){option.available ? '' : ` · ${lang === 'cn' ? '不可用' : 'Unavailable'}`}</option>)}

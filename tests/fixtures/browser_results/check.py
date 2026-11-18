@@ -32,10 +32,10 @@ assert by_id["BR32"]["http_status"] == 400
 assert by_id["BR32"]["setup"]["bridge_operator_grant"] == "missing"
 assert by_id["BR32"]["setup"]["private_ipc_requests"] == 0
 for name, markers in {
-    "docs/eos/interfaces/control.md": ("R07 authorized browser result", "PrivateBridge"),
-    "docs_cn/eos/interfaces/control_cn.md": ("R07 浏览器授权结果后续查询", "PrivateBridge"),
-    "docs/eos/design/runtime/browser-results.md": ("R07 EOS and IsosUI scoped implementation is merged and qualified", "InProgress"),
-    "docs_cn/eos/design/runtime/browser-results_cn.md": ("R07 的 EOS 与 IsosUI 限定范围实现已合并并通过资格验证", "InProgress"),
+    "docs/isos/interfaces/server/eos.md": ("R07 authorized browser result", "bridge"),
+    "docs_cn/isos/interfaces/server/eos_cn.md": ("R07 浏览器授权结果后续查询", "bridge"),
+    "docs/eos/core/gateway/browser-results.md": ("InProgress", "InProgress"),
+    "docs_cn/eos/core/gateway/browser-results_cn.md": ("InProgress", "InProgress"),
 }.items():
     text = (ROOT / name).read_text()
     for marker in markers:

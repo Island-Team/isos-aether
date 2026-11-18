@@ -28,7 +28,7 @@ from grpc_health.v1 import health_pb2, health_pb2_grpc  # noqa: E402
 from egia.contracts.endpoints import ResourceKind  # noqa: E402
 from egia.core.link.client import EosClient  # noqa: E402
 from egia.lib.config import GatewayConfig  # noqa: E402
-from island.generated.eos import (  # noqa: E402
+from ei.generated.eos import (  # noqa: E402
   capabilities_pb2_grpc, gateway_pb2_grpc, skills_pb2_grpc,
 )
 from tests.egia.stub.gateway import StubGatewayService, _Health  # noqa: E402

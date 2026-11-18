@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
 aether-hal = { path = "../aether-hal" }
+aether-system = { path = "../aether-system" }
+aether-node = { path = "../aether-node" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 libc = "0.2"

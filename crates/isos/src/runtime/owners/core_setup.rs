@@ -23,7 +23,7 @@ const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_FILES: usize = 32;
 const MAX_FILE: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
-const SETUP_SCHEMA_VERSION: u32 = 2;
+const SETUP_SCHEMA_VERSION: u32 = 3;
 pub(crate) const EI_NORTHBOUND_PORT: u16 = 16060;
 
 fn revision(bytes: &[u8]) -> String {
@@ -60,7 +60,10 @@ fn package_refs(paths: &Paths, graph: &Value) -> Result<Vec<Value>> {
   packages::verify_graph_packages(paths, graph)?
     .into_iter()
     .map(|package| {
-      Ok(json!({"id":package.release.id,"version":package.release.version,"path":package.store}))
+      Ok(
+        json!({"id":package.release.id,"version":package.release.version,
+        "path":package.store,"payload_root":package.root}),
+      )
     })
     .collect()
 }
@@ -465,7 +468,7 @@ pub fn call(
 ) -> Result<Value> {
   let request = request(paths, name, role, op, graph, graph_revision)?;
   let environment = if role == "ei" {
-    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+    Some(crate::domain::graph::generated::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -484,7 +487,7 @@ pub fn preview_options(
 ) -> Result<Value> {
   let request = request(paths, name, role, "options", graph, graph_revision)?;
   let environment = if role == "ei" {
-    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+    Some(crate::domain::graph::generated::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -505,7 +508,7 @@ pub fn preview_catalog(
 ) -> Result<Value> {
   let request = request(paths, name, role, "catalog", graph, graph_revision)?;
   let environment = if role == "ei" {
-    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+    Some(crate::domain::graph::generated::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -534,9 +537,13 @@ pub fn catalog_with_verified_packages(
     graph_contract::uses_revisioned_generation(graph),
     "selected catalog requires a revisioned graph"
   );
-  let packages = verified.iter().map(|package| {
-        json!({"id":package.release.id,"version":package.release.version,"path":package.store})
-    }).collect();
+  let packages = verified
+    .iter()
+    .map(|package| {
+      json!({"id":package.release.id,"version":package.release.version,
+          "path":package.store,"payload_root":package.root})
+    })
+    .collect();
   let request = request_with_packages(
     paths,
     name,
@@ -547,7 +554,7 @@ pub fn catalog_with_verified_packages(
     packages,
   )?;
   let environment = if role == "ei" {
-    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+    Some(crate::domain::graph::generated::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -561,7 +568,7 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
 pub fn identity_for_graph(paths: &Paths, role: &str, graph: &Value) -> Result<Value> {
   ensure!(matches!(role, "eos" | "ei"), "unknown setup core {role}");
   let environment = if role == "ei" {
-    Some(crate::domain::graph::generated_v2::ei_launch_env(graph)?)
+    Some(crate::domain::graph::generated::ei_launch_env(graph)?)
   } else {
     None
   };
@@ -632,22 +639,38 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
   );
   let graph = saved.value;
   ensure!(
-    !graph
-      .pointer("/cores/isos/layers")
-      .and_then(Value::as_object)
-      .is_some_and(serde_json::Map::is_empty),
+    graph_has_nodes(&graph),
     "saved graph is empty; add nodes and Apply before Run"
   );
   let proposal = crate::domain::graph::graph_apply::Proposal {
     graph: graph.clone(),
     bytes: Vec::new(),
     revision: expected_revision.to_owned(),
+    warnings: Vec::new(),
   };
   let prepared = crate::domain::graph::graph_apply::prepare(paths, name, &proposal)
     .map_err(anyhow::Error::new)?;
   verify_rendered_snapshot(paths, name, &graph, expected_revision, &prepared.files)?;
   verify_launch_inputs(paths, name)?;
   Ok(())
+}
+
+fn graph_has_nodes(graph: &Value) -> bool {
+  graph["cores"].as_object().is_some_and(|cores| {
+    cores.values().any(|core| {
+      core["layers"].as_object().is_some_and(|layers| {
+        layers.values().any(|layer| {
+          layer["groups"].as_object().is_some_and(|groups| {
+            groups.values().any(|group| {
+              group["nodes"]
+                .as_object()
+                .is_some_and(|nodes| !nodes.is_empty())
+            })
+          })
+        })
+      })
+    })
+  })
 }
 
 /// Revalidate a previously applied graph against the currently configured cores.
@@ -690,13 +713,13 @@ pub fn render_graph(
   for role in roles {
     let reply = call(paths, name, role, "render", graph, expected_revision).map_err(|error| {
       if graph_contract::uses_revisioned_generation(graph) {
-        anyhow::Error::new(crate::domain::graph::generated_v2::owner_rejected(role))
+        anyhow::Error::new(crate::domain::graph::generated::owner_rejected(role))
       } else {
         error
       }
     })?;
     if graph_contract::uses_revisioned_generation(graph) && reply["ok"] != true {
-      return Err(crate::domain::graph::generated_v2::owner_rejected(role).into());
+      return Err(crate::domain::graph::generated::owner_rejected(role).into());
     }
     ensure!(
       reply["ok"] == true,
@@ -712,7 +735,7 @@ pub fn render_graph(
       let directory = role;
       let file = safe_file(directory, entry).map_err(|error| {
         if graph_contract::uses_revisioned_generation(graph) {
-          anyhow::Error::new(crate::domain::graph::generated_v2::unsafe_render())
+          anyhow::Error::new(crate::domain::graph::generated::unsafe_render())
         } else {
           error
         }
@@ -748,8 +771,11 @@ pub fn render_graph(
   Ok(files)
 }
 
-fn ei_owner_selected(graph: &Value) -> bool {
-  graph["cores"].get("ei").is_some()
+pub(crate) fn ei_owner_selected(graph: &Value) -> bool {
+  crate::domain::graph::graph_contract::has_unified_ei_layers(graph)
+    || graph
+      .pointer("/cores/isos/layers/process/groups/component/nodes/ei")
+      .is_some_and(|node| node["enabled"] != false)
 }
 
 pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
@@ -757,7 +783,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
   let saved = graph_contract::read(&graph_path)?;
   let file = if graph_contract::uses_revisioned_generation(&saved.value) {
     verify_revisioned(paths, name, &saved.value, &saved.revision)?;
-    crate::domain::graph::generated_v2::selected_root(paths, name, &saved.value, &saved.revision)?
+    crate::domain::graph::generated::selected_root(paths, name, &saved.value, &saved.revision)?
       .join("core-setup/launch-inputs.json")
   } else {
     paths.generated(name).join("core-setup/launch-inputs.json")
@@ -824,7 +850,7 @@ pub fn write_revisioned(
   graph_revision: &str,
   files: Vec<(PathBuf, Vec<u8>)>,
 ) -> Result<PathBuf> {
-  crate::domain::graph::generated_v2::publish(paths, name, graph, graph_revision, &files)
+  crate::domain::graph::generated::publish(paths, name, graph, graph_revision, &files)
     .map_err(anyhow::Error::new)
 }
 
@@ -834,8 +860,7 @@ pub fn verify_revisioned(
   graph: &Value,
   graph_revision: &str,
 ) -> Result<()> {
-  if crate::domain::graph::generated_v2::selected(paths, name, graph, graph_revision, None)?
-    .is_some()
+  if crate::domain::graph::generated::selected(paths, name, graph, graph_revision, None)?.is_some()
   {
     return Ok(());
   }
@@ -907,14 +932,8 @@ pub fn verify_rendered_snapshot(
   graph_revision: &str,
   expected: &[(PathBuf, Vec<u8>)],
 ) -> Result<()> {
-  if crate::domain::graph::generated_v2::selected(
-    paths,
-    name,
-    graph,
-    graph_revision,
-    Some(expected),
-  )?
-  .is_some()
+  if crate::domain::graph::generated::selected(paths, name, graph, graph_revision, Some(expected))?
+    .is_some()
   {
     return Ok(());
   }
@@ -962,7 +981,8 @@ mod tests {
     fs::write(paths.socket(), b"stale manager socket placeholder").unwrap();
     let graph: Value = serde_json::from_slice(
       &fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+          .join("../../tests/fixtures/graph/demo-only.nodes.json"),
       )
       .unwrap(),
     )
@@ -975,7 +995,7 @@ mod tests {
   }
 
   #[test]
-  fn pooled_demo_options_use_one_selected_adapter_generation() {
+  fn demo_fixture_options_use_one_selected_adapter_generation() {
     if std::env::var_os("ISOS_EI_BIN_DIR").is_none() {
       return;
     }
@@ -985,7 +1005,8 @@ mod tests {
     fs::write(paths.socket(), b"stale manager socket placeholder").unwrap();
     let graph: Value = serde_json::from_slice(
       &fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+          .join("../../tests/fixtures/graph/demo-only.nodes.json"),
       )
       .unwrap(),
     )
@@ -998,18 +1019,18 @@ mod tests {
   fn setup_identity_requires_exact_supported_owner_version() {
     let mut identity = json!({
       "core": "eos",
-      "graph_version": "0.2.0",
+      "graph_version": "0.2.1",
       "node_type_version": "0.2",
       "setup_schema_version": SETUP_SCHEMA_VERSION,
-      "product_version": "0.2.1"
+      "product_version": "0.2.3"
     });
     assert!(validate_identity("eos", &identity).is_ok());
-    identity["product_version"] = json!("0.2.0");
+    identity["product_version"] = json!("0.2.1");
     assert!(
       validate_identity("eos", &identity)
         .unwrap_err()
         .to_string()
-        .contains("expected 0.2.1")
+        .contains("expected 0.2.3")
     );
     identity["product_version"] = json!("0.2.1");
     assert!(validate_identity("ei", &identity).is_err());
@@ -1017,7 +1038,7 @@ mod tests {
 
   #[test]
   fn owner_projection_keeps_only_its_core_layers() {
-    let graph = json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{
+    let graph = json!({"version":"0.2.1","robot":{"id":"r","name":"R"},"cores":{
       "isos":{"layers":{"ui":{"groups":{}}}},
       "ei":{"layers":{"io":{"groups":{}},"cognition":{"groups":{}},"governance":{"groups":{}}}},
       "eos":{"layers":{"interface":{"groups":{}},"dispatcher":{"groups":{}},"hardware":{"groups":{}}}}
@@ -1031,10 +1052,22 @@ mod tests {
   }
 
   #[test]
+  fn package_only_hardware_counts_as_nonempty_run_graph() {
+    let graph = json!({"cores":{
+      "isos":{"layers":{}},"ei":{"layers":{}},
+      "eos":{"layers":{"hardware":{"groups":{"camera":{"nodes":{"front":{"id":"front"}}}}}}}
+    }});
+    assert!(graph_has_nodes(&graph));
+    assert!(!ei_owner_selected(&graph));
+    let empty = json!({"cores":{"isos":{"layers":{}},"ei":{"layers":{}},"eos":{"layers":{}}}});
+    assert!(!graph_has_nodes(&empty));
+  }
+
+  #[test]
   fn health_only_three_core_graph_selects_ei_and_default_owner_endpoints() {
     let temp = tempfile::tempdir().unwrap();
     let paths = paths(temp.path());
-    let graph = json!({"version":"0.2.0","robot":{"id":"r","name":"R"},"cores":{
+    let graph = json!({"version":"0.2.1","robot":{"id":"r","name":"R"},"cores":{
       "isos":{"layers":{"ui":{"groups":{}}}},
       "ei":{"layers":{"io":{"groups":{}}}},
       "eos":{"layers":{"hardware":{"groups":{}}}}
@@ -1079,36 +1112,36 @@ mod tests {
   fn adapter_reply_is_bounded_and_versioned() {
     let temp = tempfile::tempdir().unwrap();
     let script = temp.path().join("adapter");
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    let reply = invoke(&script, &json!({"schema_version":2,"op":"render"})).unwrap();
+    let reply = invoke(&script, &json!({"schema_version":3,"op":"render"})).unwrap();
     assert_eq!(reply["ok"], true);
     fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":false,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[],\"unexpected\":true}'\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"identity"})).is_err());
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":false,\"diagnostics\":[{\"path\":\"/graph/cores/isos/layers/ei_io/groups/link/nodes/gateway/node_type\",\"code\":\"unsupported_node_type_version\",\"message\":\"unsupported type\"}],\"files\":[]}'\nexit 2\n").unwrap();
-    let rejected = invoke(&script, &json!({"schema_version":2,"op":"render"})).unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"render"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":false,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"render"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"render"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[],\"unexpected\":true}'\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"render"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"identity"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":false,\"diagnostics\":[{\"path\":\"/graph/cores/isos/layers/ei_io/groups/link/nodes/gateway/node_type\",\"code\":\"unsupported_node_type_version\",\"message\":\"unsupported type\"}],\"files\":[]}'\nexit 2\n").unwrap();
+    let rejected = invoke(&script, &json!({"schema_version":3,"op":"render"})).unwrap();
     assert_eq!(rejected["ok"], false);
     assert_eq!(
       rejected["diagnostics"][0]["code"],
       "unsupported_node_type_version"
     );
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\nexit 2\n").unwrap();
-    assert!(invoke(&script, &json!({"schema_version":2,"op":"render"})).is_err());
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\nexit 2\n").unwrap();
+    assert!(invoke(&script, &json!({"schema_version":3,"op":"render"})).is_err());
   }
 
   #[test]
   fn setup_adapter_does_not_receive_skill_selection_handoff() {
     let temp = tempfile::tempdir().unwrap();
     let script = temp.path().join("adapter");
-    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nif [ -n \"${EOS_SKILL_SELECTION_FILE+x}\" ]; then exit 77; fi\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+    fs::write(&script, "#!/bin/sh\ncat >/dev/null\nif [ -n \"${EOS_SKILL_SELECTION_FILE+x}\" ]; then exit 77; fi\nprintf '{\"schema_version\":3,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let mut environment = std::collections::BTreeMap::new();
     environment.insert(
@@ -1118,7 +1151,7 @@ mod tests {
     assert_eq!(
       invoke_with_env(
         &script,
-        &json!({"schema_version":2,"op":"render"}),
+        &json!({"schema_version":3,"op":"render"}),
         Some(&environment)
       )
       .unwrap()["ok"],
@@ -1186,7 +1219,7 @@ mod tests {
     paths.prepare().unwrap();
     config::atomic_write(
       &paths.node_graph_path("default"),
-      br#"{"version":"0.2.0","robot":{},"cores":{"isos":{"layers":{}}}}"#,
+      br#"{"version":"0.2.1","robot":{},"cores":{"isos":{"layers":{}}}}"#,
     )
     .unwrap();
     assert!(prepare_run(&paths, "default", "stale").is_err());

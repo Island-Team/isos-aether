@@ -1,6 +1,6 @@
 # P06 shared JSONL event fixtures
 
-[中文](README_cn.md) · [Owner contract](../../../../../docs/isos/interfaces/core/events.md) · [Design](../../../../../docs/isos/design/README.md)
+[中文](README_cn.md) · [Owner contract](../../../../../docs/isos/interfaces/core.md#core_events) · [Design](../../../../../docs/isos/core/README.md)
 
 `cases.json` freezes 37 success, rejection, suppression, lifecycle and reviewed-owner scenarios for IsOS P06. The case names are stable inputs for implementation tests. The fixture checker validates the case inventory and representative raw-child and stored-record wire boundaries, including the 8,064/8,065 and 8,192/8,193 byte edges. Run `python3 tests/fixtures/jsonl_events/check_cases.py`. The Rust unit and real-process tests exercise the runtime collector.
 

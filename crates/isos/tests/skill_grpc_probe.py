@@ -7,8 +7,8 @@ import time
 import grpc
 from google.protobuf.duration_pb2 import Duration
 from google.protobuf.struct_pb2 import Struct
-from island.generated.eos import skills_pb2_grpc
-from island.generated.eos.skills import catalog_pb2, execution_pb2
+from ei.generated.eos import skills_pb2_grpc
+from ei.generated.eos.skills import catalog_pb2, execution_pb2
 
 
 def main():

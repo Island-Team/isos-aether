@@ -6,13 +6,33 @@
           "groups": {
             "intent": {
               "nodes": {
-                "forwarder": {
-                  "description": "Pass activation with its event identity",
-                  "id": "forwarder",
+                "context": {
+                  "description": "Organize agent input context from observations for cognition",
+                  "id": "context",
                   "inputs": {
                     "activation": {
                       "node": "ei/io/input/trigger",
                       "output": "activation"
+                    },
+                    "observation": {
+                      "node": "ei/cognition/state/arm_status",
+                      "output": "observation"
+                    }
+                  },
+                  "label": "EI input context",
+                  "node_type": "ei.cognition.intent.context@v0.2"
+                },
+                "forwarder": {
+                  "description": "Consume context snapshot and forward activation",
+                  "id": "forwarder",
+                  "inputs": {
+                    "activation": {
+                      "node": "ei/cognition/intent/context",
+                      "output": "activation"
+                    },
+                    "snapshot": {
+                      "node": "ei/cognition/intent/context",
+                      "output": "snapshot"
                     }
                   },
                   "label": "EI cognition",
@@ -147,6 +167,48 @@
         },
         "hardware": {
           "groups": {
+            "camera": {
+              "nodes": {
+                "front_camera": {
+                  "adapter": {
+                    "package": {
+                      "id": "island/mujoco-sim",
+                      "version": "0.2.6"
+                    },
+                    "settings": {
+                      "device_id": "cam-0",
+                      "frequency_hz": 30,
+                      "service_instance": "native"
+                    },
+                    "type": "mujoco-v2"
+                  },
+                  "capabilities": [
+                    "jpeg"
+                  ],
+                  "description": "camera",
+                  "frame_id": "cam-0",
+                  "health_timing": {
+                    "poll_interval_ms": 100,
+                    "stale_after_ms": 500
+                  },
+                  "id": "front_camera",
+                  "label": "Front camera",
+                  "node_type": "eos.hardware.camera.device@v0.2",
+                  "observation": {
+                    "max_payload_bytes": 12582912,
+                    "max_rate_hz": 30
+                  },
+                  "package": {
+                    "id": "island/mujoco-sim",
+                    "version": "0.2.6"
+                  },
+                  "settings": {
+                    "camera_height": 720,
+                    "camera_width": 1280
+                  }
+                }
+              }
+            },
             "mock": {
               "nodes": {
                 "arm": {
@@ -219,6 +281,27 @@
                   },
                   "label": "EOS monitor egress",
                   "node_type": "eos.interface.egress.arm_status@v0.2"
+                },
+                "front_vision_flow": {
+                  "capabilities": [
+                    "bridge"
+                  ],
+                  "description": "demo vision flow",
+                  "id": "front_vision_flow",
+                  "inputs": {
+                    "frame": {
+                      "desired_rate_hz": {
+                        "max": 32,
+                        "min": 15
+                      },
+                      "sources": {
+                        "node": "eos/hardware/camera/front_camera",
+                        "output": "frame"
+                      }
+                    }
+                  },
+                  "label": "Front vision flow",
+                  "node_type": "eos.interface.egress.vision_flow@v0.2"
                 }
               }
             },
@@ -306,6 +389,28 @@
                   }
                 }
               }
+            },
+            "vision": {
+              "nodes": {
+                "front_monitor": {
+                  "description": "",
+                  "id": "front_monitor",
+                  "inputs": {
+                    "frame": {
+                      "desired_rate_hz": {
+                        "max": 32,
+                        "min": 15
+                      },
+                      "sources": {
+                        "node": "eos/interface/egress/front_vision_flow",
+                        "output": "frame"
+                      }
+                    }
+                  },
+                  "label": "Front vision",
+                  "node_type": "isos.ui.vision.monitor@v0.2"
+                }
+              }
             }
           }
         }
@@ -316,5 +421,5 @@
     "id": "default",
     "name": "Async control and monitor demo"
   },
-  "version": "0.2.0"
+  "version": "0.2.1"
 }

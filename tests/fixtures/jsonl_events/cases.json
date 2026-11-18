@@ -117,11 +117,11 @@
     {
       "id": "managed_package_provenance",
       "boundary": "package",
-      "mutation": "exact IsOS verified package-process handoff and pinned MuJoCo node",
+      "mutation": "exact IsOS verified package-process handoff and pinned package hardware node",
       "expected": {
         "result": "admit",
         "event_code": "eos_package_admitted",
-        "package_id": "island/mujoco-sim",
+        "package_id": "vendor/driver",
         "package_version": "0.1.1",
         "release_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "payload_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -130,7 +130,7 @@
     {
       "id": "missing_package_process_handoff",
       "boundary": "package",
-      "mutation": "managed MuJoCo launch has no verified package-process handoff",
+      "mutation": "managed package hardware launch has no verified package-process handoff",
       "expected": {
         "result": "reject_before_admission",
         "event_count": 0
@@ -167,7 +167,7 @@
     {
       "id": "backend_loss_transition",
       "boundary": "lifecycle",
-      "mutation": "MuJoCo direct child exits after readiness",
+      "mutation": "package hardware direct child exits after readiness",
       "expected": {
         "result": "fail",
         "event_code": "eos_backend_lost",
@@ -258,10 +258,10 @@
     {
       "id": "saved_graph_pointer",
       "boundary": "handoff",
-      "mutation": "validated internal isos/eos_process/mujoco/sim path is emitted for the admitted graph node",
+      "mutation": "validated internal isos/eos_process/driver/sim path is emitted for the admitted graph node",
       "expected": {
         "result": "emit",
-        "node_path": "/cores/isos/layers/eos_process/groups/mujoco/nodes/sim",
+        "node_path": "/cores/isos/layers/eos_process/groups/driver/nodes/sim",
         "short_path_absent": true
       }
     },
@@ -296,13 +296,13 @@
       }
     },
     {
-      "id": "private_mujoco_capture",
+      "id": "private_driver_capture",
       "boundary": "privacy",
-      "mutation": "managed EOS backend emits raw MuJoCo stdout or stderr",
+      "mutation": "managed EOS backend emits raw package hardware stdout or stderr",
       "expected": {
         "result": "private_raw_capture",
         "log_dir": "data/logs/<deployment>/owner/eos/",
-        "raw_file": "mujoco.log",
+        "raw_file": "driver.log",
         "top_level_eos_log_writer": "isos",
         "shared_event": false
       }

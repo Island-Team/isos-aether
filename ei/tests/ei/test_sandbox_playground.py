@@ -10,20 +10,31 @@ from typing import Any, cast
 
 import pytest
 import websockets
-
-from ei.contracts.actions import TerminalStatus
-from ei.core.link import EosClient
-from ei.core.perception.admission import Admission
+from ei.contracts.io.link import TerminalStatus
+from ei.core.evidence.perception.admission import Admission
+from ei.core.io.link import EosClient
+from ei.core.system.sandbox import devices
+from ei.core.system.sandbox.devices import SpeakerAdapter
+from ei.core.system.sandbox.server import PlaygroundServer
 from ei.io.northbound import NorthboundServer
 from ei.io.state import ServerState
 from ei.lib.config import (
   GatewayConfig,
   SandboxRuntimeConfig,
   SandboxSpeakerConfig,
+  load_sandbox_config,
 )
-from ei.opt.sandbox import devices
-from ei.opt.sandbox.devices import SpeakerAdapter
-from ei.opt.sandbox.server import PlaygroundServer
+
+
+def test_sandbox_config_uses_layer_file(tmp_path) -> None:
+  etc = tmp_path / "ei"
+  etc.mkdir()
+  (etc / "sandbox.toml").write_text(
+    "[gateway]\nhost = '127.0.0.1'\ngrpc_port = 16099\n",
+    encoding="utf-8",
+  )
+
+  assert load_sandbox_config(etc).gateway.grpc_port == 16099
 
 
 def _wav() -> bytes:
@@ -461,16 +472,17 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_process_has_no_core_import() -> None:
+async def test_sandbox_process_imports_no_other_core_layer() -> None:
   import ast
   from pathlib import Path
 
-  root = Path(__file__).parents[2] / "src/ei/opt/sandbox"
+  root = Path(__file__).parents[2] / "core/sandbox"
   for source in root.glob("*.py"):
     tree = ast.parse(source.read_text(encoding="utf-8"))
     assert not any(
       isinstance(node, ast.ImportFrom)
       and node.module is not None
       and node.module.startswith("ei.core")
+      and not node.module.startswith("ei.core.system.sandbox")
       for node in ast.walk(tree)
     )

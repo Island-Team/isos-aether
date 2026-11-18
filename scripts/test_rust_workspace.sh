@@ -29,8 +29,4 @@ run_logged fmt cargo fmt --all -- --check
 run_logged clippy cargo clippy --workspace --all-targets -- -D warnings
 run_logged test cargo test --workspace --all-targets
 
-if [[ "${1:-}" == "--bench" ]]; then
-  run_logged bench cargo run -p aether-dispatcher --example bench --release
-fi
-
 printf 'EOS v2 checks passed; logs: %s\n' "$log_dir"

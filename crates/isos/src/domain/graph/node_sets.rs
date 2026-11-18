@@ -3,7 +3,7 @@
 use crate::{
   app::config::Paths,
   domain::packages,
-  domain::registry::release::{NodeSet, Release},
+  domain::registry::release::{NodeSet, NodeTemplate, Release},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -118,6 +118,66 @@ fn rewrite_paths(value: &mut Value, replacements: &BTreeMap<String, String>) {
   }
 }
 
+fn allocate_paths(
+  draft: &Value,
+  nodes: &[NodeTemplate],
+  default_group: &str,
+) -> Result<BTreeMap<String, String>> {
+  let mut hardware_ids = BTreeSet::new();
+  if let Some(groups) = draft
+    .pointer("/cores/eos/layers/hardware/groups")
+    .and_then(Value::as_object)
+  {
+    for group in groups.values() {
+      if let Some(nodes) = group["nodes"].as_object() {
+        hardware_ids.extend(nodes.keys().cloned());
+      }
+    }
+  }
+  let mut paths_by_ref = BTreeMap::new();
+  let mut reserved_paths = BTreeSet::new();
+  for node in nodes {
+    ensure!(
+      matches!(node.core.as_str(), "isos" | "ei" | "eos"),
+      "node set must target a registered core"
+    );
+    let group = node.group.as_deref().unwrap_or(default_group);
+    let instance = node.profile["id"]
+      .as_str()
+      .context("node profile requires id")?;
+    let hardware = node.core == "eos" && node.layer == "hardware";
+    let mut assigned = instance.to_owned();
+    for suffix in 2..=10000 {
+      let path = format!("{}/{}/{group}/{assigned}", node.core, node.layer);
+      let pointer = format!(
+        "/cores/{}/layers/{}/groups/{group}/nodes/{assigned}",
+        node.core, node.layer
+      );
+      if draft.pointer(&pointer).is_none()
+        && !reserved_paths.contains(&path)
+        && (!hardware || !hardware_ids.contains(&assigned))
+      {
+        reserved_paths.insert(path.clone());
+        if hardware {
+          hardware_ids.insert(assigned.clone());
+        }
+        ensure!(
+          paths_by_ref.insert(node.reference.clone(), path).is_none(),
+          "node set duplicates ref {}",
+          node.reference
+        );
+        break;
+      }
+      assigned = format!("{instance}_{suffix}");
+    }
+    ensure!(
+      paths_by_ref.contains_key(&node.reference),
+      "no available node ID for {instance}"
+    );
+  }
+  Ok(paths_by_ref)
+}
+
 pub fn compose(
   paths: &Paths,
   id: &str,
@@ -151,25 +211,14 @@ pub fn compose(
     values.keys().all(|name| set.parameters.contains_key(name)),
     "unknown node set parameter"
   );
-  let mut paths_by_ref = BTreeMap::new();
-  let default_group = id.split_once('/').unwrap().1;
-  for node in &set.nodes {
-    ensure!(node.core == "isos", "node set must target the isos core");
-    let group = node.group.as_deref().unwrap_or(default_group);
-    let instance = node.profile["id"]
-      .as_str()
-      .context("node profile requires id")?;
-    paths_by_ref.insert(
-      node.reference.clone(),
-      format!("{}/{}/{group}/{instance}", node.core, node.layer),
-    );
-  }
   let mut draft = graph.clone();
   ensure!(
-    draft["version"] == "0.2.0",
+    draft["version"] == "0.2.1",
     "node graph version is incompatible with the selected node set"
   );
   rewrite_paths(&mut draft, &BTreeMap::new());
+  let default_group = id.split_once('/').unwrap().1;
+  let paths_by_ref = allocate_paths(&draft, &set.nodes, default_group)?;
   let mut added_paths = Vec::new();
   let mut seen = BTreeSet::new();
   for node in &set.nodes {
@@ -187,6 +236,7 @@ pub fn compose(
     let mut profile = node.profile.clone();
     substitute(&mut profile, &parameters)?;
     resolve_refs(&mut profile, &paths_by_ref)?;
+    profile["id"] = json!(segments[3]);
     let package = json!({"id":id,"version":version});
     let node_type = profile["node_type"]
       .as_str()
@@ -232,6 +282,27 @@ pub fn compose(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn assigns_free_paths_without_replacing_existing_hardware() {
+    let draft = json!({"cores":{"eos":{"layers":{"hardware":{"groups":{
+      "camera":{"nodes":{"front":{"id":"front"}}},
+      "mock":{"nodes":{"arm":{"id":"arm"}}}
+    }}}}}});
+    let nodes: Vec<NodeTemplate> = serde_json::from_value(json!([
+      {"ref":"camera","core":"eos","layer":"hardware","group":"camera","profile":{"id":"front"}},
+      {"ref":"arm","core":"eos","layer":"hardware","group":"manipulator","profile":{"id":"arm"}},
+      {"ref":"camera2","core":"eos","layer":"hardware","group":"camera","profile":{"id":"front"}}
+    ]))
+    .unwrap();
+    let paths = allocate_paths(&draft, &nodes, "device").unwrap();
+    assert_eq!(paths["camera"], "eos/hardware/camera/front_2");
+    assert_eq!(paths["arm"], "eos/hardware/manipulator/arm_2");
+    assert_eq!(paths["camera2"], "eos/hardware/camera/front_3");
+    let mut input = json!({"source":"@arm"});
+    resolve_refs(&mut input, &paths).unwrap();
+    assert_eq!(input["source"], paths["arm"]);
+  }
 
   #[test]
   fn references_resolve_to_current_single_core_paths() {

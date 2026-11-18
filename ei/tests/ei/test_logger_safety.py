@@ -7,11 +7,10 @@ import logging
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-
 from ei.lib import logger as logger_mod
 from ei.lib.config import LoggingConfig
 from ei.lib.logger import bind_log_context, configure_logging, get_logger
+from pydantic import ValidationError
 
 
 @pytest.fixture()
@@ -49,10 +48,15 @@ def test_one_core_jsonl_has_common_envelope_and_context(log_dir: Path) -> None:
   event = _events(log_dir)[0]
   assert {"timestamp", "level", "source", "message"} <= event.keys()
   assert event["level"] == "warn"
-  assert event["source"] == "ei.core.test.py@aether-v0.2.1"
+  assert event["source"] == "ei.core.test.py@aether-v0.2.3"
   assert event["message"] == "health probe"
   assert event["fields"]["detail"] == "ready"
   assert event["fields"]["mission_id"] == "mission-1"
+  readable = (log_dir / "ei.log").read_text(encoding="utf-8").splitlines()
+  assert len(readable) == 1
+  assert readable[0].startswith("IsOS-v0.2.3@ei.core.test.py@aether-v0.2.3: [WARN][")
+  assert "health probe" in readable[0]
+  assert "detail=ready" in readable[0]
   assert not (log_dir / "events.jsonl").exists()
   assert not (log_dir / "main.log").exists()
   assert not (log_dir.parent / "state" / "ei.jsonl").exists()
@@ -66,6 +70,9 @@ def test_sensitive_values_are_redacted_before_local_write(log_dir: Path) -> None
   assert event["fields"]["prompt"] == "<excluded>"
   assert event["fields"]["api_key"] == "<redacted>"
   assert event["fields"]["detail"] == "safe"
+  readable = (log_dir / "ei.log").read_text(encoding="utf-8")
+  assert "private prompt" not in readable
+  assert "private key" not in readable
 
 
 def test_third_party_record_uses_same_jsonl(log_dir: Path) -> None:

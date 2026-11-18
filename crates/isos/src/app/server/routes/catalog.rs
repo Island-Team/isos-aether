@@ -37,12 +37,12 @@ pub(crate) async fn selected_node_types(
     ),
     Err(error) => return Err(internal_err(StatusCode::INTERNAL_SERVER_ERROR, &error)),
   };
-  if graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.1" {
     let diagnostic = graph_contract::admission_diagnostic(&graph, None).unwrap_or_else(|| {
       graph_contract::Diagnostic {
         path: "/version".into(),
         code: "selected_catalog_version_unsupported",
-        message: "Selected node catalog requires a 0.2.0 graph".into(),
+        message: "Selected node catalog requires a 0.2.1 graph".into(),
         context: std::collections::BTreeMap::new(),
       }
     });
@@ -147,16 +147,18 @@ pub(crate) async fn core_readiness(State(app): State<Arc<App>>, headers: HeaderM
   let paths = app.paths.clone();
   let deployment = app.deployment.clone();
   let status = tokio::task::spawn_blocking(move || {
-    crate::runtime::manager::manager_status_for_http(&paths, &deployment)
+    crate::runtime::manager::manager_status_for_poll(&paths, &deployment)
   })
   .await
   .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?
   .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
-  ok(readiness::report(
-    &app.paths,
-    &app.deployment,
-    Some(&status),
-  ))
+  let paths = app.paths.clone();
+  let deployment = app.deployment.clone();
+  let report =
+    tokio::task::spawn_blocking(move || readiness::report(&paths, &deployment, Some(&status)))
+      .await
+      .map_err(|error| internal_err(StatusCode::SERVICE_UNAVAILABLE, &error))?;
+  ok(report)
 }
 
 #[derive(Deserialize)]
@@ -235,8 +237,41 @@ pub(crate) async fn preview_node_set(
     &request.graph,
     &request.values,
   )
-  .map_err(|error| internal_err(StatusCode::UNPROCESSABLE_ENTITY, &error))?;
-  process::validate_value(&app.paths, &preview["graph"]).map_err(|error| admission_err(&error))?;
+  .map_err(|error| node_set_preview_error("/set", &error))?;
+  process::validate_value(&app.paths, &preview["graph"])
+    .map_err(|error| node_set_preview_error("/graph", &error))?;
   record(&app, "graph", "Previewed package node set");
   ok(preview)
+}
+
+fn node_set_preview_error(path: &str, error: &anyhow::Error) -> (StatusCode, Json<Value>) {
+  let reason: String = error
+    .to_string()
+    .chars()
+    .filter(|c| !c.is_control())
+    .take(512)
+    .collect();
+  fail(
+    StatusCode::UNPROCESSABLE_ENTITY,
+    "node_set_preview_rejected",
+    &reason,
+    json!({"diagnostics":[{"path":path,"code":"node_set_preview_rejected","message":reason}]}),
+  )
+}
+
+#[cfg(test)]
+mod node_set_preview_tests {
+  use super::*;
+
+  #[test]
+  fn preview_rejection_names_the_reason_and_bounds_it() {
+    let long = format!("unsupported_execution: {}", "x".repeat(1000));
+    let (status, Json(body)) = node_set_preview_error("/graph", &anyhow::anyhow!(long));
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "node_set_preview_rejected");
+    assert_eq!(body["error"]["details"]["diagnostics"][0]["path"], "/graph");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.starts_with("unsupported_execution:"));
+    assert_eq!(message.len(), 512);
+  }
 }

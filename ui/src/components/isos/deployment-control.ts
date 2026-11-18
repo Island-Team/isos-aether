@@ -1,13 +1,13 @@
 /** One page-wide coordinator for IsOS launch and Stop ordering across workbench surfaces. */
-import { controlProcesses, stopProcesses, type ProcessStatus, type StopControlReply } from '@/services/isos/node-graph';
+import { controlProcesses, stopProcesses, type RunControlReply, type StopControlReply } from '@/services/isos/node-graph';
 
 let epoch = 0;
 let stopping: Promise<StopControlReply> | null = null;
-const activeRuns = new Set<Promise<ProcessStatus>>();
+const activeRuns = new Set<Promise<RunControlReply>>();
 
 export function deploymentStopEpoch(): number { return epoch; }
 
-export function runDeployment(operation: 'run' | 'restart', revision: string): Promise<ProcessStatus> {
+export function runDeployment(operation: 'run' | 'restart', revision: string): Promise<RunControlReply> {
   if (stopping) return Promise.reject(new Error('Stop is in progress.'));
   const request = controlProcesses(operation, revision);
   activeRuns.add(request);

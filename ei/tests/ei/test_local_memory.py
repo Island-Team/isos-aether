@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from ei.api.plan import PlanRecord, StepOutcome
-from ei.core.memory import LocalMemoryStore
+from ei.core.cognition.memory import LocalMemoryStore
+from ei.core.system.models.plan import PlanRecord, StepOutcome
 
 
 def test_local_memory_store_is_append_only_and_deduplicated(tmp_path) -> None:

@@ -82,6 +82,10 @@ pub(super) async fn cors(request: Request<Body>, next: Next) -> Response {
     return err(StatusCode::FORBIDDEN, "invalid Origin").into_response();
   }
   let preflight = request.method() == Method::OPTIONS;
+  let private_network_requested = headers
+    .get("access-control-request-private-network")
+    .and_then(|value| value.to_str().ok())
+    == Some("true");
   if preflight {
     if origin.is_none() {
       return err(StatusCode::FORBIDDEN, "preflight requires Origin").into_response();
@@ -129,6 +133,14 @@ pub(super) async fn cors(request: Request<Body>, next: Next) -> Response {
       header::ACCESS_CONTROL_MAX_AGE,
       HeaderValue::from_static("600"),
     );
+    // Both the local and hosted UI origins are admitted above. Chromium asks
+    // for private-network permission when either UI calls the loopback API.
+    if private_network_requested {
+      response.headers_mut().insert(
+        "access-control-allow-private-network",
+        HeaderValue::from_static("true"),
+      );
+    }
   }
   response
 }

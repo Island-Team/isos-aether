@@ -1,6 +1,6 @@
 # R03 IsOS 控制授权交接用例
 
-[English](README.md) · [IsOS 所有者契约](../../../../../docs_cn/isos/interfaces/core/control-grants_cn.md) · [设计](../../../../../docs_cn/isos/design/README_cn.md)
+[English](README.md) · [IsOS 所有者契约](../../../../../docs_cn/isos/interfaces/core_cn.md#core_control_grants) · [设计](../../../../../docs_cn/isos/core/README_cn.md)
 
 `cases.json` 固定 IsOS 签发和启动传递的设计矩阵，尚不表示运行时已通过。基线使用干净的 `ISOS_HOME`、显式选中并验证的 schema-2 V2 图生成代、必需的已选 EOS stub，以及可选的已选 EI 和 bridge stub。stub 只记录看到的保留环境变量**名称**。EOS R03 测试独立检查验证文件字节、gRPC 元数据、角色/方法范围及 Dispatcher 释放。任何用例都不把真实授权写入源码仓库。
 

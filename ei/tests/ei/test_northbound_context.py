@@ -8,10 +8,9 @@ from datetime import UTC, datetime
 
 import pytest
 import websockets
-
-from ei.api.context import ContextSection, ContextSnapshot
-from ei.api.status import HealthState
-from ei.core.perception.admission import Admission
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.context import ContextSection, ContextSnapshot
+from ei.core.system.models.status import HealthState
 from ei.io import CONTEXT_PATH, ContextStore, NorthboundServer
 from ei.io.state import ServerState
 
@@ -91,7 +90,7 @@ async def test_context_stream_unavailable_without_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_context_entry_publishes_each_rebuild(etc_root) -> None:
-  from ei.core.context import context_entry
+  from ei.core.cognition.context import context_entry
   from ei.lib.config import load_prompt_config
 
   prompts = load_prompt_config(etc_root)

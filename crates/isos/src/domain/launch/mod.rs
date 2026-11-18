@@ -61,6 +61,9 @@ pub struct PackageLaunch {
   pub node_type: String,
   pub package: PackageIdentity,
   pub entrypoint: PathBuf,
+  pub entrypoint_sha256: String,
+  #[serde(default)]
+  pub args: Vec<String>,
   pub resources: BTreeMap<String, ResourceSelection>,
   pub lifecycle_adapter: String,
   pub release_sha256: Option<String>,
@@ -86,11 +89,7 @@ pub fn bind_launch(
   verified_root: &std::path::Path,
 ) -> Result<Vec<u8>> {
   ensure!(launch.schema_version == 1, "invalid unbound package launch");
-  let owner = if launch.node_type == "isos.eos_process.mujoco@v0.2" {
-    "eos"
-  } else {
-    launch.node_path.split('/').next().unwrap_or_default()
-  };
+  let owner = launch.node_path.split('/').next().unwrap_or_default();
   supported_owner(owner, &launch.node_path, &launch.node_type, &launch.package)?;
   ensure!(
     !run_id.is_empty()
@@ -133,6 +132,8 @@ pub fn bind_launch(
     node_type: &launch.node_type,
     package: &launch.package,
     entrypoint: &launch.entrypoint,
+    entrypoint_sha256: &launch.entrypoint_sha256,
+    args: &launch.args,
     resources: &launch.resources,
     lifecycle_adapter: &launch.lifecycle_adapter,
     release_sha256,
@@ -152,9 +153,6 @@ fn declared_process<'a>(
     .processes
     .iter()
     .find(|process| process.node_type == node_type)?;
-  if node_type == "isos.eos_process.mujoco@v0.2" && packages::is_published_mujoco_release(release) {
-    return Some((process, "eos"));
-  }
   let owner = contributions
     .node_types
     .iter()
@@ -181,14 +179,16 @@ fn supported_owner(
   node_type: &str,
   package: &PackageIdentity,
 ) -> Result<()> {
-  let unified_simulator = owner == "eos"
-    && node_type == "isos.eos_process.mujoco@v0.2"
-    && package.id == "island/mujoco-sim"
-    && package.version == "0.1.1"
-    && node_path.split('/').take(3).collect::<Vec<_>>() == ["isos", "eos_process", "mujoco"];
-  if !unified_simulator
-    && (node_path.split('/').next() != Some(owner)
-      || node_path.split('/').nth(1) != Some("process"))
+  if !matches!(owner, "isos" | "ei" | "eos") {
+    return Err(admission_failure(
+      package,
+      "package_owner_unavailable",
+      node_path,
+    ));
+  }
+  if !node_type.starts_with(&format!("{owner}.process."))
+    || node_path.split('/').next() != Some(owner)
+    || node_path.split('/').nth(1) != Some("process")
   {
     return Err(admission_failure(
       package,
@@ -196,14 +196,17 @@ fn supported_owner(
       node_path,
     ));
   }
-  if owner != "eos" {
-    return Err(admission_failure(
-      package,
-      "package_owner_unavailable",
-      node_path,
-    ));
-  }
   Ok(())
+}
+
+fn lifecycle_available(catalog: &Value, family: &str) -> bool {
+  catalog["adapter_families"]
+    .as_array()
+    .is_some_and(|families| {
+      families.iter().any(|entry| {
+        entry["id"] == family && (entry["compiled"] == true || entry["loadable"] == true)
+      })
+    })
 }
 
 fn catalog(root: &std::path::Path, path: &str) -> Result<ResourceCatalog> {
@@ -260,66 +263,57 @@ fn catalog(root: &std::path::Path, path: &str) -> Result<ResourceCatalog> {
   Ok(catalog)
 }
 
-fn process_catalog(
+pub(crate) fn service_resource_path(
   root: &std::path::Path,
-  release: &Release,
-  path: &str,
-) -> Result<ResourceCatalog> {
-  if path != "@isos-published-mujoco-scenes" {
-    return catalog(root, path);
+  _release: &Release,
+  declaration: &crate::domain::registry::release::ProcessResource,
+  selected: &str,
+) -> Result<std::path::PathBuf> {
+  let catalog = catalog(root, &declaration.descriptor)?;
+  let resource = catalog
+    .resources
+    .iter()
+    .find(|resource| resource.kind == declaration.kind && resource.id == selected)
+    .with_context(|| format!("package resource {selected} is unavailable"))?;
+  let relative = resource
+    .path
+    .as_deref()
+    .context("selected package resource has no file")?;
+  packages::checked_file(root, relative, false)
+}
+
+pub(crate) fn validate_service_payload(
+  root: &std::path::Path,
+  _release: &Release,
+  service: &crate::domain::registry::release::RuntimeService,
+) -> Result<()> {
+  packages::checked_file(root, &service.entrypoint, true)?;
+  for declaration in &service.resources {
+    catalog(root, &declaration.descriptor)?;
   }
-  ensure!(
-    packages::is_published_mujoco_release(release),
-    "unsupported package resource catalog"
-  );
-  let mut resources = Vec::new();
-  for (id, label, scene) in [
-    ("pick-place", "Pick and place", "assets/scene.xml"),
-    (
-      "navigation",
-      "Navigation",
-      "assets/scenes/navigation/scene.xml",
-    ),
-  ] {
-    let file = packages::checked_file(root, scene, false)?;
-    let sha256 = hex::encode(Sha256::digest(fs::read(file)?));
-    resources.push(Resource {
-      kind: "scene".into(),
-      id: id.into(),
-      label: label.into(),
-      description: format!("Verified MuJoCo {label} scene"),
-      path: Some(scene.into()),
-      sha256: Some(sha256),
-      metadata: None,
-    });
-  }
-  Ok(ResourceCatalog {
-    contract: "isos.package-resources@v1".into(),
-    schema_version: "0.1.0".into(),
-    resources,
-  })
+  Ok(())
 }
 
 pub fn validate_payload(
   root: &std::path::Path,
-  release: &Release,
+  _release: &Release,
   process: &ProcessDeclaration,
 ) -> Result<()> {
   packages::checked_file(root, &process.entrypoint, true)?;
   for resource in &process.resources {
-    process_catalog(root, release, &resource.descriptor)?;
+    catalog(root, &resource.descriptor)?;
   }
   Ok(())
 }
 
 pub fn option_resources(
   root: &std::path::Path,
-  release: &Release,
+  _release: &Release,
   process: &ProcessDeclaration,
 ) -> Result<Vec<Value>> {
   let mut rows = Vec::new();
   for declaration in &process.resources {
-    for resource in process_catalog(root, release, &declaration.descriptor)?.resources {
+    for resource in catalog(root, &declaration.descriptor)?.resources {
       rows.push(json!({
           "kind":resource.kind,
           "id":resource.id,
@@ -352,7 +346,7 @@ pub fn resolve(
       .get(&declaration.setting)
       .and_then(Value::as_str)
       .with_context(|| format!("missing package resource setting {}", declaration.setting))?;
-    let index = process_catalog(&verified.root, &verified.release, &declaration.descriptor)?;
+    let index = catalog(&verified.root, &declaration.descriptor)?;
     let item = index
       .resources
       .iter()
@@ -403,7 +397,9 @@ pub fn resolve(
     node_path: node_path.to_owned(),
     node_type: node_type.to_owned(),
     package: package.clone(),
+    entrypoint_sha256: hex::encode(Sha256::digest(std::fs::read(&entrypoint)?)),
     entrypoint,
+    args: process.args.clone(),
     resources,
     lifecycle_adapter: process.lifecycle_adapter.clone(),
     release_sha256: verified.receipt.release_sha256.clone(),
@@ -442,7 +438,27 @@ fn graph_nodes(graph: &Value) -> Vec<(String, &Value)> {
   result
 }
 
+pub(crate) fn ensure_single_eos_process(graph: &Value) -> Result<()> {
+  let mut selected = None;
+  for (path, node) in graph_nodes(graph) {
+    let mut segments = path.split('/');
+    let placement = matches!(
+      (segments.next(), segments.next()),
+      (Some("eos"), Some("process")) | (Some("isos"), Some("eos_process"))
+    );
+    if placement && node.get("package").is_some() {
+      ensure!(
+        selected.is_none(),
+        "one EOS package process is supported per graph"
+      );
+      selected = Some(path);
+    }
+  }
+  Ok(())
+}
+
 pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
+  ensure_single_eos_process(graph)?;
   let nodes = graph_nodes(graph);
   let mut processes = BTreeMap::new();
   for (path, node) in &nodes {
@@ -454,6 +470,7 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
     };
     let package: PackageIdentity = serde_json::from_value(pin.clone())?;
     let verified = packages::verify(paths, &package.id, &package.version)?;
+    // EI and EOS validate and supervise their own contributed processes.
     if declared_process(&verified.release, node_type).is_none() {
       if matches!(path.split('/').nth(1), Some("process" | "eos_process")) {
         return Err(admission_failure(
@@ -472,14 +489,7 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
     let catalog = crate::runtime::process::catalog_for_option_graph(paths, graph)?;
     for (process, _) in processes.values() {
       let family = &process.launch.lifecycle_adapter;
-      if !catalog["adapter_families"]
-        .as_array()
-        .is_some_and(|families| {
-          families
-            .iter()
-            .any(|entry| entry["id"] == *family && entry["compiled"] == true)
-        })
-      {
+      if !lifecycle_available(&catalog, family) {
         return Err(admission_failure(
           &process.package,
           "package_lifecycle_adapter_unavailable",
@@ -494,6 +504,41 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn two_eos_package_processes_reject_before_owner_selection() {
+    let process = json!({"node_type":"eos.process.driver.service@v0.2",
+      "package":{"id":"vendor/driver","version":"0.1.2"}});
+    let graph = json!({"version":"0.2.1","robot":{},"cores":{"eos":{"layers":{"process":{"groups":{"driver":{"nodes":{
+      "first":process,"second":process
+    }}}}}}}});
+    assert!(ensure_single_eos_process(&graph).is_err());
+    assert!(
+      crate::runtime::process::project(&graph.to_string())
+        .unwrap_err()
+        .to_string()
+        .contains("one EOS package process")
+    );
+    let one = json!({"cores":{"eos":{"layers":{"process":{"groups":{"driver":{"nodes":{
+      "first":process
+    }}}}}}}});
+    ensure_single_eos_process(&one).unwrap();
+  }
+
+  #[test]
+  fn uncompiled_driver_lifecycle_rejects_admission() {
+    let catalog = json!({"adapter_families":[{"id":"vendor-socket","compiled":false}]});
+    assert!(!lifecycle_available(&catalog, "vendor-socket"));
+    assert!(!lifecycle_available(&catalog, "unknown"));
+    assert!(lifecycle_available(
+      &json!({"adapter_families":[{"id":"vendor-socket","compiled":true}]}),
+      "vendor-socket"
+    ));
+    assert!(lifecycle_available(
+      &json!({"adapter_families":[{"id":"mock-v1","compiled":false,"loadable":true}]}),
+      "mock-v1"
+    ));
+  }
 
   #[test]
   fn unrelated_resource_families_share_digest_and_containment_checks() {
@@ -549,121 +594,14 @@ mod tests {
       ),
       ("eos", "vendor/process/demo/one", "package_owner_mismatch"),
       ("eos", "eos/hardware/demo/one", "package_owner_mismatch"),
+      ("eos", "isos/process/demo/one", "package_owner_mismatch"),
     ] {
       let error =
-        supported_owner(owner, path, "isos.eos_process.mujoco@v0.2", &package).unwrap_err();
+        supported_owner(owner, path, "isos.eos_process.driver@v0.2", &package).unwrap_err();
       let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
       assert_eq!(failure.code, code);
       assert_eq!(failure.path, path);
     }
-  }
-  #[test]
-  fn pinned_mujoco_v02_owner_maps_once_and_rejects_unknown_paths() {
-    let root = tempfile::tempdir().unwrap();
-    let manifest = root.path().join("release.json");
-    fs::write(
-      &manifest,
-      include_bytes!("../../../tests/fixtures/packages/mujoco_published_0_1_1.json"),
-    )
-    .unwrap();
-    let release = packages::read_manifest(&manifest).unwrap();
-    assert_eq!(
-      declared_process(&release, "isos.eos_process.mujoco@v0.2")
-        .unwrap()
-        .0
-        .entrypoint,
-      "bin/eos-mujoco-sim"
-    );
-    assert!(declared_process(&release, "isos.eos_process.unknown@v0.2").is_none());
-    let package = PackageIdentity {
-      id: release.id.clone(),
-      version: release.version.clone(),
-    };
-    assert!(
-      supported_owner(
-        "eos",
-        "isos/eos_process/mujoco/sim",
-        "isos.eos_process.mujoco@v0.2",
-        &package
-      )
-      .is_ok()
-    );
-    for (path, node_type) in [
-      ("isos/eos_process/other/sim", "isos.eos_process.mujoco@v0.2"),
-      (
-        "isos/eos_hardware/mujoco/sim",
-        "isos.eos_process.mujoco@v0.2",
-      ),
-      (
-        "isos/eos_process/mujoco/sim",
-        "isos.eos_process.unknown@v0.2",
-      ),
-    ] {
-      assert!(supported_owner("eos", path, node_type, &package).is_err());
-    }
-  }
-  #[test]
-  fn pinned_mujoco_v02_launch_uses_verified_scene_and_eos_owner() {
-    use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().unwrap();
-    let source = root.path().join("bundle");
-    fs::create_dir_all(source.join("bin")).unwrap();
-    fs::create_dir_all(source.join("assets/scenes/navigation")).unwrap();
-    fs::write(
-      source.join("release.json"),
-      include_bytes!("../../../tests/fixtures/packages/mujoco_published_0_1_1.json"),
-    )
-    .unwrap();
-    fs::write(
-      source.join("assets/scene.xml"),
-      b"<mujoco model='pick-place'/>",
-    )
-    .unwrap();
-    fs::write(
-      source.join("assets/scenes/navigation/scene.xml"),
-      b"<mujoco model='navigation'/>",
-    )
-    .unwrap();
-    let binary = source.join("bin/eos-mujoco-sim");
-    fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    let paths = Paths {
-      config: root.path().join("config"),
-      data: root.path().join("data"),
-      runtime: root.path().join("run"),
-    };
-    paths.prepare().unwrap();
-    packages::link_with_manifest(&paths, "island/mujoco-sim", "0.1.1", &source, None).unwrap();
-    let package = PackageIdentity {
-      id: "island/mujoco-sim".into(),
-      version: "0.1.1".into(),
-    };
-    let resolved = resolve(&paths, &package, "isos.eos_process.mujoco@v0.2", "isos/eos_process/mujoco/simulator",
-      &json!({"scene":"pick-place","socket":"/tmp/mujoco-test.sock","env":{"MUJOCO_ROOT":root.path()}})).unwrap().unwrap();
-    assert_eq!(resolved.launch.resources["scene"].id, "pick-place");
-    assert!(
-      resolved.launch.resources["scene"]
-        .path
-        .as_ref()
-        .unwrap()
-        .ends_with("assets/scene.xml")
-    );
-    let bytes = bind_launch(
-      &resolved.launch,
-      "run1",
-      &"a".repeat(64),
-      resolved
-        .launch
-        .entrypoint
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap(),
-    )
-    .unwrap();
-    let handoff: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(handoff["owner_core"], "eos");
-    assert_eq!(handoff["node_path"], "isos/eos_process/mujoco/simulator");
   }
   #[test]
   fn generic_catalog_binds_file_and_logical_resources() {
@@ -703,13 +641,15 @@ mod tests {
     let root = std::path::Path::new("/bundle");
     let launch = PackageLaunch {
       schema_version: 1,
-      node_path: "eos/process/sim/one".into(),
-      node_type: "demo.process@v1".into(),
+      node_path: "eos/process/driver/service".into(),
+      node_type: "eos.process.driver.service@v0.2".into(),
       package: PackageIdentity {
         id: "vendor/sim".into(),
         version: "1.0.0".into(),
       },
       entrypoint: root.join("bin/start"),
+      entrypoint_sha256: "a".repeat(64),
+      args: Vec::new(),
       resources: BTreeMap::from([(
         "model".into(),
         ResourceSelection {
@@ -730,6 +670,8 @@ mod tests {
     assert_eq!(value["contract"], "isos.package-process@v1");
     assert_eq!(value["schema_version"], "0.1.0");
     assert_eq!(value["resources"]["model"]["id"], "small");
+    assert_eq!(value["owner_core"], "eos");
+    assert_eq!(value["node_type"], "eos.process.driver.service@v0.2");
     assert!(bind_launch(&launch, "run_1", "bad", root).is_err());
     assert!(bind_launch(&launch, "run_1", &fence, std::path::Path::new("/other")).is_err());
   }

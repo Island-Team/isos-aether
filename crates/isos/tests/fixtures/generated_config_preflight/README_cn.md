@@ -1,6 +1,6 @@
 # P04 生成配置夹具
 
-[IsOS 配置契约](../../../../../docs_cn/isos/interfaces/node/instance_cn.md)归属此 schema。`cases.json` 冻结 P04 实现测试的精确用例 ID、操作、变更、诊断码、阶段、JSON 指针及事务恢复状态。普通准入失败的 `active_unchanged_on_failure` 要求已保存图字节、保存修订、活动修订、该修订选中的生成版本和子进程 PID 均不变。重命名后 `generated_commit_uncertain` 用例改为断言观察到的新旧修订／生成版本均完整、活动子进程 PID 不变，调用方须重新读取。P01 的 `package_changed` 保留 P01 诊断。
+[IsOS 配置契约](../../../../../docs_cn/node/interfaces/graph_cn.md#instance)归属此 schema。`cases.json` 冻结 P04 实现测试的精确用例 ID、操作、变更、诊断码、阶段、JSON 指针及事务恢复状态。普通准入失败的 `active_unchanged_on_failure` 要求已保存图字节、保存修订、活动修订、该修订选中的生成版本和子进程 PID 均不变。重命名后 `generated_commit_uncertain` 用例改为断言观察到的新旧修订／生成版本均完整、活动子进程 PID 不变，调用方须重新读取。P01 的 `package_changed` 保留 P01 诊断。
 
 使用全新的 `ISOS_HOME`、EOS setup 桩或已构建的 `aether-profile`，以及返回三个托管覆盖文件的 EI schema-1 setup 桩。建立私有已安装 EI 组件与工厂默认目录；组件目录包含列出的八个有效文件和一个额外的嵌套普通文件。通过已配置的 EI 发行版选择两者，不写入任何源码仓库。桩只在渲染时报告 EOS gRPC 网关端点；R02 前保持 EI 运行时禁用。计算精确图字节摘要，记录选中的生成版本和清单。重复 Apply 证明逐字节幂等。修改一个所选程序或默认文件，以相同保存修订 Apply，证明生成新的不可变版本。Run／Restart 反面用例从运行中的仅 EOS 部署开始，以证明失败时不停止或替换。
 

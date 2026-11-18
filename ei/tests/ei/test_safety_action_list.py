@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from ei.api.plan import ActionRecord, PlanStep, PlanStepStatus, StepOutcome
-from ei.core.safety.action_list import SafetyFinding, assess_action_list
+from ei.core.governance.safety.action_list import SafetyFinding, assess_action_list
+from ei.core.system.models.plan import (
+  ActionRecord,
+  PlanStep,
+  PlanStepStatus,
+  StepOutcome,
+)
 
 
 def test_assess_action_list_stub_returns_no_findings() -> None:

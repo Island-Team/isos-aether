@@ -1,4 +1,4 @@
-//! Full-graph, owner-catalog edge admission for graph 0.2.0.
+//! Full-graph, owner-catalog edge admission for graph 0.2.1.
 //!
 //! This module has no file or process effects. Callers must use the exact catalog
 //! and saved graph revision that they subsequently render or launch.
@@ -60,6 +60,14 @@ struct Node<'a> {
 
 fn escaped(value: &str) -> String {
   value.replace('~', "~0").replace('/', "~1")
+}
+
+fn type_for_node<'a>(types: &'a [Value], node: &Value) -> Option<&'a Value> {
+  let mut matches = types.iter().filter(|entry| {
+    entry["id"] == node["node_type"] && entry.get("package") == node.get("package")
+  });
+  let definition = matches.next()?;
+  matches.next().is_none().then_some(definition)
 }
 
 fn error(
@@ -209,31 +217,6 @@ fn fixed(data_type: &str, data_class: Option<&str>, output: &str, input: &str) -
     })
 }
 
-fn routed_camera(
-  source: &Node<'_>,
-  output: &str,
-  target: &Node<'_>,
-  input: &str,
-  output_port: &Value,
-  input_port: &Value,
-) -> bool {
-  matches!(
-    source.value["node_type"].as_str(),
-    Some("isos.eos_hardware.camera@v0.2")
-  ) && output == "frame"
-    && matches!(
-      target.value["node_type"].as_str(),
-      Some("isos.eos_interface.camera_gate@v0.2")
-    )
-    && input == "frame"
-    && output_port["data_type"] == "camera_frame"
-    && input_port["data_type"] == "camera_frame"
-    && output_port["transport"] == "in_process"
-    && input_port["transport"] == "in_process"
-    && output_port["data_class"] == "image"
-    && input_port["data_class"] == "image"
-}
-
 fn routed_ei_evidence(
   catalog: &Value,
   source: &Node<'_>,
@@ -327,16 +310,103 @@ pub fn admit_partial(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Di
   admit_with_mode(graph, catalog, true)
 }
 
+/// Missing declared inputs are draft warnings; connected edges still receive full admission.
+pub fn missing_input_warnings(graph: &Value, catalog: &Value) -> Vec<Diagnostic> {
+  let mut warnings = Vec::new();
+  let Some(types) = catalog["types"].as_array() else {
+    return warnings;
+  };
+  for (core_id, core) in graph["cores"].as_object().into_iter().flatten() {
+    for (layer_id, layer) in core["layers"].as_object().into_iter().flatten() {
+      for (group_id, group) in layer["groups"].as_object().into_iter().flatten() {
+        for (node_id, node) in group["nodes"].as_object().into_iter().flatten() {
+          let Some(definition) = type_for_node(types, node) else {
+            continue;
+          };
+          for input in definition["inputs"].as_array().into_iter().flatten() {
+            let Some(name) = input["name"].as_str() else {
+              continue;
+            };
+            if input["required"] == true && node["inputs"].get(name).is_none() {
+              let path = format!(
+                "/cores/{core_id}/layers/{}/groups/{}/nodes/{}/inputs/{}",
+                escaped(layer_id),
+                escaped(group_id),
+                escaped(node_id),
+                escaped(name)
+              );
+              warnings.push(Diagnostic {
+                path,
+                code: "edge_required_input",
+                message: format!("required input {name} is not connected"),
+                source: None,
+                target: Some(format!("{core_id}/{layer_id}/{group_id}/{node_id}")),
+                input: Some(name.into()),
+                source_data_type: None,
+                target_data_type: None,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  if let Ok(edges) = admit(graph, catalog) {
+    for edge in edges {
+      let parts: Vec<_> = edge.source.split('/').collect();
+      if parts.len() != 4 {
+        continue;
+      }
+      let source = graph.pointer(&format!(
+        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+        parts[0], parts[1], parts[2], parts[3]
+      ));
+      let source_type = source.and_then(|node| node["node_type"].as_str());
+      let expected = types
+        .iter()
+        .find(|definition| definition["id"].as_str() == source_type)
+        .and_then(|definition| definition["outputs"].as_array())
+        .and_then(|ports| ports.iter().find(|port| port["name"] == edge.output))
+        .and_then(|port| port["frequency_hz"].as_f64());
+      let target_parts: Vec<_> = edge.target.split('/').collect();
+      if target_parts.len() != 4 {
+        continue;
+      }
+      let minimum = graph
+        .pointer(&format!(
+          "/cores/{}/layers/{}/groups/{}/nodes/{}/inputs/{}/desired_rate_hz/min",
+          target_parts[0], target_parts[1], target_parts[2], target_parts[3], edge.input
+        ))
+        .and_then(Value::as_f64);
+      if let (Some(expected), Some(minimum)) = (expected, minimum)
+        && expected < minimum
+      {
+        warnings.push(Diagnostic {
+          path: format!("{}/desired_rate_hz/min", edge.path),
+          code: "port_rate_below_desired",
+          message: format!("source expects {expected} Hz, below desired {minimum} Hz"),
+          source: Some(edge.source),
+          target: Some(edge.target),
+          input: Some(edge.input),
+          source_data_type: None,
+          target_data_type: None,
+        });
+      }
+    }
+  }
+  warnings
+}
+
 fn admit_with_mode(
   graph: &Value,
   catalog: &Value,
   partial: bool,
 ) -> Result<Vec<Edge>, Box<Diagnostic>> {
-  if graph["version"] != "0.2.0" {
+  if graph["version"] != "0.2.1" {
     return Err(error(
       "/version",
       "unsupported_graph_version",
-      "edge admission requires graph 0.2.0",
+      "edge admission requires graph 0.2.1",
     ));
   }
   let types = catalog["types"].as_array().ok_or_else(|| {
@@ -353,18 +423,13 @@ fn admit_with_mode(
       "owner catalog has no data types",
     )
   })?;
-  let mut definitions = BTreeMap::<&str, &Value>::new();
-  let mut ambiguous = BTreeSet::new();
   for definition in types {
-    let id = definition["id"].as_str().ok_or_else(|| {
-      error(
+    if definition["id"].as_str().is_none() {
+      return Err(error(
         "/cores",
         "owner_catalog_unavailable",
         "node type lacks an ID",
-      )
-    })?;
-    if definitions.insert(id, definition).is_some() {
-      ambiguous.insert(id);
+      ));
     }
   }
   let mut data_definitions = BTreeMap::<&str, &Value>::new();
@@ -389,12 +454,23 @@ fn admit_with_mode(
     ));
   }
   for (id, definition) in &data_definitions {
-    if !definition["schema"].is_object()
+    if id.trim().is_empty()
+      || definition["purpose"]
+        .as_str()
+        .is_none_or(|purpose| purpose.trim().is_empty())
+      || !definition["schema"].is_object()
       || jsonschema::validator_for(&definition["schema"]).is_err()
       || !valid_unit_annotations(&definition["schema"])
-      || definition["version"].as_str().is_none_or(str::is_empty)
-      || definition["codec"].as_str().is_none_or(str::is_empty)
-      || definition["media_type"].as_str().is_none_or(str::is_empty)
+      || definition["version"]
+        .as_str()
+        .is_none_or(|version| version.trim().is_empty())
+      || definition["codec"]
+        .as_str()
+        .is_none_or(|codec| codec.trim().is_empty())
+      || definition["media_type"]
+        .as_str()
+        .is_none_or(|media_type| media_type.trim().is_empty())
+      || (definition["codec"] == "json_v1" && definition["media_type"] != "application/json")
       || !definition["max_payload_bytes"]
         .as_u64()
         .is_some_and(|bound| (1..=100_000_000).contains(&bound))
@@ -454,18 +530,11 @@ fn admit_with_mode(
               "node type is missing",
             )
           })?;
-          if ambiguous.contains(type_id) {
-            return Err(error(
-              format!("{pointer}/node_type"),
-              "owner_catalog_ambiguous",
-              format!("type {type_id} is registered more than once"),
-            ));
-          }
-          let definition = definitions.get(type_id).ok_or_else(|| {
+          let definition = type_for_node(types, value).ok_or_else(|| {
             error(
               format!("{pointer}/node_type"),
               "unsupported_node_type",
-              format!("type {type_id} is not registered"),
+              format!("type {type_id} is not registered for its exact package pin"),
             )
           })?;
           if definition["core"] != *core_id
@@ -550,24 +619,6 @@ fn admit_with_mode(
       })?,
       None => &empty_inputs,
     };
-    for required in target.definition["inputs"].as_array().into_iter().flatten() {
-      if !partial && required["required"] == true {
-        let name = required["name"].as_str().ok_or_else(|| {
-          error(
-            &target.pointer,
-            "owner_catalog_unavailable",
-            "registered input lacks a name",
-          )
-        })?;
-        if !inputs.contains_key(name) {
-          return Err(error(
-            format!("{}/inputs/{}", target.pointer, escaped(name)),
-            "edge_required_input",
-            format!("required input {name} is not connected"),
-          ));
-        }
-      }
-    }
     for (input_name, raw_sources) in inputs {
       let base = format!("{}/inputs/{}", target.pointer, escaped(input_name));
       let input = port(target.definition, "inputs", input_name).ok_or_else(|| {
@@ -577,14 +628,64 @@ fn admit_with_mode(
           format!("{} has no registered input {input_name}", target.path),
         )
       })?;
+      let desired = raw_sources.get("desired_rate_hz");
+      let wrapped = raw_sources.get("sources");
+      let source_base = if wrapped.is_some() {
+        format!("{base}/sources")
+      } else {
+        base.clone()
+      };
+      let raw_sources = wrapped.unwrap_or(raw_sources);
+      let desired_min = desired.and_then(|range| range.get("min"));
+      let desired_max = desired.and_then(|range| range.get("max"));
+      if let Some(range) = desired {
+        let object = range
+          .as_object()
+          .ok_or_else(|| error(&base, "port_rate", "desired_rate_hz must be an object"))?;
+        if object.is_empty()
+          || object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "min" | "max"))
+        {
+          return Err(error(
+            &base,
+            "port_rate",
+            "desired_rate_hz requires min or max only",
+          ));
+        }
+      }
+      let rate = |value: Option<&Value>| -> Result<Option<f64>, Box<Diagnostic>> {
+        value
+          .map(|value| {
+            value
+              .as_f64()
+              .filter(|rate| rate.is_finite() && *rate > 0.0)
+              .ok_or_else(|| {
+                error(
+                  &base,
+                  "port_rate",
+                  "desired rate must be finite and positive",
+                )
+              })
+          })
+          .transpose()
+      };
+      let desired_min = rate(desired_min)?;
+      let desired_max = rate(desired_max)?;
+      if desired_min
+        .zip(desired_max)
+        .is_some_and(|(min, max)| min > max)
+      {
+        return Err(error(&base, "port_rate", "desired minimum exceeds maximum"));
+      }
       let sources: Vec<(String, &Value)> = if let Some(values) = raw_sources.as_array() {
         values
           .iter()
           .enumerate()
-          .map(|(index, value)| (format!("{base}/{index}"), value))
+          .map(|(index, value)| (format!("{source_base}/{index}"), value))
           .collect()
       } else {
-        vec![(base.clone(), raw_sources)]
+        vec![(source_base, raw_sources)]
       };
       let one = match input["cardinality"].as_str().unwrap_or("one") {
         "one" => true,
@@ -610,10 +711,7 @@ fn admit_with_mode(
           .as_object()
           .ok_or_else(|| error(&pointer, "edge_source", "source must be an object"))?;
         for key in source_object.keys() {
-          if !matches!(
-            key.as_str(),
-            "node" | "output" | "priority" | "frequency_hz"
-          ) {
+          if !matches!(key.as_str(), "node" | "output" | "priority") {
             return Err(error(
               format!("{pointer}/{}", escaped(key)),
               "edge_source_field",
@@ -893,13 +991,26 @@ fn admit_with_mode(
         let is_fixed = !declaration && fixed(output_type, data_class, output_name, input_name);
         let is_routed = route_registered
           && ((source.owner == target.owner
-            && matches!(
-              output_type,
-              "button_activation@v0.2" | "arm_joint_delta@v0.2" | "arm_monitor_state@v0.2"
-            ))
+            && (source.owner == "ei"
+              || matches!(
+                output_type,
+                "button_activation@v0.2"
+                  | "arm_joint_delta@v0.2"
+                  | "arm_monitor_state@v0.2"
+                  | "image_frame@v0.2"
+              )))
+            || source.value["node_type"] == "eos.interface.egress.vision_flow@v0.2"
+              && target.value["node_type"] == "isos.ui.vision.monitor@v0.2"
+              && output_name == "frame"
+              && input_name == "frame"
+              && output_type == "image_frame@v0.2"
+              && bridged
             || source.owner == "eos"
               && target.owner == "eos"
-              && routed_camera(source, output_name, target, input_name, output, input)
+              && (target.value["node_type"] == "eos.interface.egress.vision_flow@v0.2"
+                && output_name == "frame"
+                && input_name == "frame"
+                && output_type == "image_frame@v0.2")
             || routed_ei_evidence(
               catalog,
               source,
@@ -973,47 +1084,7 @@ fn admit_with_mode(
         } else {
           0
         };
-        let frequency_hz = if let Some(value) = source_value.get("frequency_hz") {
-          let rate = value.as_f64().ok_or_else(|| {
-            edge_error(
-              &format!("{pointer}/frequency_hz"),
-              "edge_frequency",
-              "frequency_hz must be a finite positive number",
-              source_path,
-              &target.path,
-              input_name,
-              Some(output_type),
-              Some(input_type),
-            )
-          })?;
-          if !rate.is_finite() || rate <= 0.0 {
-            return Err(edge_error(
-              &format!("{pointer}/frequency_hz"),
-              "edge_frequency",
-              "frequency_hz must be finite and positive",
-              source_path,
-              &target.path,
-              input_name,
-              Some(output_type),
-              Some(input_type),
-            ));
-          }
-          if !is_routed {
-            return Err(edge_error(
-              &format!("{pointer}/frequency_hz"),
-              "edge_qos_forbidden",
-              "user frequency cap is forbidden on a fixed or unrouted edge",
-              source_path,
-              &target.path,
-              input_name,
-              Some(output_type),
-              Some(input_type),
-            ));
-          }
-          Some(rate)
-        } else {
-          None
-        };
+        let frequency_hz = desired_max;
         let command_input = input_name == "command"
           && matches!(
             target.value["node_type"].as_str(),

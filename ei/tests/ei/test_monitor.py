@@ -6,9 +6,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
-from ei.core.monitor import monitor_entry
-from ei.core.perception.admission import Admission
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import monitor_entry
 from ei.lib.config import MonitorConfig
 
 
@@ -75,7 +74,7 @@ async def test_heartbeat_loss_enqueues_fault_observation() -> None:
 async def test_heartbeat_outage_logs_only_its_first_failed_probe(monkeypatch) -> None:
   queue = Admission(capacity=8)
   logger = RecordingLogger()
-  monkeypatch.setattr("ei.core.monitor.loop.get_logger", lambda _name: logger)
+  monkeypatch.setattr("ei.core.governance.safety.loop.get_logger", lambda _name: logger)
   await _run_loop(FlakyLink(healthy=False), queue, ticks=0.06)
 
   assert logger.events.count("heartbeat_failed") == 1

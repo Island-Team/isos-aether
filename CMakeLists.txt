@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(IsOS VERSION 0.2.1 LANGUAGES NONE)
+project(IsOS VERSION 0.2.3 LANGUAGES NONE)
 
 # Development build convenience only. Product installation is owned by install.sh.
 option(ISLAND_BUILD_EOS "Build the EOS Rust v2 runtime" ON)
@@ -30,7 +30,7 @@ endif()
 
 if(ISLAND_BUILD_EI)
   add_custom_target(ei_dist
-    COMMAND "${CMAKE_SOURCE_DIR}/ei/scripts/platform/dispatch.sh" build
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/ei/platform/dispatch.sh" build
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/ei"
     COMMENT "Building the EI distribution"
     USES_TERMINAL VERBATIM)

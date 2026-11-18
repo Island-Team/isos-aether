@@ -1,6 +1,6 @@
 {
   "name": "isosui",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "private": true,
   "description": "Public IsOS configuration editor",
   "license": "Apache-2.0",
@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "webpack serve --mode development --env target=local",
-    "start": "webpack serve --mode production --env target=local",
+    "start": "npm run dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:local": "webpack --mode production --env target=local && node scripts/write-manifest.mjs local",
@@ -19,19 +19,18 @@
     "build:tui": "node scripts/build-tui.mjs"
   },
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/noto-sans-sc": "^5.3.1",
-    "@fontsource/noto-serif-sc": "^5.3.1",
-    "@fontsource/space-grotesk": "^5.3.0",
     "ink": "5.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "reactflow": "^11.11.4"
+    "reactflow": "^11.11.4",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/ws": "8.18.2",
     "css-loader": "^7.1.2",
     "esbuild": "0.25.12",
     "html-webpack-plugin": "^5.6.3",

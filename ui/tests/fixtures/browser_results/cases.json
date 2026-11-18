@@ -14,7 +14,7 @@
     {"id":"send_target_forgery","category":"send","given":{"active_edge_target":"isos/eos_hardware/base/drive","typed_target_input":"eos/hardware/base/other"},"expect":"ignore_editable_target_disabled"},
     {"id":"send_invalid_payload","category":"send","given":{"x_m_s":5.0,"max_linear_m_s":0.5},"expect":"disabled_no_fetch"},
     {"id":"send_unsafe_clock","category":"send","given":{"eos_time_monotonic_ns":9007199254740992},"expect":"reject_no_fetch"},
-    {"id":"send_unqualified_mujoco","category":"send","given":{"adapter":"mujoco-v2","has_terminal_stop_fence":false},"expect":"disabled_no_fetch"},
+    {"id":"send_unqualified_package_adapter","category":"send","given":{"adapter":"vendor-socket","has_terminal_stop_fence":false},"expect":"disabled_no_fetch"},
     {"id":"mock_in_progress_then_result","category":"send_transition","given":{"adapter":"mock","operator_clicked_invoke":true},"initial_response":{"ok":true,"result":{"command_id":"move-1","status":"InProgress","reason":null}},"follow_request":{"op":"result","command_id":"move-1","active_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"follow_response":{"ok":true,"result":{"command_id":"move-1","status":"Completed","reason":null}},"expect":"one_send_one_guarded_read_terminal_completed"},
     {"id":"log_no_owner_correlation","category":"log_link","given":{"command_id":"move-1","eos_event_correlation_id":null},"expect":"show_command_id_open_unfiltered_current_run"},
     {"id":"log_valid_owner_correlation","category":"log_link","given":{"command_id":"move-1","eos_event_correlation_id":"corr_1","event_run_id":"run-a"},"expect":"prefill_valid_correlation_current_run"},

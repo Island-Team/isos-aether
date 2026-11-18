@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import grpc
 import pytest
-
-from ei.core.link import EosClient, LinkPrimitiveError
-from ei.core.registry import PrimitiveRegistry
+from ei.core.io.link import EosClient, LinkPrimitiveError
+from ei.core.system.registry import PrimitiveRegistry
 from ei.io.catalog import render_skills, skills_snapshot
 from ei.lib.config import GatewayConfig
+
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 _PRIMITIVE_VERSIONS = {

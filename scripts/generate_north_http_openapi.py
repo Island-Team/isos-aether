@@ -23,8 +23,8 @@ except ImportError as error:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ("eos/gateway.proto", "eos/skills.proto", "eos/workflow.proto",
-            "eos/capabilities.proto")
+SERVICES = ("gateway.proto", "skills.proto", "workflow.proto",
+            "capabilities.proto")
 SCALAR_TYPES = {
     1: {"type": "number"}, 2: {"type": "number"}, 3: {"type": "string", "pattern": "^-?[0-9]+$"},
     4: {"type": "string", "pattern": "^[0-9]+$"}, 5: {"type": "integer"},
@@ -55,7 +55,7 @@ def descriptor_set(proto_root: Path):
          "--include_imports", *SERVICES],
         ["protoc", "--experimental_allow_proto3_optional", f"-I{proto_root}",
          f"--python_out={directory}",
-         "google/api/http.proto", "google/api/annotations.proto", "eos/external/http/http.proto"],
+         "google/api/http.proto", "google/api/annotations.proto", "external/http/http.proto"],
     )
     for command in commands:
       try:
@@ -67,7 +67,7 @@ def descriptor_set(proto_root: Path):
     sys.path.insert(0, str(directory))
     try:
       annotation = importlib.import_module("google.api.annotations_pb2")
-      routes = importlib.import_module("eos.external.http.http_pb2")
+      routes = importlib.import_module("external.http.http_pb2")
       return (descriptor_pb2.FileDescriptorSet.FromString(output.read_bytes()),
               annotation.http, routes.http_route)
     finally:
@@ -198,9 +198,10 @@ def render(proto_root: Path, runtime_root: Path) -> dict:
       }
       add_operation(paths, route.method, route.path, operation)
 
-  for file in sorted(runtime_root.glob("*/*.json")):
-    schema = json.loads(file.read_text(encoding="utf-8"))
-    components["EOS_" + file.parent.name + "_" + file.stem.replace(".", "_")] = schema
+  for section in ("actions", "body", "world"):
+    for file in sorted((runtime_root / section).glob("*.json")):
+      schema = json.loads(file.read_text(encoding="utf-8"))
+      components["EOS_" + file.parent.name + "_" + file.stem.replace(".", "_")] = schema
   # Protoc 3.12 lacks this FieldOptions member; it is not part of the HTTP API.
   components.get("google_protobuf_FieldOptions", {}).get("properties", {}).pop(
       "unverifiedLazy", None)
@@ -214,9 +215,9 @@ def render(proto_root: Path, runtime_root: Path) -> dict:
 
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--proto-root", type=Path, default=ROOT / "share/eos/contracts")
-  parser.add_argument("--runtime-root", type=Path, default=ROOT / "share/eos/schemas/eos")
-  parser.add_argument("--output", type=Path, default=ROOT / "share/ext/north-http/openapi/north-http/openapi.json")
+  parser.add_argument("--proto-root", type=Path, default=ROOT / "contract/proto")
+  parser.add_argument("--runtime-root", type=Path, default=ROOT / "contract/schemas")
+  parser.add_argument("--output", type=Path, default=ROOT / "contract/schemas/north-http.openapi.json")
   parser.add_argument("--check", action="store_true")
   args = parser.parse_args()
   try:

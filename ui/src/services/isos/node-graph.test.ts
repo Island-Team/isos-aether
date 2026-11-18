@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyNodeGraph, combineNodeTypeCatalogs, controlProcesses, stopProcesses, getCoreReadiness, getGraphCatalogSnapshot, getNewNodeGraph, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, graphCatalogReadOnlyReason, previewBackendLink, getInstalledPackages, getCurrentLogPage, getNodeOptions, getNodeSets, installBackend, linkBackend, nodeGraphReadOnlyReason, previewNodeSet, validateNodeGraph, type NodeGraph, type NodeSetDefinition, type NodeTypeDefinition } from './node-graph';
+import { applyNodeGraph, combineNodeTypeCatalogs, controlProcesses, stopProcesses, getCoreReadiness, getGraphCatalogSnapshot, getNewNodeGraph, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, graphCatalogReadOnlyReason, graphPackagePins, getPackageConfig, putPackageConfig, validatePackageConfig, previewBackendLink, previewPackageDownload, getInstalledPackages, getCurrentLogPage, getNodeOptions, getNodeSets, installBackend, linkBackend, nodeGraphReadOnlyReason, previewNodeSet, validateNodeGraph, type NodeGraph, type NodeSetDefinition, type NodeTypeDefinition } from './node-graph';
 import { request } from './api-client';
 
 vi.mock('./api-client', () => ({ request: vi.fn() }));
 
 describe('current graph reader', () => {
   it('uses explicit blank and named pool endpoints with revision fences', async () => {
-    const blank: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
+    const blank: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: {} }, ei: { layers: {} }, eos: { layers: {} } } };
     vi.mocked(request).mockClear().mockResolvedValueOnce({ revision: 'old', graph: blank })
       .mockResolvedValueOnce({ graphs: [] }).mockResolvedValueOnce({ name: 'sample', revision: 'saved', graph: blank })
       .mockResolvedValueOnce({ name: 'sample', revision: 'new', graph: blank });
@@ -16,15 +16,21 @@ describe('current graph reader', () => {
       ['/graph-pool/sample', 'PUT', { schema_version: '0.1.0', revision: 'saved', graph: blank }],
     ]);
   });
-  it('edits only the selected 0.2.0 isos core and rejects unsupported graphs', () => {
+  it('edits only the selected 0.2.1 isos core and rejects unsupported graphs', () => {
     const type: NodeTypeDefinition = { id: 'isos.eos_hardware.base@v0.2', core: 'isos', layer: 'eos_hardware', group: 'base', kind: 'base', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [] };
-    const current: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_hardware: { groups: { base: { nodes: { drive: { id: 'drive', node_type: type.id, label: 'Drive', description: '' } } } } } } }, ei: { layers: {} }, eos: { layers: {} } } };
+    const current: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_hardware: { groups: { base: { nodes: { drive: { id: 'drive', node_type: type.id, label: 'Drive', description: '' } } } } } } }, ei: { layers: {} }, eos: { layers: {} } } };
     expect(nodeGraphReadOnlyReason({ revision: 'r', graph: current }, [type])).toBeNull();
     expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, version: '9.9.9' } }, [type])).toContain('Unsupported graph version');
     expect(nodeGraphReadOnlyReason({ revision: 'r', graph: { ...current, cores: { ...current.cores, other: { layers: {} } } } }, [type])).toContain('requires the isos, ei, and eos cores');
   });
   const knownType: NodeTypeDefinition = { id: 'isos.eos_dispatcher.control@v0.2', core: 'isos', layer: 'eos_dispatcher', group: 'control', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [], outputs: [] };
-  const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { id: 'command', node_type: knownType.id, label: 'Command', description: 'Admission', future_metadata: { retained: true } } } } } } } }, ei: { layers: {} }, eos: { layers: {} } }, future_graph_field: 'retained' };
+  const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: { isos: { layers: { eos_dispatcher: { groups: { control: { nodes: { command: { id: 'command', node_type: knownType.id, label: 'Command', description: 'Admission', future_metadata: { retained: true } } } } } } } }, ei: { layers: {} }, eos: { layers: {} } }, future_graph_field: 'retained' };
+
+  it('finds exact package pins on external hardware adapters', () => {
+    const candidate = structuredClone(graph);
+    candidate.cores.eos.layers.hardware = { groups: { camera: { nodes: { front: { id: 'front', node_type: 'eos.hardware.camera.device@v0.2', label: 'Front', description: '', adapter: { type: 'vendor', package: { id: 'vendor/robot', version: '0.2.1' }, settings: { service_instance: 'native' } } } } } } };
+    expect(graphPackagePins(candidate)).toEqual([{ id: 'vendor/robot', version: '0.2.1' }]);
+  });
 
   it('uses the server read-only state and preserves additive fields', () => {
     const document = { revision: 'saved', graph, read_only: true, diagnostics: [{ path: '/version', code: 'unsupported_graph', message: 'Graph is read-only.' }] };
@@ -48,7 +54,7 @@ describe('current graph reader', () => {
   });
   it('uses revision-bound selected owner stages while retaining global package types', async () => {
     const selected = structuredClone(graph);
-    selected.version = '0.2.0';
+    selected.version = '0.2.1';
     selected.cores.isos.layers.ei_cognition = { groups: { context: { nodes: { builder: { id: 'builder', node_type: 'isos.ei_cognition.builder@v0.2', label: '', description: '' } } } } };
     const stageType: NodeTypeDefinition = { ...knownType, id: 'isos.ei_cognition.builder@v0.2', core: 'isos', layer: 'ei_cognition', group: 'context' };
     const global = { types: [knownType] };
@@ -75,7 +81,7 @@ describe('current graph reader', () => {
     let graphReads = 0;
     vi.mocked(request).mockImplementation(async (path) => {
       if (path === '/catalog/node-types') return { types: [knownType] };
-      if (path === '/graph') { graphReads += 1; return { revision: graphReads === 1 ? 'old' : 'new', graph: { ...graph, version: '0.2.0' } }; }
+      if (path === '/graph') { graphReads += 1; return { revision: graphReads === 1 ? 'old' : 'new', graph: { ...graph, version: '0.2.1' } }; }
       if (path === '/catalog/node-types/selected') return { graph_revision: 'stale', catalog: { types: [knownType] } };
       throw new Error(path);
     });
@@ -88,7 +94,7 @@ describe('current graph reader', () => {
   it('preserves raw owner graph and fails closed when selected catalog is unavailable', async () => {
     vi.mocked(request).mockImplementation(async (path) => {
       if (path === '/catalog/node-types') return { types: [knownType] };
-      if (path === '/graph') return { revision: 'saved', graph: { ...graph, version: '0.2.0' }, read_only: true, diagnostics: [{ path: '/catalog', message: 'Owner unavailable.' }] };
+      if (path === '/graph') return { revision: 'saved', graph: { ...graph, version: '0.2.1' }, read_only: true, diagnostics: [{ path: '/catalog', message: 'Owner unavailable.' }] };
       if (path === '/catalog/node-types/selected') throw new Error('503');
       throw new Error(path);
     });
@@ -102,7 +108,7 @@ describe('current graph reader', () => {
   it('accepts the blank starter revision when selected catalog matches it', async () => {
     vi.mocked(request).mockImplementation(async (path) => {
       if (path === '/catalog/node-types') return { types: [knownType] };
-      if (path === '/graph') return { revision: '', graph: { ...graph, version: '0.2.0' } };
+      if (path === '/graph') return { revision: '', graph: { ...graph, version: '0.2.1' } };
       if (path === '/catalog/node-types/selected') return { graph_revision: '', catalog: { types: [knownType] } };
       throw new Error(path);
     });
@@ -117,7 +123,7 @@ describe('current graph reader', () => {
   });
 
   it('keeps a future graph tree in raw inspection when its shape is unknown', () => {
-    const future = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, domains: {} } as unknown as NodeGraph;
+    const future = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, domains: {} } as unknown as NodeGraph;
     expect(nodeGraphReadOnlyReason({ revision: 'saved', graph: future }, [knownType])).toContain('structure cannot be edited');
   });
 
@@ -156,7 +162,7 @@ describe('current log API', () => {
 
 describe('IsOS v1 graph and process API', () => {
   it('sends v1 request bodies for validate, apply, and run', async () => {
-    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: {} };
     vi.mocked(request).mockClear().mockResolvedValue({});
     await validateNodeGraph(graph);
     await applyNodeGraph('demo', 'saved-revision');
@@ -178,8 +184,8 @@ describe('IsOS v1 graph and process API', () => {
 describe('package node set API', () => {
   it('lists installed contributions and previews composition without applying a graph revision', async () => {
     vi.mocked(request).mockClear();
-    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
-    const set: NodeSetDefinition = { package: { id: 'island/mujoco-sim', version: '0.1.1' }, id: 'hardware', parameters: { scene: { type: 'string', default: 'demo' } }, nodes: [] };
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const set: NodeSetDefinition = { package: { id: 'vendor/driver', version: '0.1.1' }, id: 'hardware', parameters: { scene: { type: 'string', default: 'demo' } }, nodes: [] };
     vi.mocked(request).mockResolvedValueOnce({ sets: [set] }).mockResolvedValueOnce({ graph, added_paths: [] });
     expect(await getNodeSets()).toEqual({ sets: [set] });
     expect(await previewNodeSet(set, graph, { scene: 'demo' })).toEqual({ graph, added_paths: [] });
@@ -191,9 +197,20 @@ describe('package node set API', () => {
 });
 
 describe('generic package acquisition API', () => {
+  it('uses exact pin and revision for generic package configuration', async () => {
+    vi.mocked(request).mockClear().mockResolvedValue({});
+    await getPackageConfig('vendor/driver', '0.2.1');
+    await validatePackageConfig('vendor/driver', '0.2.1', { toml: '[package]\n' });
+    await putPackageConfig('vendor/driver', '0.2.1', 'rev-1', { values: { package: { enabled: true } } });
+    expect(vi.mocked(request).mock.calls).toEqual([
+      ['/packages/config?id=vendor%2Fdriver&version=0.2.1'],
+      ['/packages/config/validate', 'POST', { schema_version: '0.1.0', id: 'vendor/driver', version: '0.2.1', toml: '[package]\n' }],
+      ['/packages/config?id=vendor%2Fdriver&version=0.2.1', 'PUT', { schema_version: '0.1.0', id: 'vendor/driver', version: '0.2.1', revision: 'rev-1', values: { package: { enabled: true } } }],
+    ]);
+  });
   it('reads installed receipts for every package kind', async () => {
     vi.mocked(request).mockClear();
-    const installed = [{ schema_version: 1, id: 'island/mujoco-sim', version: '0.1.1', source_commit: null, asset_sha256: null, local_link: '/opt/mujoco' }];
+    const installed = [{ schema_version: 1, id: 'vendor/driver', version: '0.1.1', source_commit: null, asset_sha256: null, local_link: '/opt/driver' }];
     vi.mocked(request).mockResolvedValueOnce({ installed });
     expect(await getInstalledPackages()).toEqual({ installed });
     expect(vi.mocked(request).mock.calls).toEqual([['/packages']]);
@@ -201,33 +218,42 @@ describe('generic package acquisition API', () => {
   it('accepts explicit package identity and optional local manifest path', async () => {
     vi.mocked(request).mockClear();
     vi.mocked(request).mockResolvedValue(undefined);
-    await installBackend('island/mujoco-sim', '0.1.1');
-    await linkBackend('island/mujoco-sim', '0.1.1', '/opt/mujoco', '/opt/mujoco/release.json');
-    await linkBackend('island/mujoco-sim', '0.1.1', '/opt/mujoco');
+    await previewPackageDownload('vendor/driver', '0.1.1');
+    await installBackend('vendor/driver', '0.1.1', 'bound-approval');
+    await linkBackend('vendor/driver', '0.1.1', '/opt/driver', '/opt/driver/release.json');
+    await linkBackend('vendor/driver', '0.1.1', '/opt/driver');
     expect(vi.mocked(request).mock.calls).toEqual([
-      ['/packages/install', 'POST', { id: 'island/mujoco-sim', version: '0.1.1' }],
-      ['/packages/link', 'POST', { id: 'island/mujoco-sim', version: '0.1.1', path: '/opt/mujoco', manifest: '/opt/mujoco/release.json' }],
-      ['/packages/link', 'POST', { id: 'island/mujoco-sim', version: '0.1.1', path: '/opt/mujoco' }],
+      ['/packages/preview-download', 'POST', { id: 'vendor/driver', version: '0.1.1' }],
+      ['/packages/install', 'POST', { id: 'vendor/driver', version: '0.1.1', approval: 'bound-approval' }],
+      ['/packages/link', 'POST', { id: 'vendor/driver', version: '0.1.1', path: '/opt/driver', manifest: '/opt/driver/release.json' }],
+      ['/packages/link', 'POST', { id: 'vendor/driver', version: '0.1.1', path: '/opt/driver' }],
     ]);
   });
 });
 
 describe('readiness and local bundle preview API', () => {
   it('reads configured core readiness and previews bundle identity before linking', async () => {
-    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
-    vi.mocked(request).mockClear().mockResolvedValueOnce({ cores: [] }).mockResolvedValueOnce({ id: 'island/mujoco-sim', version: '0.1.1', ready: true, issues: [] }).mockResolvedValueOnce({ adapter_families: [], primitive_bindings: [], targets: [] });
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: {} };
+    vi.mocked(request).mockClear().mockResolvedValueOnce({ cores: [] }).mockResolvedValueOnce({ id: 'vendor/driver', version: '0.1.1', ready: true, issues: [] }).mockResolvedValueOnce({ adapter_families: [], primitive_bindings: [], targets: [] });
     await getCoreReadiness();
-    await previewBackendLink('/opt/mujoco', '/opt/mujoco/release.json');
+    await previewBackendLink('/opt/driver', '/opt/driver/release.json');
     await getNodeOptions(graph);
     expect(vi.mocked(request).mock.calls).toEqual([
       ['/cores/readiness'],
-      ['/packages/preview-link', 'POST', { path: '/opt/mujoco', manifest: '/opt/mujoco/release.json' }],
+      ['/packages/preview-link', 'POST', { path: '/opt/driver', manifest: '/opt/driver/release.json' }],
       ['/catalog/node-options', 'POST', { schema_version: '0.1.0', graph }],
     ]);
   });
+  it('forwards a cancellation signal for a superseded option request', async () => {
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const controller = new AbortController();
+    vi.mocked(request).mockClear().mockResolvedValueOnce({ adapter_families: [], primitive_bindings: [], targets: [] });
+    await getNodeOptions(graph, controller.signal);
+    expect(vi.mocked(request).mock.calls).toEqual([['/catalog/node-options', 'POST', { schema_version: '0.1.0', graph }, controller.signal]]);
+  });
   it('retains P03 setting groups and draft revision metadata', async () => {
-    const graph: NodeGraph = { version: '0.2.0', robot: { id: 'test', name: 'Test' }, cores: {} };
-    const reply = { adapter_families: [], primitive_bindings: [], targets: [], graph_revision: null, read_only: false, setting_options: [{ node_path: 'eos/process/mujoco/simulator', setting: 'scene', selected: 'pick-place', options: [{ value: 'pick-place', label: 'Pick and place', description: 'Scene', available: false, reason_code: 'package_changed', reason: 'Relink release' }] }] };
+    const graph: NodeGraph = { version: '0.2.1', robot: { id: 'test', name: 'Test' }, cores: {} };
+    const reply = { adapter_families: [], primitive_bindings: [], targets: [], graph_revision: null, read_only: false, setting_options: [{ node_path: 'eos/process/driver/simulator', setting: 'scene', selected: 'pick-place', options: [{ value: 'pick-place', label: 'Pick and place', description: 'Scene', available: false, reason_code: 'package_changed', reason: 'Relink release' }] }] };
     vi.mocked(request).mockClear().mockResolvedValueOnce(reply);
     expect(await getNodeOptions(graph)).toEqual(reply);
     expect(vi.mocked(request).mock.calls).toEqual([['/catalog/node-options', 'POST', { schema_version: '0.1.0', graph }]]);

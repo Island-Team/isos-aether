@@ -36,7 +36,7 @@ def load_descriptors(proto_root: Path):
   sources = sorted(
       str(path.relative_to(proto_root))
       for section in SECTIONS
-      for path in (proto_root / "eos" / section).glob("*.proto")
+      for path in (proto_root / section).glob("*.proto")
   )
   if not sources:
     raise ContractError(f"{proto_root}: no public EOS schema proto files")
@@ -49,7 +49,7 @@ def load_descriptors(proto_root: Path):
          "--include_imports", *sources],
         ["protoc", "--experimental_allow_proto3_optional", f"-I{proto_root}",
          f"--python_out={work_path}",
-         "eos/options/schema.proto"],
+         "options/schema.proto"],
     )
     for command in commands:
       try:
@@ -60,7 +60,7 @@ def load_descriptors(proto_root: Path):
         raise ContractError(error.stderr.strip() or "protoc failed") from error
     sys.path.insert(0, str(work_path))
     try:
-      options = importlib.import_module("eos.options.schema_pb2")
+      options = importlib.import_module("options.schema_pb2")
       descriptors = descriptor_pb2.FileDescriptorSet.FromString(descriptor_path.read_bytes())
       # Descriptors keep their extension values even after the temporary module
       # is unloaded; only the option identifiers are needed by callers.
@@ -107,14 +107,14 @@ def generate(proto_root: Path, output: Path, check: bool) -> None:
       destination.parent.mkdir(parents=True, exist_ok=True)
       destination.write_bytes(payload)
     manifest = render_manifest(build_manifest(staged)).encode("utf-8")
-    entries[Path("contracts.manifest.json")] = manifest
+    entries[Path("eos.manifest.json")] = manifest
     existing = {
         path.relative_to(output)
         for section in SECTIONS
         for path in (output / section).glob("*.json")
     }
-    if (output / "contracts.manifest.json").exists():
-      existing.add(Path("contracts.manifest.json"))
+    if (output / "eos.manifest.json").exists():
+      existing.add(Path("eos.manifest.json"))
     stale = sorted(existing - entries.keys())
     if check:
       mismatches = [relative for relative, payload in entries.items()
@@ -133,8 +133,8 @@ def generate(proto_root: Path, output: Path, check: bool) -> None:
 
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--proto-root", type=Path, default=ROOT / "share/eos/contracts")
-  parser.add_argument("--output", type=Path, default=ROOT / "share/eos/schemas/eos")
+  parser.add_argument("--proto-root", type=Path, default=ROOT / "contract/proto")
+  parser.add_argument("--output", type=Path, default=ROOT / "contract/schemas")
   parser.add_argument("--check", action="store_true")
   args = parser.parse_args()
   try:

@@ -7,9 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
 from ei.config_cli import SetupDiagnostic, _setup_reply, _validate_ei_graph
-from ei.stages import (
+from ei.core.system.stages import (
   MAX_STAGE_EVENT_AGE,
   STAGE_TYPES,
   StageGraphError,
@@ -99,12 +98,12 @@ def _graph() -> dict:
     layers.setdefault(layer, {"groups": {}})["groups"].setdefault(group, {"nodes": {}})[
       "nodes"
     ][node_id] = node
-  return {"version": "0.2.0", "robot": {}, "cores": {"isos": {"layers": layers}}}
+  return {"version": "0.2.1", "robot": {}, "cores": {"isos": {"layers": layers}}}
 
 
 def _owner_graph() -> dict:
   return {
-    "version": "0.2.0",
+    "version": "0.2.1",
     "robot": {},
     "cores": {
       "ei": {
@@ -132,17 +131,32 @@ def _owner_graph() -> dict:
             "groups": {
               "intent": {
                 "nodes": {
+                  "context": {
+                    "id": "context",
+                    "node_type": "ei.cognition.intent.context@v0.2",
+                    "settings": {},
+                    "inputs": {
+                      "activation": {
+                        "node": "ei/io/input/gateway",
+                        "output": "activation",
+                      },
+                      "observation": {
+                        "node": "ei/cognition/state/arm_status",
+                        "output": "observation",
+                      },
+                    },
+                  },
                   "builder": {
                     "id": "builder",
                     "node_type": "ei.cognition.intent.forwarder@v0.2",
                     "settings": {},
                     "inputs": {
                       "activation": {
-                        "node": "ei/io/input/gateway",
+                        "node": "ei/cognition/intent/context",
                         "output": "activation",
                       }
                     },
-                  }
+                  },
                 }
               }
             }
@@ -174,7 +188,7 @@ def _owner_graph() -> dict:
 
 def _owner_setup(graph: dict, op: str = "render") -> dict:
   return {
-    "schema_version": 2,
+    "schema_version": 3,
     "op": op,
     "core": "ei",
     "revision": "a" * 64,
@@ -211,7 +225,7 @@ def test_owner_projection_rejects_retired_type_at_exact_path() -> None:
   graph = _owner_graph()
   graph["cores"]["ei"]["layers"]["io"]["groups"]["input"]["nodes"]["gateway"][
     "node_type"
-  ] = "isos.ei_io.gateway@v0.2"
+  ] = "ei.retired.obsolete.node@v0.1"
   with pytest.raises(SetupDiagnostic) as error:
     _validate_ei_graph(graph)
   assert error.value.code == "unsupported_node_type_version"
@@ -220,33 +234,81 @@ def test_owner_projection_rejects_retired_type_at_exact_path() -> None:
   )
 
 
-def test_owner_catalog_exposes_activation_and_monitor_stages() -> None:
+def test_owner_catalog_exposes_activation_context_and_monitor_stages() -> None:
+  from ei.core.system.node_registry import BUILTIN_PLACEMENTS
+
   catalog = _setup_reply(_owner_setup(_owner_graph(), "catalog"))["catalog"]
-  assert len(catalog["stage_types"]) == 6
+  # BUILTIN_PLACEMENTS now includes 7 activation MVP + 7 new pipeline stages
+  assert len(catalog["stage_types"]) == len(BUILTIN_PLACEMENTS)
   assert catalog["routed_edges"] == []
-  assert catalog["data_types"] == []
-  assert {item["id"] for item in catalog["stage_types"]} == {
+  assert {item["id"] for item in catalog["data_types"]} == {
+    "resource_bundle@v0.2",
+    "observation_set@v0.2",
+    "context_snapshot@v0.2",
+    "selected_mission@v0.2",
+    "primitive_proposal@v0.2",
+    "health_update@v0.2",
+    "language_instruction@v0.2",
+    "vla_input@v0.2",
+    "grounded_goal@v0.2",
+    "motion_proposal@v0.2",
+    "prediction@v0.2",
+    "memory_reference@v0.2",
+  }
+  expected_mvp = {
     "ei.io.input.trigger@v0.2",
+    "ei.cognition.intent.context@v0.2",
     "ei.cognition.intent.forwarder@v0.2",
     "ei.governance.safety.gate@v0.2",
     "ei.io.input.arm_status@v0.2",
     "ei.cognition.state.arm_status@v0.2",
     "ei.governance.monitor.arm_status@v0.2",
   }
+  expected_pipeline = {
+    "ei.io.link.gateway@v0.2",
+    "ei.evidence.perception.admission@v0.2",
+    "ei.cognition.context.builder@v0.2",
+    "ei.cognition.missions.queue@v0.2",
+    "ei.cognition.decision.planner@v0.2",
+    "ei.governance.monitor.health@v0.2",
+  }
+  expected_isolated = {
+    "ei.cognition.policy.system1_python@v0.2",
+    "ei.cognition.policy.system1_native@v0.2",
+    "ei.cognition.policy.vla@v0.2",
+    "ei.cognition.world.predictor@v0.2",
+    "ei.cognition.memory.recall@v0.2",
+    "ei.cognition.memory.remember@v0.2",
+  }
+  all_ids = {item["id"] for item in catalog["stage_types"]}
+  assert expected_mvp <= all_ids
+  assert expected_pipeline <= all_ids
+  assert expected_isolated <= all_ids
+  by_id = {item["id"]: item for item in catalog["stage_types"]}
+  assert by_id["ei.cognition.policy.vla@v0.2"]["availability"] == "requires_verified_model"
+  assert by_id["ei.cognition.world.predictor@v0.2"]["availability"] == "ready_for_direct_invocation"
+  assert all(route["source_type"] not in expected_isolated and route["target_type"] not in expected_isolated
+             for route in catalog["port_routes"])
+  assert all_ids == set(BUILTIN_PLACEMENTS.keys())
   for item in catalog["stage_types"]:
     if item["id"] == "ei.governance.monitor.arm_status@v0.2":
       assert item["settings_fields"][0]["name"] == "forward_rate_hz"
       assert item["settings_fields"][0]["data_type"] == "number"
       assert "type" not in item["settings_fields"][0]
       assert item["settings_fields"][0]["default"] == 20
+    elif item["id"] in expected_pipeline:
+      # New pipeline stages use generic owner-stage pattern
+      assert item["settings_fields"] == []
+    elif item["id"] in expected_isolated:
+      assert item["implementation"]["kind"] == "built_in"
+      assert item["settings_fields"]
+      assert all(not port["required"] for port in item["inputs"])
     else:
       assert item["settings_fields"] == []
-    assert item["inputs"][0]["data_type"] == (
-      "arm_monitor_state@v0.2"
-      if item["id"].endswith(".arm_status@v0.2")
-      else "button_activation@v0.2"
-    )
-    assert item["outputs"][0]["delivery_mode"] == "event"
+    assert all(port["delivery_mode"] == "event" for port in item["inputs"])
+    assert all(port["delivery_mode"] == "event" for port in item["outputs"])
+    if item["id"] == "ei.cognition.intent.context@v0.2":
+      assert "snapshot" in {port["name"] for port in item["outputs"]}
 
 
 def test_monitor_forward_rate_setting_is_bounded() -> None:
@@ -280,11 +342,37 @@ def test_owner_projection_rejects_legacy_wrapper_type() -> None:
   assert error.value.code == "unsupported_node_type_version"
 
 
+def test_owner_projection_accepts_empty_or_missing_description() -> None:
+  graph = _owner_graph()
+  nodes = graph["cores"]["ei"]["layers"]["cognition"]["groups"]["intent"]["nodes"]
+  nodes["context"]["description"] = ""
+  nodes["builder"].pop("description", None)
+  _validate_ei_graph(graph)
+
+
 def test_composes_exact_seven_stage_instances() -> None:
   composition = compose_stages(_graph())
   assert len(composition.instances) == 7
   assert len(composition.edges) == 7
   assert all(instance.description for instance in composition.instances.values())
+
+
+def test_stage_description_may_be_empty_or_omitted() -> None:
+  graph = _graph()
+  nodes = list(_nodes(graph))
+  nodes[0][1]["description"] = ""
+  nodes[1][1].pop("description")
+  composition = compose_stages(graph)
+  assert composition.instances[nodes[0][0]].description == ""
+  assert composition.instances[nodes[1][0]].description == ""
+
+
+def test_stage_description_rejects_non_string() -> None:
+  graph = _graph()
+  next(iter(_nodes(graph)))[1]["description"] = None
+  with pytest.raises(StageGraphError) as error:
+    compose_stages(graph)
+  assert error.value.code == "invalid_description"
 
 
 def test_only_exact_replaceable_evidence_routes_accept_qos() -> None:
@@ -400,7 +488,7 @@ def test_invalid_evidence_frequency_rejected_at_field(frequency: object) -> None
 
 
 def test_empty_current_graph_has_no_stage_instances() -> None:
-  graph = {"version": "0.2.0", "cores": {"isos": {"layers": {}}}}
+  graph = {"version": "0.2.1", "cores": {"isos": {"layers": {}}}}
   assert compose_stages(graph).instances == {}
 
 
@@ -428,6 +516,16 @@ def _nodes(graph: dict):
     for group_id, group in layer["groups"].items():
       for node_id, node in group["nodes"].items():
         yield f"isos/{layer_id}/{group_id}/{node_id}", node
+
+
+def test_disconnected_stage_keeps_other_edges() -> None:
+  graph = _graph()
+  target = next(
+    node for _, node in _nodes(graph) if node["node_type"].endswith(".builder@v0.2")
+  )
+  target["inputs"].pop("observations")
+  composition = compose_stages(graph)
+  assert len(composition.edges) == len(compose_stages(_graph()).edges) - 1
 
 
 @pytest.mark.parametrize("type_id", list(STAGE_TYPES))

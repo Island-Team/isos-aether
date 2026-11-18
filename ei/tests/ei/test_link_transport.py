@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
-from ei.core.link.transport import GatewayTransport
+from ei.core.io.link.transport import GatewayTransport
 from ei.lib.config import GatewayConfig
+from pydantic import ValidationError
 
 
 @pytest.mark.asyncio

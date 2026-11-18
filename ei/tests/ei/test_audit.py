@@ -6,9 +6,8 @@ import asyncio
 from collections.abc import Awaitable
 
 import pytest
-
-from ei.core.perception.admission import Admission
-from ei.core.safety import safety_audit_entry
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import safety_audit_entry
 
 
 class FakeGate:

@@ -22,8 +22,7 @@ use std::{
 const NAMES: &[&str] = &[
   "isos",
   "aether-runtime",
-  "aether-http-bridge",
-  "aether-config-server",
+  "aether-server",
   "ei-runtime",
   "ei",
   "aether-profile",

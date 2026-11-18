@@ -42,7 +42,7 @@ fn process_environment_selects_home_without_touching_old_graph() {
     String::from_utf8_lossy(&output.stderr)
   );
   let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-  assert_eq!(report["interfaces"]["target_graph_format"], "0.2.0");
+  assert_eq!(report["interfaces"]["target_graph_format"], "0.2.1");
   let initialized = Command::new(env!("CARGO_BIN_EXE_isos"))
     .args(["config", "init"])
     .env("XDG_CONFIG_HOME", &xdg)

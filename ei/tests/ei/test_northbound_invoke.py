@@ -7,15 +7,12 @@ import json
 
 import pytest
 import websockets
-
-from ei.api.status import HealthState
-from ei.contracts.actions import PrimitiveAck
-from ei.contracts.actions.ack import TerminalStatus
-from ei.core.missions import MissionQueue
-from ei.core.monitor import EstopLatch
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
-from ei.core.safety import SafetyGate
+from ei.contracts.io.link import PrimitiveAck, TerminalStatus
+from ei.core.cognition.missions import MissionQueue
+from ei.core.evidence.perception.admission import Admission
+from ei.core.governance.safety import EstopLatch, SafetyGate
+from ei.core.system.models.status import HealthState
+from ei.core.system.registry import PrimitiveRegistry
 from ei.io import PRIMITIVE_INVOKE_PATH, NorthboundServer
 from ei.io.state import ServerState
 

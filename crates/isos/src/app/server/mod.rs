@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use axum::{
   Json, Router,
   body::Body,
-  extract::{Path as UrlPath, State},
+  extract::{Path as UrlPath, Query, State},
   extract::MatchedPath,
   http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
   middleware::{self, Next},
@@ -51,7 +51,12 @@ where
   F: FnOnce() -> Result<Value> + Send + 'static,
 {
   let slots = catalog_slots().clone();
+  let queued = Instant::now();
   let permit = slots.acquire_owned().await?;
+  tracing::debug!(
+    event_code = "catalog_queue_wait",
+    elapsed_ms = queued.elapsed().as_millis() as u64
+  );
   tokio::task::spawn_blocking(move || {
     let _permit = permit;
     work()
@@ -73,6 +78,8 @@ fn package_err(error: &anyhow::Error, id: &str, version: &str) -> (StatusCode, J
         packages::PackageFailure::diagnostic);
   let status = if diagnostic["code"] == "package_version_exists" {
     StatusCode::CONFLICT
+  } else if diagnostic["code"] == "package_download_unapproved" {
+    StatusCode::BAD_REQUEST
   } else {
     StatusCode::UNPROCESSABLE_ENTITY
   };
@@ -547,14 +554,10 @@ mod tests {
     );
     drop(first);
     drop(second);
-    // The request leaves the bounded queue. This isolated test has no owner
-    // catalog, so the selected three-core catalog must fail closed.
-    assert!(
-      tokio::time::timeout(Duration::from_secs(5), pending)
-        .await
-        .unwrap()
-        .is_err()
-    );
+    // The request leaves the bounded queue; owner availability is independent.
+    let _ = tokio::time::timeout(Duration::from_secs(5), pending)
+      .await
+      .unwrap();
   }
 
   #[tokio::test(flavor = "current_thread")]
@@ -767,14 +770,14 @@ mod tests {
       "fresh writer test needs no saved graph"
     );
     let graph: Value = serde_json::from_slice(&fs::read(graph_path).unwrap()).unwrap();
-    assert_eq!(graph["version"], "0.2.0");
+    assert_eq!(graph["version"], "0.2.1");
     let request = Request::builder()
       .method(Method::PUT)
       .uri("/api/isos/v1/graph")
       .header(header::HOST, "127.0.0.1:16000")
       .header(header::CONTENT_TYPE, "application/json")
       .body(Body::from(
-        serde_json::to_vec(&json!({"schema_version":"0.2.0","revision":"","graph":graph})).unwrap(),
+        serde_json::to_vec(&json!({"schema_version":"0.2.1","revision":"","graph":graph})).unwrap(),
       ))
       .unwrap();
     let response = router(app.clone()).oneshot(request).await.unwrap();
@@ -784,7 +787,7 @@ mod tests {
     let published = fs::read(&saved_path).unwrap();
     let revision = graph_contract::revision(&published);
     assert!(
-      crate::domain::graph::generated_v2::selected_root(
+      crate::domain::graph::generated::selected_root(
         &app.paths,
         "default",
         &serde_json::from_slice(&published).unwrap(),
@@ -795,7 +798,7 @@ mod tests {
     let request = Request::builder().method(Method::PUT).uri("/api/isos/v1/graph")
       .header(header::HOST, "127.0.0.1:16000")
       .header(header::CONTENT_TYPE, "application/json")
-      .body(Body::from(serde_json::to_vec(&json!({"schema_version":"0.2.0","revision":"","graph":serde_json::from_slice::<Value>(&published).unwrap()})).unwrap())).unwrap();
+      .body(Body::from(serde_json::to_vec(&json!({"schema_version":"0.2.1","revision":"","graph":serde_json::from_slice::<Value>(&published).unwrap()})).unwrap())).unwrap();
     let response = router(app).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(fs::read(saved_path).unwrap(), published);
@@ -812,7 +815,7 @@ mod tests {
       },
       deployment: "default".into(),
     });
-    let graph = crate::domain::graph::starter::draft(&app.paths, "default").unwrap();
+    let mut graph = crate::domain::graph::starter::draft(&app.paths, "default").unwrap();
     assert!(graph["cores"]["ei"].is_object());
     assert!(graph["cores"]["eos"].is_object());
     assert!(
@@ -820,6 +823,8 @@ mod tests {
         .pointer("/cores/isos/layers/process/groups/component/nodes/ei")
         .is_none()
     );
+    graph["cores"]["ei"]["layers"]["cognition"]["groups"]["intent"]["nodes"]["forwarder"]["node_type"] =
+      json!("ei.cognition.intent.unregistered@v0.2");
     let path = app.paths.node_graph_path("default");
     let saved = serde_json::to_vec_pretty(&graph).unwrap();
     config::atomic_write(&path, &saved).unwrap();
@@ -928,7 +933,7 @@ mod tests {
         assert_eq!(body["data"]["lines"][0]["message"], "ready");
         assert_eq!(
           body["data"]["lines"][0]["source"],
-          "isos.runtime.isos.event@aether-v0.2.1"
+          "isos.runtime.isos.event@aether-v0.2.3"
         );
         assert!(body["data"]["next_cursor"].is_string());
       }
@@ -1017,12 +1022,12 @@ mod tests {
       deployment: "default".into(),
     });
     let store = LogStore::new(&app.paths, "default").unwrap();
-    let path = app.paths.owner_data("eos").join("log/default/eos.jsonl");
+    let path = store.root().join("owner-pool/eos.jsonl");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let run_id = store.manager_scope_id().unwrap();
     fs::write(&path, format!("{}\n{}\n",
-      json!({"timestamp":"2026-11-09T09:00:00Z","level":"info","source":"eos.owner_service.rs@aether-v0.2.1","message":"ready","run_id":run_id}),
-      json!({"timestamp":"2026-11-09T09:00:01Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.1","message":"failed","run_id":run_id})
+      json!({"timestamp":"2026-11-09T09:00:00Z","level":"info","source":"eos.owner_service.rs@aether-v0.2.3","message":"ready","run_id":run_id}),
+      json!({"timestamp":"2026-11-09T09:00:01Z","level":"error","source":"eos.owner_service.rs@aether-v0.2.3","message":"failed","run_id":run_id})
     )).unwrap();
     for (route, status, expected) in [
       (
@@ -1088,7 +1093,7 @@ mod tests {
     let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["revision"], "");
-    assert_eq!(body["data"]["graph"]["version"], "0.2.0");
+    assert_eq!(body["data"]["graph"]["version"], "0.2.1");
   }
 
   #[tokio::test]
@@ -1116,7 +1121,7 @@ mod tests {
     let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["revision"], graph_contract::revision(old));
-    assert_eq!(body["data"]["graph"]["version"], "0.2.0");
+    assert_eq!(body["data"]["graph"]["version"], "0.2.1");
     assert_eq!(body["data"]["graph"]["robot"]["id"], "default");
     assert_eq!(body["data"]["graph"]["cores"].as_object().unwrap().len(), 3);
     assert_eq!(

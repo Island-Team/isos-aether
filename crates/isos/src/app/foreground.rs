@@ -401,6 +401,7 @@ pub(crate) fn serve_foreground(
   ui_live: bool,
   browser: bool,
   run_graph: bool,
+  no_ui: bool,
 ) -> Result<()> {
   ensure_setup(&paths, &name)?;
   preflight::verify_active_isos(&paths)?;
@@ -408,6 +409,7 @@ pub(crate) fn serve_foreground(
     !ui_live || paths.mode()? == "dev",
     "--ui-live is available only in dev mode"
   );
+  ensure!(!no_ui || !ui_live, "--no-ui conflicts with --ui-live");
   if UnixStream::connect(paths.socket()).is_ok() {
     let identity = manager_call(&paths, &name, "manager_identity")?;
     bail!("IsOS manager is already running: {identity}");
@@ -435,7 +437,9 @@ pub(crate) fn serve_foreground(
   let main_log = logs.root().join("isos.jsonl");
   let mut frontend = None;
   let mut ui_issue = None;
-  let static_ui = if ui_live {
+  let static_ui = if no_ui {
+    None
+  } else if ui_live {
     match isosui::bundle_for_serve(&paths) {
       Ok(_) => frontend = Some(Frontend::spawn(&ui_source()?, logs.clone())?),
       Err(error) => {
@@ -545,7 +549,11 @@ pub(crate) fn serve_foreground(
     }
     println!("IsOS API: {}", http::local_origin()?);
     println!("Unified log: {}", main_log.display());
-    println!("IsOS workbench is running; press Ctrl+C to stop it.");
+    if no_ui {
+      println!("IsOS API and manager are running; press Ctrl+C to stop them.");
+    } else {
+      println!("IsOS workbench is running; press Ctrl+C to stop it.");
+    }
     if browser
       && (static_ui.is_some() || frontend.is_some())
       && let Err(error) = open_browser()
@@ -558,7 +566,7 @@ pub(crate) fn serve_foreground(
     if run_graph {
       match manager_call(&paths, &name, "deployment_start") {
         Ok(started) => {
-          if let Err(error) = print_run_startup(&paths, &name, &started) {
+          if let Err(error) = print_run_startup(&paths, &name, &started, !no_ui) {
             eprintln!("Could not display graph status: {error}");
           }
         }
@@ -569,7 +577,13 @@ pub(crate) fn serve_foreground(
             "deployment_start_failed",
             "IsOS deployment did not start",
           );
-          eprintln!("Graph did not start: {error}. Use the workbench to finish setup.")
+          if no_ui {
+            eprintln!(
+              "Graph did not start: {error}. Check configuration with `isos config validate` and Apply again."
+            );
+          } else {
+            eprintln!("Graph did not start: {error}. Use the workbench to finish setup.");
+          }
         }
       }
     }
@@ -620,9 +634,16 @@ pub(crate) fn serve_foreground(
   result
 }
 
-pub(crate) fn print_run_startup(paths: &config::Paths, name: &str, result: &Value) -> Result<()> {
+pub(crate) fn print_run_startup(
+  paths: &config::Paths,
+  name: &str,
+  result: &Value,
+  show_ui: bool,
+) -> Result<()> {
   println!("{}", serde_json::to_string_pretty(result)?);
-  println!("IsosUI: {}", http::ui_url()?);
+  if show_ui {
+    println!("IsosUI: {}", http::ui_url()?);
+  }
   println!("IsOS API: {}", http::local_origin()?);
   println!(
     "Active revision: {}",

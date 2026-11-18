@@ -48,11 +48,18 @@ pub(crate) enum CommandLine {
   /// Open the local configuration page.
   Open,
   /// Run the deployment graph.
-  Run,
+  Run {
+    /// Run the API and deployment without starting or opening the UI.
+    #[arg(long)]
+    no_ui: bool,
+  },
   /// Serve the configuration UI and API without starting deployment workers.
   Serve {
     #[arg(long)]
     ui_live: bool,
+    /// Serve only the API and manager.
+    #[arg(long, conflicts_with = "ui_live")]
+    no_ui: bool,
   },
   /// Manage the local Island-port account session.
   Auth {
@@ -83,6 +90,11 @@ pub(crate) enum CommandLine {
   Status {
     #[arg(long)]
     json: bool,
+  },
+  /// Exercise the saved demo button and monitor through the local API.
+  Demo {
+    #[command(subcommand)]
+    command: DemoCommand,
   },
   /// Read recent unified logs for a source or all sources.
   Logs {
@@ -123,7 +135,7 @@ pub(crate) enum CommandLine {
     #[command(subcommand)]
     command: ServiceCommand,
   },
-  /// Inspect backend nodes and manage hardware or simulator packages.
+  /// Inspect backend nodes and manage hardware or service packages.
   Backends {
     #[command(subcommand)]
     command: LibraryCommand,
@@ -136,6 +148,16 @@ pub(crate) enum CommandLine {
 pub(crate) enum DeploymentCommand {
   Stop,
   Status,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DemoCommand {
+  /// Submit one demo button activation. Use a fresh event ID for each click.
+  Activate { event_id: String },
+  /// Read the outcome of a previously submitted demo activation.
+  Result { event_id: String },
+  /// Read the current demo arm observation.
+  Monitor,
 }
 
 #[derive(Subcommand)]
@@ -180,10 +202,28 @@ pub(crate) enum ServiceCommand {
     repo: PathBuf,
     alias: String,
   },
+  /// Install a release or build a source checkout; source builds stay linked for Apply and Run refresh.
   Install(InstallArgs),
   Remove {
     id: String,
     version: String,
+  },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PackageConfigCommand {
+  Show {
+    pin: String,
+  },
+  Validate {
+    pin: String,
+    file: PathBuf,
+  },
+  Import {
+    pin: String,
+    file: PathBuf,
+    #[arg(long)]
+    revision: String,
   },
 }
 
@@ -216,6 +256,26 @@ pub(crate) enum ConfigCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum PackageCommand {
+  /// Build and verify a source candidate in an isolated store; runtime replay is required to qualify it.
+  Check {
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    output: PathBuf,
+    /// Candidate graph for owner catalog and interface admission.
+    #[arg(long)]
+    graph: Vec<PathBuf>,
+    /// Deployment-local package configuration used by the isolated replay.
+    #[arg(long)]
+    package_config: Option<PathBuf>,
+  },
+  /// Publish exactly the assets from a qualified check directory.
+  Release {
+    #[arg(long)]
+    checked: PathBuf,
+  },
   /// Upload an asset and manifest to a draft GitHub Release, then submit for review.
   Upload {
     manifest: PathBuf,
@@ -230,7 +290,27 @@ pub(crate) enum PackageCommand {
     #[arg(long, default_value = "latest")]
     version: String,
   },
+  /// Refresh available upgrades for locally installed packages only.
+  Update,
+  /// Rebuild source-installed packages selected by the bound graph.
+  RefreshSources,
+  /// Install catalog upgrades found by the last package update.
+  Upgrade {
+    id: Option<String>,
+    /// Approval digest for one exact package asset (requires ID).
+    #[arg(long)]
+    approve_download: Option<String>,
+  },
   Install(InstallArgs),
+  /// Edit deployment-local TOML for one exact installed package pin.
+  Configure {
+    pin: String,
+  },
+  /// Inspect, validate, or import package configuration.
+  Config {
+    #[command(subcommand)]
+    command: PackageConfigCommand,
+  },
   Link {
     id: String,
     version: String,
@@ -283,6 +363,9 @@ pub(crate) struct InstallArgs {
   allow_source_build: bool,
   #[arg(long)]
   allow_unapproved: bool,
+  /// Approval digest printed with the exact catalog asset preview (for scripts).
+  #[arg(long)]
+  approve_download: Option<String>,
 }
 
 #[derive(Subcommand)]

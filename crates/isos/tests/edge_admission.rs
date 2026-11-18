@@ -1,12 +1,12 @@
 #[path = "../src/domain/graph/edge_admission.rs"]
 mod edge_admission;
 
-use edge_admission::{admit, admit_partial};
+use edge_admission::{admit, admit_partial, missing_input_warnings};
 use serde_json::json;
 
 #[test]
 fn current_graph_admits_matching_typed_edge() {
-  let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"eos_process":{"groups":{"source":{"nodes":{"a":{"id":"a","node_type":"isos.eos_process.source@v0.2"}}},"sink":{"nodes":{"b":{"id":"b","node_type":"isos.eos_process.sink@v0.2","inputs":{"data":{"node":"isos/eos_process/source/a","output":"data"}}}}}}}}}}});
+  let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"eos_process":{"groups":{"source":{"nodes":{"a":{"id":"a","node_type":"isos.eos_process.source@v0.2"}}},"sink":{"nodes":{"b":{"id":"b","node_type":"isos.eos_process.sink@v0.2","inputs":{"data":{"node":"isos/eos_process/source/a","output":"data"}}}}}}}}}}});
   let mut catalog = json!({"types":[
     {"id":"isos.eos_process.source@v0.2","core":"isos","layer":"eos_process","group":"source","inputs":[],"outputs":[{"name":"data","data_type":"topology_link","transport":"none","delivery_mode":"declaration"}]},
     {"id":"isos.eos_process.sink@v0.2","core":"isos","layer":"eos_process","group":"sink","inputs":[{"name":"data","data_type":"topology_link","transport":"none","delivery_mode":"declaration"}],"outputs":[]}
@@ -33,7 +33,7 @@ fn unsupported_graph_version_is_rejected() {
 }
 
 fn bridge_route() -> (serde_json::Value, serde_json::Value) {
-  let graph = json!({"version":"0.2.0","cores":{"isos":{"layers":{"ui":{"groups":{"source":{"nodes":{"front":{"id":"front","node_type":"isos.ui.source@v0.2"}}}}}}},"ei":{"layers":{"io":{"groups":{"sink":{"nodes":{"preview":{"id":"preview","node_type":"ei.io.sink@v0.2","inputs":{"frame":{"node":"isos/ui/source/front","output":"frame"}}}}}}}}}}});
+  let graph = json!({"version":"0.2.1","cores":{"isos":{"layers":{"ui":{"groups":{"source":{"nodes":{"front":{"id":"front","node_type":"isos.ui.source@v0.2"}}}}}}},"ei":{"layers":{"io":{"groups":{"sink":{"nodes":{"preview":{"id":"preview","node_type":"ei.io.sink@v0.2","inputs":{"frame":{"node":"isos/ui/source/front","output":"frame"}}}}}}}}}}});
   let protocol = json!({"owner":"isos","id":"frame-http","version":"1.0"});
   let port = json!({"name":"frame","data_type":"camera_frame","transport":"http","delivery_mode":"stream","data_class":"image","contract":protocol});
   let catalog = json!({"types":[
@@ -91,6 +91,22 @@ fn catalog_rejects_duplicate_and_incomplete_payloads() {
 }
 
 #[test]
+fn catalog_rejects_incoherent_json_payload_metadata() {
+  let (graph, mut catalog) = bridge_route();
+  catalog["data_types"][0]["media_type"] = json!("image/jpeg");
+  assert_eq!(
+    admit(&graph, &catalog).unwrap_err().code,
+    "data_type_invalid"
+  );
+  catalog["data_types"][0]["media_type"] = json!("application/json");
+  catalog["data_types"][0]["purpose"] = json!("  ");
+  assert_eq!(
+    admit(&graph, &catalog).unwrap_err().code,
+    "data_type_invalid"
+  );
+}
+
+#[test]
 fn matching_payload_without_owner_route_is_rejected() {
   let (graph, mut catalog) = bridge_route();
   catalog["bridge_adapters"] = json!([]);
@@ -114,9 +130,35 @@ fn connection_preview_allows_other_required_inputs_to_be_unconnected() {
     .as_array_mut()
     .unwrap()
     .push(other);
+  assert_eq!(admit(&graph, &catalog).unwrap().len(), 1);
+  let warnings = missing_input_warnings(&graph, &catalog);
+  assert_eq!(warnings.len(), 1);
+  assert_eq!(warnings[0].code, "edge_required_input");
+  assert_eq!(warnings[0].target.as_deref(), Some("ei/io/sink/preview"));
+  assert_eq!(admit_partial(&graph, &catalog).unwrap().len(), 1);
+}
+
+#[test]
+fn input_port_range_derives_edge_cap_and_rejects_legacy_edge_cap() {
+  let (mut graph, mut catalog) = bridge_route();
+  catalog["types"][0]["outputs"][0]["frequency_hz"] = json!(5.0);
+  let path = "/cores/ei/layers/io/groups/sink/nodes/preview/inputs/frame";
+  let source = graph.pointer_mut(path).unwrap().take();
+  *graph.pointer_mut(path).unwrap() =
+    json!({"sources":source,"desired_rate_hz":{"min":10.0,"max":24.0}});
+  let edge = &admit(&graph, &catalog).unwrap()[0];
+  assert_eq!(edge.frequency_hz, Some(24.0));
+  assert_eq!(edge.path, format!("{path}/sources"));
+  assert_eq!(
+    missing_input_warnings(&graph, &catalog)[0].code,
+    "port_rate_below_desired"
+  );
+  graph.pointer_mut(path).unwrap()["desired_rate_hz"]["min"] = json!(30.0);
+  assert_eq!(admit(&graph, &catalog).unwrap_err().code, "port_rate");
+  graph.pointer_mut(path).unwrap()["desired_rate_hz"]["min"] = json!(10.0);
+  graph.pointer_mut(path).unwrap()["sources"]["frequency_hz"] = json!(12.0);
   assert_eq!(
     admit(&graph, &catalog).unwrap_err().code,
-    "edge_required_input"
+    "edge_source_field"
   );
-  assert_eq!(admit_partial(&graph, &catalog).unwrap().len(), 1);
 }

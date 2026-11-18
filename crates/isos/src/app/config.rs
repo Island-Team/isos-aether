@@ -26,70 +26,8 @@ struct RuntimeConfig {
   deployment: DeploymentConfig,
   #[serde(default)]
   logging: LoggingConfig,
-  #[cfg(test)]
-  #[serde(default)]
-  vision_evidence: VisionEvidenceConfig,
   #[serde(default)]
   package_host_inputs: BTreeMap<String, PathBuf>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VisionEvidenceConfig {
-  gate_path: Option<String>,
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_VISION_CONFIG_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-#[expect(
-  dead_code,
-  reason = "reserved test hook for the selected vision configuration"
-)]
-pub(crate) fn test_vision_config_path(path: Option<PathBuf>) {
-  TEST_VISION_CONFIG_PATH.with(|selected| *selected.borrow_mut() = path);
-}
-
-/// The selected file supplies the default; a process environment value takes precedence.
-#[cfg(test)]
-pub fn vision_gate_selection() -> Result<(Option<String>, String)> {
-  use sha2::{Digest, Sha256};
-  let path = runtime_config_path(
-    Path::new(env!("CARGO_MANIFEST_DIR")),
-    std::env::var_os("ISOS_CONFIG").as_deref(),
-  )?;
-  #[cfg(test)]
-  let path = TEST_VISION_CONFIG_PATH
-    .with(|selected| selected.borrow().clone())
-    .unwrap_or(path);
-  let source = merged_config_source(&path, std::env::var_os("ISOS_CONFIG").is_some())?;
-  let config: RuntimeConfig = toml::from_str(&source)?;
-  let gate = select_vision_gate(
-    config.vision_evidence.gate_path,
-    std::env::var("ISOS_VISION_GATE_PATH").ok(),
-  );
-  let fingerprint_source = format!(
-    "{source}\nvision_gate_override={:?}",
-    std::env::var_os("ISOS_VISION_GATE_PATH")
-  );
-  Ok((
-    gate,
-    hex::encode(Sha256::digest(fingerprint_source.as_bytes())),
-  ))
-}
-
-#[cfg(test)]
-fn select_vision_gate(
-  configured: Option<String>,
-  override_value: Option<String>,
-) -> Option<String> {
-  override_value
-    .or(configured)
-    .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -381,7 +319,7 @@ fn merged_config_source(path: &Path, required: bool) -> Result<String> {
 }
 
 fn config_guide() -> String {
-  "https://github.com/Island-Team/isos-p/blob/master/docs/isos/design/app/configuration.md".into()
+  "https://github.com/Island-Team/isos-aether/blob/master/docs/isos/core/config.md".into()
 }
 
 fn apply_process_overrides(config: &mut RuntimeConfig) -> Result<()> {
@@ -969,12 +907,6 @@ mod tests {
     assert!(validate_effective_values(&effective).is_err());
   }
   #[test]
-  fn empty_vision_override_disables_configured_gate() {
-    let configured = Some("eos/interface/gate/front".to_owned());
-    assert_eq!(select_vision_gate(configured.clone(), None), configured);
-    assert_eq!(select_vision_gate(configured, Some(String::new())), None);
-  }
-  #[test]
   fn config_toml_maps_settings_and_rejects_invalid_values() {
     let root = Path::new("/tmp/isos-source");
     let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='../IsosUI'\n[logging]\ndefault_source='all'\nlevel='warn'\nmax_bytes=262144\nbackups=2\nmax_sources=32\n", root).unwrap();
@@ -1084,6 +1016,21 @@ mod tests {
     .unwrap();
     assert_eq!(values["ISOS_EI_BIN_DIR"], "/tmp/isos-source/bin/ei");
     assert_eq!(values["ISOS_EI_DEFAULTS_DIR"], "/tmp/isos-source/etc/ei");
+  }
+
+  #[test]
+  fn example_factory_defaults_resolve_to_checkout_directory() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let example = include_str!("../../../../config/isos/isos.example.toml");
+    let values = config_values(example, crate_root).unwrap();
+    let selected = Path::new(&values["ISOS_EI_FACTORY_DEFAULTS_DIR"]);
+    assert_eq!(
+      selected.canonicalize().unwrap(),
+      crate_root
+        .join("../../config/defaults/ei")
+        .canonicalize()
+        .unwrap()
+    );
   }
 
   #[test]

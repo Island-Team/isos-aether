@@ -5,14 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-from ei.contracts.actions import PrimitiveAck
-from ei.core.link import ClientRegistry
-from ei.core.missions import MissionQueue
-from ei.core.monitor import EstopLatch
-from ei.core.registry import PrimitiveRegistry
-from ei.core.safety import SafetyGate
-from ei.internal.decision import ActionInvocation
+from ei.contracts.governance.safety import ActionInvocation
+from ei.contracts.io.link import PrimitiveAck
+from ei.core.cognition.missions import MissionQueue
+from ei.core.governance.safety import EstopLatch, SafetyGate
+from ei.core.io.link import ClientRegistry
+from ei.core.system.registry import PrimitiveRegistry
 
 
 class FakeLink:

@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/aether-common", "crates/aether-node-profile", "crates/aether-hal", "crates/aether-control", "crates/aether-http-bridge", "crates/aether-config-server", "crates/aether-runtime", "crates/isos"]
+members = ["crates/aether-lib", "crates/aether-node-profile", "crates/aether-node", "crates/aether-hal", "crates/aether-system", "crates/aether-server", "crates/aether-skill", "crates/aether-runtime", "crates/isos"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.3"
 edition = "2021"
 license = "Apache-2.0"
 

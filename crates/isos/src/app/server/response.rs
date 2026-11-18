@@ -13,6 +13,22 @@ pub(super) fn fail(
   message: impl ToString,
   details: Value,
 ) -> (StatusCode, Json<Value>) {
+  fail_with_correlation(
+    status,
+    code,
+    message,
+    details,
+    crate::runtime::manager::next_correlation_id(),
+  )
+}
+
+pub(super) fn fail_with_correlation(
+  status: StatusCode,
+  code: impl AsRef<str>,
+  message: impl ToString,
+  details: Value,
+  correlation_id: String,
+) -> (StatusCode, Json<Value>) {
   let message = message.to_string();
   let code = code.as_ref();
   (
@@ -21,7 +37,7 @@ pub(super) fn fail(
       code: code.to_owned(),
       message,
       details,
-      correlation_id: crate::runtime::manager::next_correlation_id(),
+      correlation_id,
     }))),
   )
 }
@@ -42,7 +58,8 @@ pub(super) fn internal_err(
   status: StatusCode,
   error: &impl std::fmt::Display,
 ) -> (StatusCode, Json<Value>) {
-  tracing::warn!(event_code = "http_request_failed", %error, "IsOS HTTP operation failed");
+  let correlation_id = crate::runtime::manager::next_correlation_id();
+  tracing::warn!(event_code = "http_request_failed", %correlation_id, %error, "IsOS HTTP operation failed");
   let message = match status {
     StatusCode::BAD_REQUEST => "invalid request",
     StatusCode::NOT_FOUND => "requested resource is unavailable",
@@ -51,7 +68,13 @@ pub(super) fn internal_err(
     StatusCode::SERVICE_UNAVAILABLE => "required owner is unavailable",
     _ => "IsOS operation failed",
   };
-  err(status, message)
+  fail_with_correlation(
+    status,
+    error_code(status),
+    message,
+    Value::Null,
+    correlation_id,
+  )
 }
 
 pub(super) fn error_code(status: StatusCode) -> &'static str {

@@ -1,6 +1,6 @@
 # P06 统一 JSONL 事件夹具
 
-[English](README.md) · [归属契约](../../../../../docs_cn/isos/interfaces/core/events_cn.md) · [设计](../../../../../docs_cn/isos/design/README_cn.md)
+[English](README.md) · [归属契约](../../../../../docs_cn/isos/interfaces/core_cn.md#core_events) · [设计](../../../../../docs_cn/isos/core/README_cn.md)
 
 `cases.json` 冻结 37 个成功、拒绝、抑制、生命周期及已审核归属目录场景，案例名称供实现测试稳定引用。检查器验证案例目录及代表性原始子进程／存储记录边界，包括 8,064/8,065 与 8,192/8,193 字节。执行 `python3 tests/fixtures/jsonl_events/check_cases.py`。Rust 单元与真实进程测试覆盖运行时收集器。
 

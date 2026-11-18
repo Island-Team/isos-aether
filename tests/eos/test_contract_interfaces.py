@@ -12,21 +12,21 @@ from wire_surface import wire_surface
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROTO_ROOT = ROOT / "share/eos/contracts"
-GENERATED = ROOT / "share/eos/schemas/eos"
+PROTO_ROOT = ROOT / "contract/proto"
+GENERATED = ROOT / "contract/schemas"
 TOOL = ROOT / "scripts/print_contract_interfaces.py"
 GOLDEN = Path(__file__).parent / "fixtures/public_wire_surface.json"
 
 for name in ("gateway", "skills", "workflow", "capabilities"):
-  assert (PROTO_ROOT / f"eos/{name}.proto").is_file()
-assert {path.name for path in (PROTO_ROOT / "eos").glob("*.proto")} == {
+  assert (PROTO_ROOT / f"{name}.proto").is_file()
+assert {path.name for path in PROTO_ROOT.glob("*.proto")} == {
   "gateway.proto", "skills.proto", "workflow.proto", "capabilities.proto"
 }
-assert {path.name for path in (PROTO_ROOT / "eos").iterdir() if path.is_dir()} == {
+assert {path.name for path in PROTO_ROOT.iterdir() if path.is_dir()} == {
   "actions", "body", "world", "system", "robot", "perception", "skills",
-  "workflow", "options", "external", "southbound"
+  "workflow", "options", "external", "southbound", "google"
 }
-assert not (PROTO_ROOT / "eos/northbound").exists()
+assert not (PROTO_ROOT / "northbound").exists()
 assert not any((PROTO_ROOT / f"island/{name}.proto").exists()
                for name in ("gateway", "skills", "workflow"))
 
@@ -37,7 +37,7 @@ current = wire_surface(PROTO_ROOT)
 for kind, declarations in original.items():
   assert {name: current[kind].get(name) for name in declarations} == declarations, kind
 
-manifest = json.loads((GENERATED / "contracts.manifest.json").read_text(encoding="utf-8"))
+manifest = json.loads((GENERATED / "eos.manifest.json").read_text(encoding="utf-8"))
 assert manifest["schema_count"] == 40
 assert {entry["path"].split("/")[0] for entry in manifest["schemas"]} == {
   "actions", "body", "world"
@@ -62,7 +62,7 @@ for resource in ("asr", "vision"):
   assert schemas[f"world/{resource}.v1.json"]["properties"]["schema_version"] == {
     "const": "1.0"
   }
-assert not (ROOT / "share/eos/contracts/perception/world/world.v1.json").exists()
+assert not (ROOT / "contract/perception/world/world.v1.json").exists()
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -70,10 +70,13 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
                         capture_output=True, text=True, check=False)
 
 
-explicit = run("--contracts", str(ROOT / "share/eos"), "--compact")
+explicit = run("--contracts", str(ROOT / "contract"), "--compact")
 assert explicit.returncode == 0, explicit.stderr
-repeat = run("--contracts", str(ROOT / "share/eos"), "--compact")
+repeat = run("--contracts", str(ROOT / "contract"), "--compact")
 assert repeat.stdout == explicit.stdout
+from_parent = run("--contracts", str(ROOT), "--compact")
+assert from_parent.returncode == 0, from_parent.stderr
+assert from_parent.stdout == explicit.stdout
 from_generated = run("--contracts", str(GENERATED), "--compact")
 assert from_generated.returncode == 0, from_generated.stderr
 assert json.loads(from_generated.stdout) == json.loads(explicit.stdout)

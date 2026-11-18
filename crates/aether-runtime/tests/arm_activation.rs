@@ -55,7 +55,7 @@ fn node(id: &str, ty: &str, input: Option<(&str, &str, &str)>) -> Value {
   value
 }
 fn graph() -> Value {
-  json!({"version":"0.2.0","robot":{"id":"robot","name":"Robot"},"cores":{"eos":{"layers":{
+  json!({"version":"0.2.1","robot":{"id":"robot","name":"Robot"},"cores":{"eos":{"layers":{
   "interface":{"groups":{"ingress":{"nodes":{"trigger":node("trigger","eos.interface.ingress.trigger@v0.2",Some(("activation","ei/governance/safety/gate","activation")))}} ,"egress":{"nodes":{"arm_status":node("arm_status","eos.interface.egress.arm_status@v0.2",Some(("observation","eos/skill/demo/arm_status","observation")))}}}},
   "skill":{"groups":{"demo":{"nodes":{"joint_delta":node("joint_delta","eos.skill.demo.joint_delta@v0.2",Some(("activation","eos/interface/ingress/trigger","activation"))),"arm_status":node("arm_status","eos.skill.demo.arm_status@v0.2",Some(("observation","eos/dispatcher/arm/monitor","observation")))}}}},
   "dispatcher":{"groups":{"arm":{"nodes":{"delta":node("delta","eos.dispatcher.arm.delta@v0.2",Some(("delta","eos/skill/demo/joint_delta","delta"))),"monitor":node("monitor","eos.dispatcher.arm.monitor@v0.2",Some(("observation","eos/hardware/mock/arm_observer","observation")))}}}},

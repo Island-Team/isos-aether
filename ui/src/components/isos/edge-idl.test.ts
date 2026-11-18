@@ -5,7 +5,7 @@ import type { GraphNode } from './node-graph-edits';
 
 const descriptors: DataTypeDefinition[] = ['camera_frame', 'vision_frame'].map((id) => ({ id, version: '2.0.0', purpose: id, media_type: 'application/json', codec: 'json', schema: { type: 'object' }, max_payload_bytes: 1000 }));
 const entries: GraphNode[] = [
-  { path: 'source', node: { id: 'source', node_type: 'isos.eos_hardware.camera@v0.2', label: '', description: '' }, definition: { id: 'isos.eos_hardware.camera@v0.2', core: 'isos', layer: 'eos_hardware', group: 'mujoco', kind: 'camera', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [{ name: 'frame', data_type: 'camera_frame', required: true }] } },
+  { path: 'source', node: { id: 'source', node_type: 'isos.eos_hardware.camera@v0.2', label: '', description: '' }, definition: { id: 'isos.eos_hardware.camera@v0.2', core: 'isos', layer: 'eos_hardware', group: 'driver', kind: 'camera', lifecycle: 'adapter', capabilities: [], settings: [], inputs: [], outputs: [{ name: 'frame', data_type: 'camera_frame', required: true }] } },
   { path: 'target', node: { id: 'target', node_type: 'isos.eos_interface.gate@v0.2', label: '', description: '' }, definition: { id: 'isos.eos_interface.gate@v0.2', core: 'isos', layer: 'eos_interface', group: 'gate', kind: 'software', lifecycle: 'internal', capabilities: [], settings: [], inputs: [{ name: 'frame', data_type: 'vision_frame', required: true }], outputs: [] } },
 ];
 

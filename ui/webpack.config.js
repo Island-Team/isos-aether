@@ -3,8 +3,9 @@ const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const TsconfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
 
-module.exports = (env = {}) => {
+module.exports = (env = {}, argv = {}) => {
   const target = env.target === 'hosted' ? 'hosted' : 'local';
+  const development = argv.mode === 'development';
   const host = process.env.ISOSUI_HOST || '127.0.0.1';
   const port = Number(process.env.ISOSUI_PORT || 16001);
   const apiOrigin = process.env.ISOSUI_API_ORIGIN || 'http://127.0.0.1:16000';
@@ -18,6 +19,9 @@ module.exports = (env = {}) => {
     throw new Error('ISOSUI_HOST must be 127.0.0.1 and ISOSUI_PORT must be a valid port');
   }
   return {
+    // Persist module transforms across dev-server restarts; webpack still watches
+    // sources and recompiles only the invalidated dependency graph on edits.
+    cache: development ? { type: 'filesystem', cacheDirectory: path.resolve(__dirname, 'node_modules/.cache/webpack-dev') } : false,
     entry: './src/index.tsx',
     output: {
       path: path.resolve(__dirname, `dist/${target}`),

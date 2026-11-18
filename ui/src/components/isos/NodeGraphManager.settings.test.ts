@@ -1,11 +1,13 @@
 import { expect, it } from 'vitest';
-import { parseSetting, settingValue } from './NodeGraphManager';
+import { adapterSettingDataType, parseSetting, settingValue } from './NodeGraphManager';
 
 it('round trips selected EI numeric settings as JSON numbers', () => {
   expect(parseSetting(settingValue(8, 'positive_integer'), 'positive_integer')).toBe(8);
   expect(parseSetting(settingValue(0.25, 'positive_number'), 'positive_number')).toBe(0.25);
   expect(() => parseSetting('0', 'positive_number')).toThrow();
   expect(() => parseSetting('Infinity', 'positive_number')).toThrow();
+  expect(parseSetting(settingValue(30, adapterSettingDataType('frequency_hz')), adapterSettingDataType('frequency_hz'))).toBe(30);
+  expect(adapterSettingDataType('device_id')).toBe('string');
 });
 
 it('retains owner-managed endpoints as structured display values', () => {

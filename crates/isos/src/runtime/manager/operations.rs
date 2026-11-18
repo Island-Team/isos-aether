@@ -12,6 +12,7 @@ pub(crate) fn api_call(
   match command {
     WireCommand::ManagerIdentity => manager_identity(paths),
     WireCommand::ManagerShutdown => {
+      owner_deployment::cancel_all_startups_and_wait()?;
       tracing::info!(
         event_code = "manager_shutdown",
         "IsOS manager shutdown requested"
@@ -42,7 +43,7 @@ pub(crate) fn api_call(
       let source = fs::read_to_string(paths.node_graph_path(&name))?;
       ensure!(
         owner_deployment::is_current(&source),
-        "unsupported graph; Apply a three-core 0.2.0 graph"
+        "unsupported graph; Apply a three-core 0.2.1 graph"
       );
       owner_deployment::run(paths, &name, value.revision.as_deref(), true)
     }
@@ -50,7 +51,7 @@ pub(crate) fn api_call(
       let source = fs::read_to_string(paths.node_graph_path(&name))?;
       ensure!(
         owner_deployment::is_current(&source),
-        "unsupported graph; Apply a three-core 0.2.0 graph"
+        "unsupported graph; Apply a three-core 0.2.1 graph"
       );
       owner_deployment::run(paths, &name, value.revision.as_deref(), false)
     }
@@ -61,6 +62,7 @@ pub(crate) fn api_call(
           "saved graph revision changed; reload before stop"
         );
       }
+      owner_deployment::cancel_startup(&name);
       owner_deployment::stop(paths, &name)
     }
     WireCommand::DeploymentStatus(_) => owner_deployment::status(paths, &name),

@@ -15,8 +15,10 @@ export class GraphErrorBoundary extends React.Component<{ children: React.ReactN
     if (!this.state.error) return this.props.children;
     return <div role="alert" className="isos-workbench__graph-error">
       <h2>{this.props.lang === 'cn' ? '节点图显示失败' : 'Node graph display failed'}</h2>
-      <p>{this.props.lang === 'cn' ? '请查看浏览器日志，随后重新加载页面。' : 'Open browser logs, then reload the page.'}</p>
+      <p>{this.props.lang === 'cn' ? '查看错误并重试；若再次失败，请打开浏览器日志。' : 'Review the error and retry. If it fails again, open browser logs.'}</p>
+      <pre>{this.state.error.message}</pre>
       <button type="button" onClick={this.props.onOpenLogs}>{this.props.lang === 'cn' ? '打开日志' : 'Open logs'}</button>
+      <button type="button" onClick={() => this.setState({ error: null })}>{this.props.lang === 'cn' ? '重试显示' : 'Retry display'}</button>
     </div>;
   }
 }

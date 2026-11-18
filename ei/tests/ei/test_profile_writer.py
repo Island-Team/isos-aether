@@ -5,10 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from ei.core.decision.profile_writer import ProfileWriter, ProfileWriterError
-from ei.core.decision.profiles import Profile, ProfileStore
-from ei.core.registry import PrimitiveRegistry
+from ei.core.cognition.decision.profile_writer import ProfileWriter, ProfileWriterError
+from ei.core.cognition.decision.profiles import Profile, ProfileStore
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import load_prompt_config
 from ei.lib.vlm import ChatMessage, ModelResponse
 

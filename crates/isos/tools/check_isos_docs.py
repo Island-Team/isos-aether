@@ -14,7 +14,7 @@ CN = ROOT / "docs_cn/isos"
 
 def slug(heading: str) -> str:
     text = re.sub(r"<[^>]*>", "", heading.lower().strip())
-    text = re.sub(r"[^\w\- ]", "", text)
+    text = re.sub(r"[^\w\- ]", "", text).replace("_", "")
     return re.sub(r" +", "-", text)
 
 
@@ -50,11 +50,13 @@ def main() -> int:
                 errors.append(f"missing link: {page.relative_to(ROOT)} {url}")
                 continue
             if fragment and target.suffix == ".md":
+                content = target.read_text()
                 headings = [
                     slug(line.lstrip("#").strip())
-                    for line in target.read_text().splitlines()
+                    for line in content.splitlines()
                     if line.startswith("#")
                 ]
+                headings += re.findall(r'<a\s+(?:id|name)=["\']([^"\']+)["\']', content, re.I)
                 if urllib.parse.unquote(fragment).lower() not in headings:
                     errors.append(f"missing fragment: {page.relative_to(ROOT)} {url}")
         for index, raw in enumerate(re.findall(r"```json\s*\n(.*?)\n```", content, re.S), 1):

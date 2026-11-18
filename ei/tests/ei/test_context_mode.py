@@ -1,5 +1,5 @@
-from ei.core.context import ContextBuilder, ModeState
-from ei.core.perception.admission import Admission
+from ei.core.cognition.context import ContextBuilder, ModeState
+from ei.core.evidence.perception.admission import Admission
 from ei.lib.config import load_prompt_config
 
 

@@ -26,15 +26,35 @@ pub struct Release {
   pub release_url: Option<String>,
   #[serde(default)]
   pub contracts: Vec<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub compatibility: Option<Compatibility>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub config_inputs: Vec<ConfigInput>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub activation: Option<Activation>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub node_contributions: Option<NodeContributions>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub package_config: Option<PackageConfigFiles>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub adapters: Vec<AdapterLibrary>,
   pub assets: Vec<Asset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compatibility {
+  pub isos_min_inclusive: String,
+  pub isos_max_exclusive: String,
+  #[serde(default)]
+  pub required_owner_capabilities: Vec<OwnerCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerCapability {
+  pub owner: String,
+  pub capability: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +71,12 @@ pub struct NodeContributions {
   #[serde(default)]
   pub node_types: Vec<Value>,
   #[serde(default)]
+  pub libraries: Vec<NodeLibrary>,
+  #[serde(default)]
+  pub port_routes: Vec<Value>,
+  #[serde(default)]
+  pub bridge_adapters: Vec<Value>,
+  #[serde(default)]
   pub safety_adapters: Vec<Value>,
   #[serde(default)]
   pub adapter_families: Vec<Value>,
@@ -60,6 +86,78 @@ pub struct NodeContributions {
   pub node_sets: Vec<NodeSet>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub processes: Vec<ProcessDeclaration>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub runtime_services: Vec<RuntimeService>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageConfigFiles {
+  pub descriptor: String,
+  pub descriptor_sha256: String,
+  pub template: String,
+  pub template_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeService {
+  pub id: String,
+  pub entrypoint: String,
+  #[serde(default)]
+  pub args: Vec<String>,
+  pub config_service_type: String,
+  pub node_types: Vec<String>,
+  #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+  pub required_node_settings: std::collections::BTreeMap<String, Vec<String>>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub resources: Vec<ProcessResource>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub environment: Vec<ServiceEnvironment>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub requirements: Vec<ServiceRequirement>,
+}
+
+impl RuntimeService {
+  pub fn check_selected_node_settings(&self, node: &Value) -> Result<()> {
+    let Some(node_type) = node["node_type"].as_str() else {
+      return Ok(());
+    };
+    let Some(fields) = self.required_node_settings.get(node_type) else {
+      return Ok(());
+    };
+    let settings = node["settings"]
+      .as_object()
+      .context("selected service node lacks settings")?;
+    for field in fields {
+      ensure!(
+        settings.get(field).is_some_and(|value| !value.is_null()),
+        "selected service node lacks required setting {field}"
+      );
+    }
+    Ok(())
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceEnvironment {
+  pub name: String,
+  pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceRequirement {
+  pub path: String,
+  pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLibrary {
+  pub path: String,
+  pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +166,8 @@ pub struct ProcessDeclaration {
   pub node_type: String,
   pub entrypoint: String,
   pub lifecycle_adapter: String,
+  #[serde(default)]
+  pub args: Vec<String>,
   pub resources: Vec<ProcessResource>,
   #[serde(default)]
   pub host_inputs: Vec<HostInput>,
@@ -105,6 +205,10 @@ pub struct DataType {
 #[serde(deny_unknown_fields)]
 pub struct NodeSet {
   pub id: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub label: Option<crate::domain::packages::package_config::Text>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub description: Option<crate::domain::packages::package_config::Text>,
   #[serde(default)]
   pub parameters: BTreeMap<String, NodeParameter>,
   pub nodes: Vec<NodeTemplate>,
@@ -224,7 +328,10 @@ impl Release {
   pub fn validate(&self) -> Result<()> {
     let support = crate::domain::version::bundled()?;
     ensure!(
-      self.contract == support.package_contract && self.schema_version == support.package_schema,
+      self.contract == support.package_contract
+        && (self.schema_version == support.package_schema
+          || self.schema_version == "0.2.0"
+          || self.schema_version == "0.1.0"),
       "unsupported package contract"
     );
     ensure!(
@@ -251,10 +358,60 @@ impl Release {
       self.source_commit.len() == 40 && self.source_commit.bytes().all(|b| b.is_ascii_hexdigit()),
       "source_commit must be a full Git commit SHA"
     );
+    if let Some(compatibility) = &self.compatibility {
+      ensure!(
+        self.schema_version == support.package_schema || self.schema_version == "0.2.0",
+        "compatibility requires current package schema"
+      );
+      let minimum = semver::Version::parse(&compatibility.isos_min_inclusive)?;
+      let maximum = semver::Version::parse(&compatibility.isos_max_exclusive)?;
+      let current = semver::Version::parse(&support.product_version)?;
+      ensure!(minimum < maximum, "invalid IsOS compatibility range");
+      ensure!(
+        current >= minimum && current < maximum,
+        "incompatible IsOS version"
+      );
+      let mut capabilities = std::collections::BTreeSet::new();
+      for required in &compatibility.required_owner_capabilities {
+        ensure!(
+          matches!(required.owner.as_str(), "isos" | "ei" | "eos")
+            && (1..=64).contains(&required.capability.len())
+            && required
+              .capability
+              .bytes()
+              .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && capabilities.insert((&required.owner, &required.capability)),
+          "invalid or duplicate required owner capability"
+        );
+      }
+    }
     for url in [&self.source_url, &self.release_url].into_iter().flatten() {
       ensure!(
         url.starts_with("https://github.com/"),
         "release source URLs must use GitHub HTTPS"
+      );
+    }
+    if let Some(config) = &self.package_config {
+      ensure!(
+        self.schema_version == "0.2.1",
+        "package_config requires schema 0.2.1"
+      );
+      for (path, hash, suffix) in [
+        (&config.descriptor, &config.descriptor_sha256, ".json"),
+        (&config.template, &config.template_sha256, ".toml"),
+      ] {
+        ensure!(
+          safe_package_path(path) && path.ends_with(suffix),
+          "invalid package config path"
+        );
+        ensure!(
+          hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+          "invalid package config digest"
+        );
+      }
+      ensure!(
+        config.descriptor != config.template,
+        "package config files must differ"
       );
     }
     ensure!(
@@ -304,6 +461,142 @@ impl Release {
       }
     }
     if let Some(contributions) = &self.node_contributions {
+      let mut service_ids = std::collections::BTreeSet::new();
+      for service in &contributions.runtime_services {
+        ensure!(
+          self.schema_version == "0.2.1" && self.package_config.is_some(),
+          "runtime services require package config schema 0.2.1"
+        );
+        ensure!(
+          valid_slug(&service.id) && service_ids.insert(&service.id),
+          "invalid or duplicate runtime service ID"
+        );
+        ensure!(
+          valid_slug(&service.config_service_type),
+          "invalid runtime service config type"
+        );
+        ensure!(
+          safe_package_path(&service.entrypoint),
+          "invalid runtime service entrypoint"
+        );
+        ensure!(
+          !service.node_types.is_empty(),
+          "runtime service requires node types"
+        );
+        ensure!(
+          service.args.len() <= 16
+            && service.args.iter().all(|arg| !arg.is_empty()
+              && arg.len() <= 256
+              && !arg.contains('\0')
+              && (!arg.contains("${")
+                || arg == "${socket}"
+                || service
+                  .resources
+                  .iter()
+                  .any(|resource| arg == &format!("${{resource.{}.path}}", resource.setting)))),
+          "invalid runtime service arguments"
+        );
+        ensure!(
+          service
+            .resources
+            .iter()
+            .all(|resource| valid_slug(&resource.setting)
+              && valid_slug(&resource.kind)
+              && safe_package_path(&resource.descriptor)),
+          "invalid runtime service resource"
+        );
+        let mut environment_names = std::collections::BTreeSet::new();
+        for variable in &service.environment {
+          ensure!(
+            variable.name.len() <= 64
+              && variable
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+              && !matches!(
+                variable.name.as_str(),
+                "LD_PRELOAD" | "PATH" | "HOME" | "ISOS_RUN_ID" | "ISOS_GRAPH_REVISION"
+              )
+              && environment_names.insert(&variable.name),
+            "invalid runtime service environment name"
+          );
+          ensure!(
+            variable.value.len() <= 1024 && !variable.value.contains('\0'),
+            "invalid runtime service environment value"
+          );
+        }
+        ensure!(
+          service.requirements.len() <= 16,
+          "too many runtime service requirements"
+        );
+        for requirement in &service.requirements {
+          ensure!(
+            matches!(requirement.kind.as_str(), "file" | "directory")
+              && requirement.path.len() <= 1024
+              && (requirement.path.starts_with("${config.host.")
+                || requirement.path.starts_with("${config.service."))
+              && !requirement.path.contains('\0'),
+            "invalid runtime service requirement"
+          );
+        }
+        for node_type in &service.node_types {
+          ensure!(
+            contributions
+              .node_types
+              .iter()
+              .any(|value| value["id"] == *node_type)
+              || (node_type.starts_with("eos.hardware.") && node_type.ends_with("@v0.2")),
+            "runtime service node type is neither contributed nor a historical EOS hardware type: {node_type}"
+          );
+        }
+        for (node_type, fields) in &service.required_node_settings {
+          ensure!(
+            service.node_types.contains(node_type),
+            "required node settings refer to an undeclared service node type"
+          );
+          let definition = contributions
+            .node_types
+            .iter()
+            .find(|value| value["id"] == *node_type)
+            .context("required node settings need a contributed node type")?;
+          let declared = definition["settings"]
+            .as_array()
+            .context("required node settings need node setting definitions")?;
+          let mut unique = std::collections::BTreeSet::new();
+          ensure!(
+            !fields.is_empty() && fields.len() <= 32,
+            "invalid required node setting list"
+          );
+          for field in fields {
+            ensure!(
+              !field.is_empty()
+                && field.len() <= 64
+                && field.bytes().all(|byte| byte.is_ascii_lowercase()
+                  || byte.is_ascii_digit()
+                  || byte == b'_'
+                  || byte == b'-')
+                && unique.insert(field),
+              "invalid or duplicate required node setting"
+            );
+            ensure!(
+              declared.iter().any(|setting| setting["name"] == *field),
+              "required node setting is not declared by node type"
+            );
+          }
+        }
+      }
+      let mut libraries = std::collections::BTreeSet::<String>::new();
+      for library in &contributions.libraries {
+        ensure!(
+          safe_package_path(&library.path)
+            && library.path.ends_with(".so")
+            && libraries.insert(library.path.clone())
+            && library.sha256.len() == 64
+            && library.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()),
+          "invalid or duplicate node library {}",
+          library.path
+        );
+      }
       let mut data_ids = std::collections::BTreeSet::new();
       for data_type in &contributions.data_types {
         ensure!(
@@ -324,6 +617,11 @@ impl Release {
         ensure!(
           !data_type.codec.trim().is_empty(),
           "{}: codec is required",
+          data_type.id
+        );
+        ensure!(
+          data_type.codec != "json_v1" || data_type.media_type == "application/json",
+          "{}: json_v1 requires application/json",
           data_type.id
         );
         ensure!(
@@ -349,7 +647,11 @@ impl Release {
           .and_then(Value::as_str)
           .ok_or_else(|| anyhow::anyhow!("contributed node type requires id"))?;
         ensure!(
-          id.starts_with("isos.") && id.ends_with("@v0.2") && type_ids.insert(id),
+          ["isos.", "ei.", "eos."]
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+            && id.ends_with("@v0.2")
+            && type_ids.insert(id),
           "invalid or duplicate contributed node type {id}"
         );
         for field in [
@@ -369,24 +671,44 @@ impl Release {
           );
         }
         super::node_schema::validate_type(node_type)?;
+        ensure!(
+          node_type["core"]
+            .as_str()
+            .is_some_and(|core| id.starts_with(&format!("{core}."))),
+          "{id}: type ID and core mismatch"
+        );
+        match node_type["implementation"]["kind"].as_str() {
+          Some("native_plugin") => ensure!(
+            node_type["implementation"]["library"]
+              .as_str()
+              .is_some_and(|path| libraries.contains(path)),
+            "{id}: native library is not declared in node_contributions.libraries"
+          ),
+          Some("external") | Some("managed_process") => (),
+          _ if self.schema_version == "0.1.0" => (),
+          _ => anyhow::bail!(
+            "{id}: contributed node requires native_plugin or external implementation"
+          ),
+        }
         for port in ["inputs", "outputs"]
           .into_iter()
           .flat_map(|key| node_type[key].as_array().into_iter().flatten())
         {
-          if let Some(rate) = port.get("expected_rate_hz") {
+          ensure!(
+            port.get("expected_rate_hz").is_none(),
+            "{id}: expected_rate_hz was replaced by frequency_hz; migrate the package declaration"
+          );
+          if let Some(rate) = port.get("frequency_hz") {
             ensure!(
               rate
                 .as_f64()
                 .is_some_and(|value| value.is_finite() && value > 0.0),
-              "{id}: expected_rate_hz must be positive"
+              "{id}: frequency_hz must be positive"
             );
           }
           if let Some(transport) = port.get("transport").and_then(Value::as_str) {
             ensure!(
-              matches!(
-                transport,
-                "in_process" | "unix_socket" | "websocket" | "ros2" | "http"
-              ),
+              matches!(transport, "none" | "in_process" | "unix_socket"),
               "{id}: invalid port transport"
             );
           }
@@ -401,6 +723,47 @@ impl Release {
           }
         }
       }
+      let mut route_ids = std::collections::BTreeSet::new();
+      for route in &contributions.port_routes {
+        let source = route["source_type"].as_str().unwrap_or("");
+        let target = route["target_type"].as_str().unwrap_or("");
+        let output = route["output"].as_str().unwrap_or("");
+        let input = route["input"].as_str().unwrap_or("");
+        ensure!(
+          !source.is_empty()
+            && !target.is_empty()
+            && !output.is_empty()
+            && !input.is_empty()
+            && ["in_process", "unix_socket"].contains(&route["transport"].as_str().unwrap_or(""))
+            && route["delivery_mode"]
+              .as_str()
+              .is_some_and(|s| !s.is_empty())
+            && route["data_type"].as_str().is_some_and(|s| !s.is_empty())
+            && route["contract"]["owner"]
+              .as_str()
+              .is_some_and(|s| !s.is_empty())
+            && route["contract"]["id"]
+              .as_str()
+              .is_some_and(|s| !s.is_empty())
+            && route["contract"]["version"]
+              .as_str()
+              .is_some_and(|s| !s.is_empty())
+            && route_ids.insert((source, output, target, input)),
+          "invalid or duplicate contributed route"
+        );
+      }
+      let mut bridges = std::collections::BTreeSet::new();
+      for bridge in &contributions.bridge_adapters {
+        let core = bridge["core"].as_str().unwrap_or("");
+        let node_type = bridge["node_type"].as_str().unwrap_or("");
+        ensure!(
+          ["isos", "ei", "eos"].contains(&core)
+            && bridge["adapter"] == "unix_socket"
+            && node_type.starts_with(&format!("{core}."))
+            && bridges.insert((core, node_type)),
+          "invalid or duplicate contributed bridge"
+        );
+      }
       let mut process_types = std::collections::BTreeSet::new();
       for process in &contributions.processes {
         let node_type = contributions
@@ -408,15 +771,23 @@ impl Release {
           .iter()
           .find(|node_type| node_type["id"] == process.node_type)
           .ok_or_else(|| anyhow::anyhow!("process declaration lacks a contributed node type"))?;
+        let owner = node_type["core"].as_str().unwrap_or("");
+        let current = ["isos", "ei", "eos"].contains(&owner)
+          && node_type["layer"] == "process"
+          && process.node_type.starts_with(&format!("{owner}.process."))
+          && process.node_type.ends_with("@v0.2")
+          && node_type["implementation"]["kind"] == "managed_process";
+        let historical = (self.schema_version == "0.1.0"
+          && (node_type["implementation"].is_null()
+            || node_type["implementation"]["kind"] == "external"))
+          || (self.version.starts_with("0.1.")
+            && node_type["implementation"]["kind"] == "managed_process"
+            && node_type["core"] == "isos"
+            && node_type["layer"] == "eos_process");
         ensure!(
           process_types.insert(&process.node_type)
-            && (node_type["layer"] == "process"
-              || (process.node_type == "isos.eos_process.mujoco@v0.2"
-                && node_type["layer"] == "eos_process"))
-            && node_type["lifecycle"] == "process"
-            && node_type["core"]
-              .as_str()
-              .is_some_and(|core| !core.is_empty()),
+            && (current || historical)
+            && node_type["lifecycle"] == "process",
           "process declaration requires a unique registered process node type and owner"
         );
         ensure!(
@@ -432,6 +803,26 @@ impl Release {
           "process entrypoint or lifecycle adapter invalid"
         );
         let mut settings = std::collections::BTreeSet::new();
+        ensure!(
+          process.args.len() <= 16
+            && process.args.iter().all(|arg| {
+              !arg.is_empty()
+                && arg.len() <= 256
+                && !arg.contains('\0')
+                && (!arg.contains("${")
+                  || arg == "${socket}"
+                  || arg
+                    .strip_prefix("${resource.")
+                    .and_then(|rest| rest.strip_suffix(".path}"))
+                    .is_some_and(|name| {
+                      process
+                        .resources
+                        .iter()
+                        .any(|resource| resource.setting == name)
+                    }))
+            }),
+          "process arguments invalid"
+        );
         for resource in &process.resources {
           ensure!(
             !resource.setting.is_empty()
@@ -689,6 +1080,106 @@ mod tests {
   use super::*;
 
   #[test]
+  fn managed_process_admission_is_general_across_owners() {
+    for owner in ["isos", "ei", "eos"] {
+      let id = format!("{owner}.process.mock.service@v0.2");
+      let value = serde_json::json!({
+        "contract":"isos.package@v1","schema_version":"0.2.0","id":"vendor/mock",
+        "kind":"backend","version":"0.2.0","source_commit":"a".repeat(40),
+        "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/vendor/mock/releases/download/v0.2.0/mock.tar.gz",
+          "size_bytes":1,"sha256":"b".repeat(64)}],
+        "node_contributions":{
+          "node_types":[{"id":id,"core":owner,"layer":"process","group":"mock","kind":"software",
+            "description":"Mock process","lifecycle":"process","capabilities":["process"],"settings":[],"inputs":[],"outputs":[],
+            "implementation":{"kind":"managed_process","interface":"mock-v1","version":"1","lifecycle_adapter":"mock-v1"}}],
+          "processes":[{"node_type":id,"entrypoint":"bin/mock","lifecycle_adapter":"mock-v1",
+            "args":["--socket","${socket}"],"resources":[]}]
+        }
+      });
+      serde_json::from_value::<Release>(value)
+        .unwrap()
+        .validate()
+        .unwrap();
+    }
+  }
+
+  #[test]
+  fn current_package_accepts_ei_native_type_only_with_declared_linux_library() {
+    let mut value = serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.0",
+      "id":"vendor/custom", "kind":"component", "version":"1.0.0",
+      "source_commit":"a".repeat(40),
+      "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/vendor/custom/releases/download/v1.0.0/custom.tar.gz","size_bytes":1,"sha256":"b".repeat(64)}],
+      "node_contributions":{
+        "libraries":[{"path":"lib/custom.so","sha256":"c".repeat(64)}],
+        "node_types":[{"id":"ei.cognition.custom.filter@v0.2","core":"ei","layer":"cognition","group":"custom",
+          "kind":"software","description":"Community filter","lifecycle":"internal","capabilities":[],"settings":[],"inputs":[],"outputs":[],
+          "implementation":{"kind":"native_plugin","abi":"isos_node_v1","library":"lib/custom.so"}}]
+      }
+    });
+    let release: Release = serde_json::from_value(value.clone()).unwrap();
+    release.validate().unwrap();
+    value["node_contributions"]["libraries"] = serde_json::json!([]);
+    assert!(
+      serde_json::from_value::<Release>(value.clone())
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+    value["node_contributions"]["libraries"] =
+      serde_json::json!([{"path":"lib/custom.dll","sha256":"c".repeat(64)}]);
+    assert!(
+      serde_json::from_value::<Release>(value)
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+  }
+
+  #[test]
+  fn compatibility_is_bounded_and_owner_neutral() {
+    let mut value = serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.0",
+      "id":"vendor/shared", "kind":"component", "version":"1.2.3",
+      "source_commit":"a".repeat(40),
+      "compatibility":{"isos_min_inclusive":"0.2.0","isos_max_exclusive":"0.3.0",
+        "required_owner_capabilities":[{"owner":"isos","capability":"package-process-v1"},
+          {"owner":"ei","capability":"native-plugin-v1"},
+          {"owner":"eos","capability":"native-plugin-v1"}]},
+      "node_contributions":{},
+      "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/vendor/shared/releases/download/v1.2.3/shared.tar.gz",
+        "size_bytes":1,"sha256":"b".repeat(64)}]
+    });
+    serde_json::from_value::<Release>(value.clone())
+      .unwrap()
+      .validate()
+      .unwrap();
+    value["compatibility"]["isos_max_exclusive"] = serde_json::json!("0.2.3");
+    assert!(
+      serde_json::from_value::<Release>(value.clone())
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+    value["compatibility"]["isos_max_exclusive"] = serde_json::json!("0.3.0");
+    value["compatibility"]["required_owner_capabilities"][1]["owner"] =
+      serde_json::json!("unknown");
+    assert!(
+      serde_json::from_value::<Release>(value.clone())
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+    value["compatibility"]["required_owner_capabilities"][1]["owner"] = serde_json::json!("eos");
+    assert!(
+      serde_json::from_value::<Release>(value)
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+  }
+
+  #[test]
   fn unrelated_package_families_share_registered_type_validation() {
     for (id, type_id, resource_kind) in [
       (
@@ -805,6 +1296,27 @@ mod tests {
   }
 
   #[test]
+  fn json_data_type_requires_matching_media_type() {
+    let mut release: Release = serde_json::from_value(serde_json::json!({
+      "contract":"isos.package@v1","schema_version":"0.1.0","id":"island/test",
+      "kind":"backend","version":"2.0.0","source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/Island-Team/test/releases/download/v2.0.0/test.tar.gz","size_bytes":1,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
+      "node_contributions":{"data_types":[{"id":"vendor.scene.record@v1.0","version":"1.0",
+        "purpose":"Scene record","media_type":"application/json","codec":"json_v1",
+        "schema":{"type":"object"},"max_payload_bytes":1024}]}
+    })).unwrap();
+    release.validate().unwrap();
+    release.node_contributions.as_mut().unwrap().data_types[0].media_type = "image/jpeg".into();
+    assert!(
+      release
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("json_v1 requires application/json")
+    );
+  }
+
+  #[test]
   fn current_activation_uses_only_declared_files() {
     let release: Release = serde_json::from_str(&format!(
             r#"{{"contract":"isos.package@v1","schema_version":"0.1.0","id":"vendor/sample","kind":"backend","version":"1.0.1","source_commit":"{}","config_inputs":[],"node_contributions":{{}},"activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}]}},"assets":[{{"os":"linux","arch":"x86_64","libc":"glibc>=2.35","url":"https://github.com/vendor/sample/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
@@ -880,6 +1392,72 @@ mod tests {
           libc: Some("2.31".into()),
           ..host
         })
+        .is_err()
+    );
+  }
+
+  #[test]
+  fn runtime_service_preserves_historical_hardware_and_requires_config_digest() {
+    let mut value = serde_json::json!({
+      "contract":"isos.package@v1", "schema_version":"0.2.1", "id":"vendor/robot", "kind":"component", "version":"0.2.1",
+      "source_commit":"a".repeat(40),
+      "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/vendor/robot/releases/download/v0.2.1/robot.tar.gz","size_bytes":1,"sha256":"b".repeat(64)}],
+      "package_config":{"descriptor":"config/descriptor.json","descriptor_sha256":"c".repeat(64),"template":"config/package.toml","template_sha256":"d".repeat(64)},
+      "node_contributions":{"runtime_services":[{"id":"native","entrypoint":"bin/robot","args":["${socket}"],"config_service_type":"native","node_types":["eos.hardware.camera.device@v0.2"]}]}
+    });
+    serde_json::from_value::<Release>(value.clone())
+      .unwrap()
+      .validate()
+      .unwrap();
+    value["node_contributions"]["libraries"] = serde_json::json!([
+      {"path":"lib/camera.so","sha256":"e".repeat(64)}
+    ]);
+    value["node_contributions"]["node_types"] = serde_json::json!([{
+      "id":"eos.hardware.camera.device@v0.2","core":"eos","layer":"hardware",
+      "group":"camera","kind":"camera","lifecycle":"adapter",
+      "description":"Package camera","capabilities":["jpeg"],"settings":[],
+      "inputs":[],"outputs":[],"implementation":{"kind":"native_plugin",
+        "abi":"isos_node_v2","library":"lib/camera.so"}
+    }]);
+    serde_json::from_value::<Release>(value.clone())
+      .unwrap()
+      .validate()
+      .unwrap();
+    value["node_contributions"]["node_types"][0]["settings"] = serde_json::json!([
+      {"name":"camera_width","data_type":"positive_integer","required":false,"min":64,"max":2048,"description":"Camera width"}
+    ]);
+    value["node_contributions"]["runtime_services"][0]["required_node_settings"] =
+      serde_json::json!({"eos.hardware.camera.device@v0.2":["camera_width"]});
+    let with_required: Release = serde_json::from_value(value.clone()).unwrap();
+    with_required.validate().unwrap();
+    let service = &with_required
+      .node_contributions
+      .as_ref()
+      .unwrap()
+      .runtime_services[0];
+    assert!(
+      service
+        .check_selected_node_settings(
+          &serde_json::json!({"node_type":"eos.hardware.camera.device@v0.2","settings":{}})
+        )
+        .is_err()
+    );
+    assert!(service.check_selected_node_settings(&serde_json::json!({"node_type":"eos.hardware.camera.device@v0.2","settings":{"camera_width":1280}})).is_ok());
+    value["node_contributions"]["runtime_services"][0]["required_node_settings"] =
+      serde_json::json!({"eos.hardware.camera.device@v0.2":["undeclared"]});
+    assert!(
+      serde_json::from_value::<Release>(value.clone())
+        .unwrap()
+        .validate()
+        .is_err()
+    );
+    value["node_contributions"]["runtime_services"][0]["required_node_settings"] =
+      serde_json::json!({"eos.hardware.camera.device@v0.2":["camera_width"]});
+    value.as_object_mut().unwrap().remove("package_config");
+    assert!(
+      serde_json::from_value::<Release>(value)
+        .unwrap()
+        .validate()
         .is_err()
     );
   }

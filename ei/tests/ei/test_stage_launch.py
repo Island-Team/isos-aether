@@ -6,12 +6,12 @@ import asyncio
 import socket
 
 import pytest
+from ei.core import launch
+from ei.core.cognition.missions import MissionQueue, MissionStore
+from ei.core.system.stages import StageRuntime, compose_stages
+from ei.lib.config import BackendEndpointConfig, GatewayConfig
 from test_stages import _graph
 
-from ei.core import launch
-from ei.core.missions import MissionQueue, MissionStore
-from ei.lib.config import BackendEndpointConfig, GatewayConfig
-from ei.stages import StageRuntime, compose_stages
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 

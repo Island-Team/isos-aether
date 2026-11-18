@@ -13,12 +13,12 @@ import os
 from pathlib import Path
 
 from ei.core import launch
-from ei.core.link import EosClient
+from ei.core.io.link import EosClient
+from ei.core.system.stages import StageRuntime, compose_stages
 from ei.lib import shared_events
 from ei.lib.config import LaunchConfig
 from ei.lib.operation_ledger import OperationLedger, PendingOperation
 from ei.lib.safety_state import SafetyState, runtime_lock
-from ei.stages import StageRuntime, compose_stages
 
 VELOCITY = {
   "linear_x_m_s": 0.1,

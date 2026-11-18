@@ -1,6 +1,6 @@
 # IsOS 技能选择用例
 
-[English](README.md) · [软件包契约](../../../../../docs_cn/isos/interfaces/packages/process_cn.md) · [Rust 技能契约](../../../../../docs_cn/eos/interfaces/skills/rust_cn.md)
+[English](README.md) · [软件包契约](../../../../../docs_cn/isos/interfaces/package/README_cn.md#process) · [Rust 技能契约](../../../../../docs_cn/eos/interfaces_cn.md#skills_rust_cn)
 
 当前选择使用格式为 `0.2.0`、仅包含 `isos` core 的已保存图，以及类型为 `isos.process.component@v0.2` 的 EOS 进程节点。节点的 `settings.skill_executables` 精确固定已验证的 `kind:"skill"` 软件包和 `.skill` 路径。IsOS 将与修订绑定的私有选择写入生成清单，并仅将路径传给 EOS。EOS 验证并暂存每个可执行文件后才发布目录。
 

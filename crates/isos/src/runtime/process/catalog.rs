@@ -1,10 +1,7 @@
 //! Selected node and adapter catalogs from the verified graph and package pins.
 
 use super::*;
-
-pub fn catalog() -> Result<Value> {
-  catalog_at(&Paths::discover()?)
-}
+use std::time::Instant;
 
 pub fn catalog_at(paths: &Paths) -> Result<Value> {
   catalog_with_sidecars(packages::node_type_sidecars(paths)?)
@@ -21,10 +18,13 @@ pub fn catalog_base() -> Result<Value> {
 /// Installed releases outside this graph cannot contribute selector metadata.
 pub fn catalog_for_option_graph(paths: &Paths, graph: &Value) -> Result<Value> {
   ensure!(
-    graph["version"] == "0.2.0",
-    "node graph must be version 0.2.0"
+    graph["version"] == "0.2.1",
+    "node graph must be version 0.2.1"
   );
   let mut sidecars = BTreeSet::new();
+  let mut seen_pins = BTreeSet::new();
+  let mut verification_ms = 0_u64;
+  let mut verification_count = 0_u64;
   for node in graph["cores"]
     .as_object()
     .into_iter()
@@ -48,15 +48,33 @@ pub fn catalog_for_option_graph(paths: &Paths, graph: &Value) -> Result<Value> {
         .flat_map(|nodes| nodes.values())
     })
   {
-    if let (Some(id), Some(version)) = (
-      node["package"]["id"].as_str(),
-      node["package"]["version"].as_str(),
-    ) && let Ok(verified) = packages::verify(paths, id, version)
-      && let Some(sidecar) = verified.sidecar
+    for package in [node.get("package"), node.pointer("/adapter/package")]
+      .into_iter()
+      .flatten()
     {
-      sidecars.insert(sidecar);
+      if let (Some(id), Some(version)) = (package["id"].as_str(), package["version"].as_str()) {
+        // Every exact pin is still verified once per request, even when many nodes use it.
+        if !seen_pins.insert((id.to_owned(), version.to_owned())) {
+          continue;
+        }
+        let started = Instant::now();
+        let verified = packages::verify(paths, id, version);
+        verification_ms += started.elapsed().as_millis() as u64;
+        verification_count += 1;
+        if let Ok(verified) = verified
+          && let Some(sidecar) = verified.sidecar
+        {
+          sidecars.insert(sidecar);
+        }
+      }
     }
   }
+  tracing::debug!(
+    event_code = "node_options_stage",
+    stage = "package_verify",
+    elapsed_ms = verification_ms,
+    count = verification_count
+  );
   let catalog = match sidecars.is_empty() {
     false => catalog_with_sidecars(sidecars.into_iter().collect())?,
     true => catalog_base()?,
@@ -73,6 +91,28 @@ pub fn catalog_for_option_graph(paths: &Paths, graph: &Value) -> Result<Value> {
 
 pub fn catalog_for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
   let verified = packages::verify_graph_packages(paths, graph)?;
+  // EOS currently keys its runtime registry by type ID. Two selected releases
+  // with the same contributed EOS ID cannot both be loaded into one owner.
+  let mut eos_types = BTreeMap::new();
+  for package in &verified {
+    if let Some(contributions) = &package.release.node_contributions {
+      for node_type in &contributions.node_types {
+        if node_type["core"] != "eos" {
+          continue;
+        }
+        let id = node_type["id"]
+          .as_str()
+          .context("EOS contribution lacks type ID")?;
+        let pin = format!("{}@{}", package.release.id, package.release.version);
+        if let Some(previous) = eos_types.insert(id, pin.clone()) {
+          ensure!(
+            previous == pin,
+            "selected EOS node type {id} conflicts between {previous} and {pin}; select one package release for this type ID"
+          );
+        }
+      }
+    }
+  }
   let sidecars = verified
     .iter()
     .filter_map(|package| package.sidecar.clone())
@@ -109,8 +149,71 @@ fn with_ei_stage_catalog(
       crate::runtime::owners::core_setup::call(paths, "default", "ei", "catalog", graph, &revision)?
     };
     merge_ei_stage_catalog(&mut catalog, &reply)?;
+    finalize_owner_routes(&mut catalog)?;
   }
   Ok(catalog)
+}
+
+fn finalize_owner_routes(catalog: &mut Value) -> Result<()> {
+  let eos = catalog["port_routes"]
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
+  let ei = catalog["ei_port_routes"]
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
+  let types = catalog["types"]
+    .as_array()
+    .context("aggregate catalog lacks types")?;
+  let core = |id: &Value| -> Option<&str> {
+    types
+      .iter()
+      .find(|node| node["id"] == *id)
+      .and_then(|node| node["core"].as_str())
+  };
+  let mut accepted = Vec::new();
+  for route in eos.iter().chain(&ei) {
+    let source = core(&route["source_type"]);
+    let target = core(&route["target_type"]);
+    let (Some(source), Some(target)) = (source, target) else {
+      continue;
+    };
+    let claimed = |owner: &str| match owner {
+      "eos" => eos.contains(route),
+      "ei" => ei.contains(route),
+      "isos" => {
+        (source != "isos" || route["source_type"] == "isos.ui.button.trigger@v0.2")
+          && (target != "isos"
+            || matches!(
+              route["target_type"].as_str(),
+              Some("isos.ui.monitor.arm@v0.2" | "isos.ui.vision.monitor@v0.2")
+            ))
+      }
+      _ => false,
+    };
+    if claimed(source) && claimed(target) && !accepted.contains(route) {
+      accepted.push(route.clone());
+    }
+  }
+  catalog["port_routes"] = Value::Array(accepted);
+  let bridges = catalog["ei_bridge_adapters"]
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
+  let target = catalog["bridge_adapters"]
+    .as_array_mut()
+    .context("aggregate catalog lacks bridges")?;
+  for bridge in bridges {
+    ensure!(
+      bridge["core"] == "ei",
+      "EI owner claimed another core's bridge"
+    );
+    if !target.contains(&bridge) {
+      target.push(bridge);
+    }
+  }
+  Ok(())
 }
 
 pub(crate) fn merge_ei_stage_catalog(catalog: &mut Value, reply: &Value) -> Result<()> {
@@ -118,41 +221,25 @@ pub(crate) fn merge_ei_stage_catalog(catalog: &mut Value, reply: &Value) -> Resu
   let stages = reply["catalog"]["stage_types"]
     .as_array()
     .context("EI owner catalog lacks stage_types")?;
-  let expected: BTreeSet<&str> = [
-    "ei.io.input.trigger@v0.2",
-    "ei.cognition.intent.forwarder@v0.2",
-    "ei.governance.safety.gate@v0.2",
-    "ei.io.input.arm_status@v0.2",
-    "ei.cognition.state.arm_status@v0.2",
-    "ei.governance.monitor.arm_status@v0.2",
-  ]
-  .into_iter()
-  .collect();
   let mut actual = BTreeSet::new();
   for stage in stages {
     let id = stage["id"].as_str().context("EI wrapper lacks id")?;
     ensure!(
-      expected.contains(id) && actual.insert(id),
+      id.starts_with("ei.") && id.ends_with("@v0.2") && actual.insert(id),
       "EI owner catalog has unsupported or duplicate wrapper {id}"
     );
-    let (layer, group) = match id {
-      "ei.io.input.trigger@v0.2" => ("io", "input"),
-      "ei.cognition.intent.forwarder@v0.2" => ("cognition", "intent"),
-      "ei.governance.safety.gate@v0.2" => ("governance", "safety"),
-      "ei.io.input.arm_status@v0.2" => ("io", "input"),
-      "ei.cognition.state.arm_status@v0.2" => ("cognition", "state"),
-      "ei.governance.monitor.arm_status@v0.2" => ("governance", "monitor"),
-      _ => unreachable!(),
-    };
+    let layer = stage["layer"].as_str().context("EI wrapper lacks layer")?;
+    let group = stage["group"].as_str().context("EI wrapper lacks group")?;
     ensure!(
-      stage["core"] == "ei" && stage["layer"] == layer && stage["group"] == group,
+      stage["core"] == "ei" && id.starts_with(&format!("ei.{layer}.{group}.")),
       "EI wrapper {id} has invalid placement"
     );
     let mut normalized = stage.clone();
     normalized["settings"] = Value::Array(
       stage["settings_fields"]
         .as_array()
-        .context("EI wrapper settings_fields missing")?
+        .or_else(|| stage["settings"].as_array())
+        .context("EI wrapper settings missing")?
         .clone(),
     );
     normalized
@@ -161,27 +248,37 @@ pub(crate) fn merge_ei_stage_catalog(catalog: &mut Value, reply: &Value) -> Resu
       .remove("settings_fields");
     crate::domain::registry::node_schema::validate_type_idl(&normalized)
       .with_context(|| format!("EI wrapper {id} violates shared node IDL"))?;
-    ensure!(
-      !catalog["types"]
-        .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["id"] == id)),
-      "EI wrapper {id} conflicts with another owner"
-    );
-    catalog["types"]
+    let types = catalog["types"]
       .as_array_mut()
-      .context("aggregate catalog lacks types")?
-      .push(normalized);
+      .context("aggregate catalog lacks types")?;
+    if let Some(existing) = types.iter().find(|item| item["id"] == id) {
+      let mut expected = normalized.clone();
+      expected["package"] = existing["package"].clone();
+      ensure!(
+        existing == &expected,
+        "EI wrapper {id} disagrees with verified package declaration"
+      );
+    } else {
+      types.push(normalized);
+    }
   }
-  ensure!(actual == expected, "EI owner catalog is missing wrappers");
-  ensure!(
-    reply["catalog"]["routed_edges"] == serde_json::json!([]),
-    "EI wrapper catalog must not declare runtime routes"
-  );
-  ensure!(
-    reply["catalog"]["data_types"] == serde_json::json!([]),
-    "EI wrapper catalog must not declare payload data types"
-  );
-  catalog["ei_routed_edges"] = serde_json::json!([]);
+  if let Some(data_types) = reply["catalog"]["data_types"].as_array() {
+    let catalog_data = catalog["data_types"]
+      .as_array_mut()
+      .context("aggregate catalog lacks data_types")?;
+    for data_type in data_types {
+      let id = data_type["id"].as_str().context("EI data type lacks id")?;
+      ensure!(
+        data_type["schema"].is_object(),
+        "EI data type {id} lacks a schema"
+      );
+      if !catalog_data.iter().any(|item| item["id"] == id) {
+        catalog_data.push(data_type.clone());
+      }
+    }
+  }
+  catalog["ei_port_routes"] = reply["catalog"]["port_routes"].clone();
+  catalog["ei_bridge_adapters"] = reply["catalog"]["bridge_adapters"].clone();
   Ok(())
 }
 
@@ -206,11 +303,25 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     catalog.get("types").and_then(Value::as_array).is_some(),
     "EOS catalog has no types array"
   );
+  let mut eos_routes = catalog["port_routes"]
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
+  let mut eos_bridges = catalog["bridge_adapters"]
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
   let mut contributed = BTreeMap::new();
   let mut contributed_data = BTreeMap::new();
   let mut contributed_adapters = BTreeMap::new();
   for sidecar in sidecars {
     let value: Value = serde_json::from_slice(&fs::read(&sidecar)?)?;
+    let package_id = value["package"]["id"]
+      .as_str()
+      .context("sidecar lacks package id")?;
+    let package_version = value["package"]["version"]
+      .as_str()
+      .context("sidecar lacks package version")?;
     let admitted = Command::new(&program)
       .arg("catalog")
       .arg("--node-types")
@@ -224,6 +335,35 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
       String::from_utf8_lossy(&admitted.stderr).trim()
     );
     let admitted: Value = serde_json::from_slice(&admitted.stdout)?;
+    // The EOS owner also derives routes from verified contributed port declarations.
+    for route in admitted["port_routes"].as_array().into_iter().flatten() {
+      let eos_endpoint = route["source_type"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("eos."))
+        || route["target_type"]
+          .as_str()
+          .is_some_and(|id| id.starts_with("eos."));
+      if !eos_endpoint {
+        continue;
+      }
+      if !eos_routes.contains(route) {
+        eos_routes.push(route.clone());
+      }
+    }
+    for bridge in value["bridge_adapters"].as_array().into_iter().flatten() {
+      if bridge["core"] != "eos" {
+        continue;
+      }
+      ensure!(
+        admitted["bridge_adapters"]
+          .as_array()
+          .is_some_and(|bridges| bridges.contains(bridge)),
+        "EOS did not confirm package bridge"
+      );
+      if !eos_bridges.contains(bridge) {
+        eos_bridges.push(bridge.clone());
+      }
+    }
     if let Some(types) = value["node_types"].as_array() {
       for node_type in types {
         let id = node_type["id"]
@@ -232,30 +372,19 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         let mut node_type = node_type.clone();
         node_type["package"] = value["package"].clone();
         ensure!(
-          contributed.insert(id.to_owned(), node_type).is_none(),
-          "installed packages contribute duplicate node type {id}; remove one package version"
+          contributed
+            .insert(
+              (
+                package_id.to_owned(),
+                package_version.to_owned(),
+                id.to_owned()
+              ),
+              node_type
+            )
+            .is_none(),
+          "package release contributes duplicate node type {id}"
         );
       }
-    }
-    if value["package"]["id"] == "island/mujoco-sim"
-      && value["package"]["version"] == "0.1.1"
-      && value["node_types"].as_array().is_some_and(|types| {
-        types
-          .iter()
-          .any(|node| node["id"] == "eos.process.mujoco@v0.1")
-      })
-    {
-      let id = "isos.eos_process.mujoco@v0.2";
-      let mut alias = admitted["types"]
-        .as_array()
-        .and_then(|types| types.iter().find(|entry| entry["id"] == id))
-        .cloned()
-        .context("EOS omitted pinned MuJoCo single-core type")?;
-      alias["package"] = value["package"].clone();
-      ensure!(
-        contributed.insert(id.into(), alias).is_none(),
-        "duplicate pinned MuJoCo single-core type"
-      );
     }
     if let Some(data_types) = value["data_types"].as_array() {
       for data_type in data_types {
@@ -265,8 +394,17 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         let mut data_type = data_type.clone();
         data_type["package"] = value["package"].clone();
         ensure!(
-          contributed_data.insert(id.to_owned(), data_type).is_none(),
-          "installed packages contribute duplicate data type {id}; remove one package version"
+          contributed_data
+            .insert(
+              (
+                package_id.to_owned(),
+                package_version.to_owned(),
+                id.to_owned()
+              ),
+              data_type
+            )
+            .is_none(),
+          "package release contributes duplicate data type {id}"
         );
       }
     }
@@ -285,7 +423,14 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         adapter["package"] = value["package"].clone();
         ensure!(
           contributed_adapters
-            .insert(id.to_owned(), adapter)
+            .insert(
+              (
+                package_id.to_owned(),
+                package_version.to_owned(),
+                id.to_owned()
+              ),
+              adapter
+            )
             .is_none(),
           "installed packages contribute duplicate adapter family {id}"
         );
@@ -297,7 +442,9 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     "id":"isos.ui.button.trigger@v0.2",
     "description":"Run-fenced, general-purpose one-click activation",
     "core":"isos","layer":"ui","group":"button","kind":"software",
-    "lifecycle":"internal","capabilities":["bridge"],"settings":[],"inputs":[],
+    "lifecycle":"internal","implementation":{"kind":"external","interface":"isos.ui.node.v1",
+      "version":"1","lifecycle_adapter":"isos-workbench"},
+    "capabilities":["bridge"],"interaction_roles":["publisher"],"settings":[],"inputs":[],
     "outputs":[{"name":"activation","data_type":"button_activation@v0.2","required":false,
       "description":"One activation event, without movement arguments",
       "transport":"unix_socket","delivery_mode":"event","cardinality":"one",
@@ -310,7 +457,9 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     "id":"isos.ui.monitor.arm@v0.2",
     "description":"Read-only display of the run-fenced six-joint arm state",
     "core":"isos","layer":"ui","group":"monitor","kind":"software",
-    "lifecycle":"internal","capabilities":["bridge"],
+    "lifecycle":"internal","implementation":{"kind":"external","interface":"isos.ui.node.v1",
+      "version":"1","lifecycle_adapter":"isos-workbench"},
+    "capabilities":["bridge"],"interaction_roles":["subscriber"],
     "settings":[{"name":"refresh_rate_hz","data_type":"number","required":false,
       "default":5,"min":1,"max":5,"unit":"Hz",
       "description":"Maximum arm monitor display refresh rate"}],"outputs":[],
@@ -322,201 +471,58 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
   });
   crate::domain::registry::node_schema::validate_type(&monitor)?;
   types.push(monitor);
+  let vision = serde_json::json!({
+    "id":"isos.ui.vision.monitor@v0.2",
+    "description":"Displays a run-fenced camera vision flow",
+    "core":"isos","layer":"ui","group":"vision","kind":"software",
+    "lifecycle":"internal","implementation":{"kind":"external","interface":"isos.ui.node.v1",
+      "version":"1","lifecycle_adapter":"isos-workbench"},
+    "capabilities":["bridge"],"interaction_roles":["subscriber"],"settings":[],"outputs":[],
+    "inputs":[{"name":"frame","data_type":"image_frame@v0.2","required":true,
+      "description":"Frame from the declared EOS vision transfer",
+      "transport":"unix_socket","delivery_mode":"stream","cardinality":"one",
+      "data_class":"image","contract":{"owner":"eos","id":"vision-flow-to-isos","version":"1"}}],
+    "bridge":{"adapter":"unix_socket","inputs":["frame"],"outputs":[]}
+  });
+  crate::domain::registry::node_schema::validate_type(&vision)?;
+  types.push(vision);
   let builtin: BTreeSet<_> = types
     .iter()
     .filter_map(|value| value["id"].as_str().map(str::to_owned))
     .collect();
-  for (id, node_type) in contributed {
+  for ((_, _, id), node_type) in contributed {
     ensure!(
       !builtin.contains(&id),
       "package node type {id} conflicts with built-in type"
     );
     types.push(node_type);
   }
-  catalog["bridge_adapters"] = serde_json::json!([
-    {"core":"isos","adapter":"unix_socket","node_type":"isos.ui.button.trigger@v0.2"},
-    {"core":"isos","adapter":"unix_socket","node_type":"isos.ui.monitor.arm@v0.2"},
-    {"core":"ei","adapter":"unix_socket","node_type":"ei.io.input.trigger@v0.2"},
-    {"core":"ei","adapter":"unix_socket","node_type":"ei.governance.safety.gate@v0.2"},
-    {"core":"ei","adapter":"unix_socket","node_type":"ei.io.input.arm_status@v0.2"},
-    {"core":"ei","adapter":"unix_socket","node_type":"ei.governance.monitor.arm_status@v0.2"},
-    {"core":"eos","adapter":"unix_socket","node_type":"eos.interface.ingress.trigger@v0.2"},
-    {"core":"eos","adapter":"unix_socket","node_type":"eos.interface.egress.arm_status@v0.2"}
-  ]);
-  let route = |source: &str,
-               output: &str,
-               target: &str,
-               input: &str,
-               transport: &str,
-               data_type: &str,
-               owner: &str,
-               contract: &str| {
-    serde_json::json!({"source_type":source,"output":output,"target_type":target,"input":input,
-      "transport":transport,"delivery_mode":"event","data_type":data_type,
-      "contract":{"owner":owner,"id":contract,"version":"1"}})
-  };
-  catalog["port_routes"] = serde_json::json!([
-    route(
-      "isos.ui.button.trigger@v0.2",
-      "activation",
-      "ei.io.input.trigger@v0.2",
-      "activation",
-      "unix_socket",
-      "button_activation@v0.2",
-      "isos",
-      "button-activation"
-    ),
-    route(
-      "ei.io.input.trigger@v0.2",
-      "activation",
-      "ei.cognition.intent.forwarder@v0.2",
-      "activation",
-      "in_process",
-      "button_activation@v0.2",
-      "ei",
-      "activation-local"
-    ),
-    route(
-      "ei.cognition.intent.forwarder@v0.2",
-      "activation",
-      "ei.governance.safety.gate@v0.2",
-      "activation",
-      "in_process",
-      "button_activation@v0.2",
-      "ei",
-      "activation-local"
-    ),
-    route(
-      "ei.governance.safety.gate@v0.2",
-      "activation",
-      "eos.interface.ingress.trigger@v0.2",
-      "activation",
-      "unix_socket",
-      "button_activation@v0.2",
-      "ei",
-      "activation-to-eos"
-    ),
-    route(
-      "eos.interface.ingress.trigger@v0.2",
-      "activation",
-      "eos.skill.demo.joint_delta@v0.2",
-      "activation",
-      "in_process",
-      "button_activation@v0.2",
-      "eos",
-      "activation-local"
-    ),
-    route(
-      "eos.skill.demo.joint_delta@v0.2",
-      "delta",
-      "eos.dispatcher.arm.delta@v0.2",
-      "delta",
-      "in_process",
-      "arm_joint_delta@v0.2",
-      "eos",
-      "arm-delta"
-    ),
-    route(
-      "eos.dispatcher.arm.delta@v0.2",
-      "delta",
-      "eos.hardware.mock.arm@v0.2",
-      "delta",
-      "in_process",
-      "arm_joint_delta@v0.2",
-      "eos",
-      "arm-delta"
-    ),
-    route(
-      "eos.hardware.mock.arm@v0.2",
-      "observation",
-      "eos.hardware.mock.arm_output@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-local"
-    ),
-    route(
-      "eos.hardware.mock.arm_observer@v0.2",
-      "observation",
-      "eos.dispatcher.arm.monitor@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-local"
-    ),
-    route(
-      "eos.hardware.mock.arm_output@v0.2",
-      "observation",
-      "eos.dispatcher.arm.monitor@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-local"
-    ),
-    route(
-      "eos.dispatcher.arm.monitor@v0.2",
-      "observation",
-      "eos.skill.demo.arm_status@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-local"
-    ),
-    route(
-      "eos.skill.demo.arm_status@v0.2",
-      "observation",
-      "eos.interface.egress.arm_status@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-local"
-    ),
-    route(
-      "eos.interface.egress.arm_status@v0.2",
-      "observation",
-      "ei.io.input.arm_status@v0.2",
-      "observation",
-      "unix_socket",
-      "arm_monitor_state@v0.2",
-      "eos",
-      "arm-monitor-to-ei"
-    ),
-    route(
-      "ei.io.input.arm_status@v0.2",
-      "observation",
-      "ei.cognition.state.arm_status@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "ei",
-      "arm-monitor-local"
-    ),
-    route(
-      "ei.cognition.state.arm_status@v0.2",
-      "observation",
-      "ei.governance.monitor.arm_status@v0.2",
-      "observation",
-      "in_process",
-      "arm_monitor_state@v0.2",
-      "ei",
-      "arm-monitor-local"
-    ),
-    route(
-      "ei.governance.monitor.arm_status@v0.2",
-      "observation",
-      "isos.ui.monitor.arm@v0.2",
-      "observation",
-      "unix_socket",
-      "arm_monitor_state@v0.2",
-      "ei",
-      "arm-monitor-to-isos"
-    )
-  ]);
+  for bridge in [
+    serde_json::json!({"core":"isos","adapter":"unix_socket","node_type":"isos.ui.button.trigger@v0.2"}),
+    serde_json::json!({"core":"isos","adapter":"unix_socket","node_type":"isos.ui.monitor.arm@v0.2"}),
+    serde_json::json!({"core":"isos","adapter":"unix_socket","node_type":"isos.ui.vision.monitor@v0.2"}),
+  ] {
+    if !eos_bridges.contains(&bridge) {
+      eos_bridges.push(bridge);
+    }
+  }
+  catalog["bridge_adapters"] = Value::Array(eos_bridges);
+  catalog["port_routes"] = Value::Array(eos_routes);
+  if catalog["types"].as_array().is_some_and(|types| {
+    types
+      .iter()
+      .any(|entry| entry["id"] == "eos.interface.egress.vision_flow@v0.2")
+  }) {
+    catalog["port_routes"]
+      .as_array_mut()
+      .unwrap()
+      .push(serde_json::json!({
+        "source_type":"eos.interface.egress.vision_flow@v0.2","output":"frame",
+        "target_type":"isos.ui.vision.monitor@v0.2","input":"frame",
+        "transport":"unix_socket","delivery_mode":"stream","data_type":"image_frame@v0.2",
+        "contract":{"owner":"eos","id":"vision-flow-to-isos","version":"1"}
+      }));
+  }
   if !catalog["data_types"].is_array() {
     catalog["data_types"] = serde_json::json!([]);
   }
@@ -525,7 +531,7 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     .iter()
     .filter_map(|value| value["id"].as_str().map(str::to_owned))
     .collect();
-  for (id, data_type) in contributed_data {
+  for ((_, _, id), data_type) in contributed_data {
     ensure!(
       !builtin_data.contains(&id),
       "package data type {id} conflicts with built-in type"
@@ -540,7 +546,7 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     .iter()
     .filter_map(|value| value["id"].as_str().map(str::to_owned))
     .collect();
-  for (id, family) in contributed_adapters {
+  for ((_, _, id), family) in contributed_adapters {
     ensure!(
       !builtin_families.contains(&id),
       "package adapter family {id} conflicts with built-in family"
@@ -603,21 +609,38 @@ mod ei_stage_catalog_tests {
     })
   }
 
+  fn ei_pipeline(id: &str, layer: &str, group: &str) -> Value {
+    json!({
+      "id":id,"core":"ei","layer":layer,"group":group,
+      "description":"Full cognition pipeline stage.",
+      "kind":"software","lifecycle":"internal","capabilities":[],
+      "settings_fields":[],"service_inputs":{},
+      "inputs":[],"outputs":[],"bridge":Value::Null
+    })
+  }
+
   fn ei_reply() -> Value {
     json!({"ok":true,"catalog":{"stage_types":[
       ei_wrapper("ei.io.input.trigger@v0.2","io","input"),
+      ei_wrapper("ei.cognition.intent.context@v0.2","cognition","intent"),
       ei_wrapper("ei.cognition.intent.forwarder@v0.2","cognition","intent"),
       ei_wrapper("ei.governance.safety.gate@v0.2","governance","safety")
       ,ei_wrapper("ei.io.input.arm_status@v0.2","io","input")
       ,ei_wrapper("ei.cognition.state.arm_status@v0.2","cognition","state")
       ,ei_wrapper("ei.governance.monitor.arm_status@v0.2","governance","monitor")
+      ,ei_pipeline("ei.io.link.gateway@v0.2","io","link")
+      ,ei_pipeline("ei.evidence.perception.admission@v0.2","evidence","perception")
+      ,ei_pipeline("ei.cognition.context.builder@v0.2","cognition","context")
+      ,ei_pipeline("ei.cognition.missions.queue@v0.2","cognition","missions")
+      ,ei_pipeline("ei.cognition.decision.planner@v0.2","cognition","decision")
+      ,ei_pipeline("ei.governance.monitor.health@v0.2","governance","monitor")
     ],"data_types":[],"routed_edges":[]}})
   }
 
   #[test]
-  fn pooled_demo_passes_selected_catalog_admission() {
+  fn demo_fixture_passes_selected_catalog_admission() {
     let path =
-      Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/graph-pool/demo.nodes.json");
+      Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/graph/demo-only.nodes.json");
     let graph: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     let mut catalog = catalog_base().unwrap();
     merge_ei_stage_catalog(&mut catalog, &ei_reply()).unwrap();
@@ -629,7 +652,7 @@ mod ei_stage_catalog_tests {
   }
 
   #[test]
-  fn builtin_catalog_contains_only_isos_and_eos_wrappers() {
+  fn builtin_catalog_contains_isolated_eos_library_without_routes() {
     let catalog = catalog_base().unwrap();
     let actual: BTreeSet<_> = catalog["types"]
       .as_array()
@@ -640,6 +663,7 @@ mod ei_stage_catalog_tests {
     let expected: BTreeSet<_> = [
       "isos.ui.button.trigger@v0.2",
       "isos.ui.monitor.arm@v0.2",
+      "isos.ui.vision.monitor@v0.2",
       "eos.interface.ingress.trigger@v0.2",
       "eos.skill.demo.joint_delta@v0.2",
       "eos.dispatcher.arm.delta@v0.2",
@@ -649,10 +673,48 @@ mod ei_stage_catalog_tests {
       "eos.dispatcher.arm.monitor@v0.2",
       "eos.skill.demo.arm_status@v0.2",
       "eos.interface.egress.arm_status@v0.2",
+      "eos.interface.egress.vision_flow@v0.2",
+      "eos.hardware.mock.camera@v0.2",
+      "eos.perception.physical.features@v0.2",
+      "eos.dispatcher.command.binding@v0.2",
+      "eos.safety.device.guard@v0.2",
+      "eos.safety.device.estop@v0.2",
+      "eos.evidence.episode.recorder@v0.2",
+      "eos.dataset.export.manifest@v0.2",
     ]
     .into_iter()
     .collect();
     assert_eq!(actual, expected);
+    for id in [
+      "eos.hardware.mock.camera@v0.2",
+      "eos.perception.physical.features@v0.2",
+      "eos.dispatcher.command.binding@v0.2",
+      "eos.safety.device.guard@v0.2",
+      "eos.safety.device.estop@v0.2",
+      "eos.evidence.episode.recorder@v0.2",
+      "eos.dataset.export.manifest@v0.2",
+    ] {
+      let descriptor = catalog["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == id)
+        .unwrap();
+      assert!(
+        descriptor["inputs"]
+          .as_array()
+          .unwrap()
+          .iter()
+          .all(|port| port["required"] == false)
+      );
+      assert!(
+        !catalog["port_routes"]
+          .as_array()
+          .unwrap()
+          .iter()
+          .any(|route| route["source_type"] == id || route["target_type"] == id)
+      );
+    }
     assert!(
       catalog["data_types"]
         .as_array()
@@ -681,7 +743,8 @@ mod ei_stage_catalog_tests {
       .iter()
       .map(|entry| entry["id"].as_str().unwrap())
       .collect();
-    assert_eq!(actual.len(), 17);
+    assert_eq!(actual.len(), 33);
+    assert!(actual.contains("isos.ui.vision.monitor@v0.2"));
     assert!(actual.contains("ei.governance.safety.gate@v0.2"));
     assert!(actual.contains("ei.io.input.trigger@v0.2"));
     assert_eq!(
@@ -693,35 +756,69 @@ mod ei_stage_catalog_tests {
         .count(),
       0
     );
-    assert_eq!(catalog["ei_routed_edges"], json!([]));
+    assert!(catalog["ei_port_routes"].is_null());
   }
 
   #[test]
-  fn ei_wrapper_catalog_rejects_missing_duplicate_and_routed_types() {
+  fn ei_wrapper_catalog_allows_partial_catalog_but_rejects_duplicates() {
     let mut missing = ei_reply();
     missing["catalog"]["stage_types"]
       .as_array_mut()
       .unwrap()
       .pop();
-    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &missing).is_err());
+    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &missing).is_ok());
     let mut duplicate = ei_reply();
     duplicate["catalog"]["stage_types"][1] = duplicate["catalog"]["stage_types"][0].clone();
     assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &duplicate).is_err());
-    let mut routed = ei_reply();
-    routed["catalog"]["routed_edges"] = json!([{"source_type":"ei.io.input.trigger@v0.2"}]);
-    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &routed).is_err());
-    let mut payload = ei_reply();
-    payload["catalog"]["data_types"] = json!([{"id":"old_payload"}]);
-    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &payload).is_err());
   }
 
   #[test]
-  fn ei_wrapper_catalog_rejects_wrong_placement_and_identity() {
+  fn ei_wrapper_catalog_rejects_wrong_placement_and_accepts_new_owner_type() {
     let mut wrong = ei_reply();
     wrong["catalog"]["stage_types"][0]["group"] = json!("wrong");
     assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &wrong).is_err());
     let mut unknown = ei_reply();
     unknown["catalog"]["stage_types"][0]["id"] = json!("ei.io.input.unknown@v0.2");
-    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &unknown).is_err());
+    assert!(merge_ei_stage_catalog(&mut json!({"types":[],"data_types":[]}), &unknown).is_ok());
+  }
+
+  #[test]
+  fn cross_core_routes_require_both_owner_claims() {
+    let route =
+      json!({"source_type":"ei.io.input.custom@v0.2","target_type":"eos.io.output.custom@v0.2"});
+    let mut catalog = json!({
+      "types":[
+        {"id":"ei.io.input.custom@v0.2","core":"ei"},
+        {"id":"eos.io.output.custom@v0.2","core":"eos"}
+      ],
+      "port_routes":[route],
+      "ei_port_routes":[],
+      "bridge_adapters":[],
+      "ei_bridge_adapters":[]
+    });
+    finalize_owner_routes(&mut catalog).unwrap();
+    assert!(catalog["port_routes"].as_array().unwrap().is_empty());
+    catalog["port_routes"] = json!([route]);
+    catalog["ei_port_routes"] = json!([route]);
+    finalize_owner_routes(&mut catalog).unwrap();
+    assert_eq!(catalog["port_routes"], json!([route]));
+  }
+
+  #[test]
+  fn unimplemented_isos_endpoint_cannot_claim_route() {
+    let route =
+      json!({"source_type":"isos.ui.custom.source@v0.2","target_type":"ei.io.input.custom@v0.2"});
+    let mut catalog = json!({
+      "types":[
+        {"id":"isos.ui.custom.source@v0.2","core":"isos"},
+        {"id":"ei.io.input.custom@v0.2","core":"ei"}
+      ],
+      "port_routes":[],
+      "ei_port_routes":[route],
+      "bridge_adapters":[],
+      "ei_bridge_adapters":[]
+    });
+    finalize_owner_routes(&mut catalog).unwrap();
+    assert!(catalog["port_routes"].as_array().unwrap().is_empty());
   }
 }

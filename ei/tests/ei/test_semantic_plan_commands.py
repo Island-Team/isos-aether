@@ -1,7 +1,10 @@
 """Mission goal → semantic plan → concurrent commands."""
 
-from ei.api.plan import PlanEditKind
-from ei.core.decision.command import parse_command_reply, parse_primitive_command
+from ei.core.cognition.decision.command import (
+  parse_command_reply,
+  parse_primitive_command,
+)
+from ei.core.system.models.plan import PlanEditKind
 
 
 def test_plan_is_runtime_editable_without_todo_commands() -> None:

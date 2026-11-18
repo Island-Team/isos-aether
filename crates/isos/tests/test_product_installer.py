@@ -22,25 +22,31 @@ class ProductInstallerTest(unittest.TestCase):
     self.checkout.mkdir()
     shutil.copy2(ROOT / "install.sh", self.checkout / "install.sh")
     shutil.copy2(ROOT / "isos.sh", self.checkout / "isos.sh")
+    (self.checkout / "scripts").mkdir()
+    shutil.copy2(ROOT / "scripts/jsonl_log.py", self.checkout / "scripts/jsonl_log.py")
+    (self.checkout / "scripts/ui_build_cache.py").write_text("import sys\nraise SystemExit(1 if sys.argv[2] == 'check' else 0)\n")
     for name in ("Cargo.toml", "LICENSE"):
       shutil.copy2(ROOT / name, self.checkout / name)
-    for item in ("ui/package.json", "ui/dist/local/index.html", "ui/dist/tui/index.js", "ei/pyproject.toml"):
+    for item in ("ui/package.json", "ui/package-lock.json", "ui/dist/local/index.html", "ui/dist/tui/index.js", "ei/pyproject.toml"):
       file = self.checkout / item
       file.parent.mkdir(parents=True, exist_ok=True)
       file.write_text("stub")
-    (self.checkout / "share/eos").mkdir(parents=True)
-    (self.checkout / "share/eos/contracts.manifest").write_text("stub")
-    for directory in ("ei/bin", "ei/libexec", "ei/dist", "crates/isos"):
+    (self.checkout / "contract/proto").mkdir(parents=True)
+    (self.checkout / "contract/proto/gateway.proto").write_text("stub")
+    shutil.copy2(ROOT / "contract/catalog.json", self.checkout / "contract/catalog.json")
+    (self.checkout / "contract/schemas").mkdir()
+    (self.checkout / "contract/schemas/north-http.openapi.json").write_text("{}\n")
+    for directory in ("ei/bin", "ei/package", "ei/dist", "crates/isos"):
       (self.checkout / directory).mkdir(parents=True)
     (self.checkout / "config/ei").mkdir(parents=True)
-    (self.checkout / "config/ei/island.toml").write_text('share = ["../share"]\n')
-    factory = self.checkout / "share/ei/defaults/ei/modes.toml"
+    (self.checkout / "config/ei/island.toml").write_text('share = ["../contract"]\n')
+    factory = self.checkout / "config/defaults/ei/modes.toml"
     factory.parent.mkdir(parents=True)
-    product_defaults = self.checkout / "share/isos/defaults/island.toml"
-    product_defaults.parent.mkdir(parents=True)
-    product_defaults.write_text('name = "IsOS"\nshare = ["share"]\n')
+    product_defaults = self.checkout / "config/defaults/island.toml"
+    product_defaults.parent.mkdir(parents=True, exist_ok=True)
+    product_defaults.write_text('name = "IsOS"\nshare = ["../contract"]\n')
     (self.checkout / "config/ei/modes.toml").write_text("[modes]\n")
-    factory.symlink_to("../../../../config/ei/modes.toml")
+    factory.symlink_to("../../ei/modes.toml")
     ei = self.checkout / "ei/bin/ei"
     ei.write_text("#!/bin/sh\nexit 0\n")
     ei.chmod(0o755)
@@ -48,7 +54,7 @@ class ProductInstallerTest(unittest.TestCase):
       file = self.checkout / item
       file.parent.mkdir(parents=True, exist_ok=True)
       shutil.copy2(ROOT / item, file)
-    (self.checkout / "ei/dist/ei-0.2.1-py3-none-any.whl").write_bytes(b"stub")
+    (self.checkout / "ei/dist/ei-0.2.3-py3-none-linux_x86_64.whl").write_bytes(b"stub")
     fake_bin = self.root / "fake-bin"
     fake_bin.mkdir()
     uv = fake_bin / "uv"
@@ -57,12 +63,13 @@ class ProductInstallerTest(unittest.TestCase):
     self.env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
     binary = self.checkout / "target/release/isos"
     binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'isos 0.2.1'; else env | grep ^ISOS; fi\n")
+    binary.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'isos 0.2.3'; else env | grep ^ISOS; fi\n")
     binary.chmod(0o755)
-    for name in ("aether-profile", "aether-runtime", "aether-http-bridge", "aether-config-server"):
+    for name in ("aether-profile", "aether-runtime", "aether-server"):
       program = binary.parent / name
       program.write_text("#!/bin/sh\nexit 0\n")
       program.chmod(0o755)
+    (binary.parent / "libaether_runtime.so").write_bytes(b"stub")
 
   def run_install(self, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -75,8 +82,9 @@ class ProductInstallerTest(unittest.TestCase):
     result = self.run_install("--no-build", "--bundle-output", str(archive))
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertTrue((self.prefix / "current/MANIFEST.sha256").is_file())
-    for name in ("aether-profile", "aether-runtime", "aether-http-bridge", "aether-config-server"):
+    for name in ("aether-profile", "aether-runtime", "aether-server"):
       self.assertTrue((self.prefix / "current/libexec" / name).is_file())
+    self.assertTrue((self.prefix / "current/libexec/libaether_runtime.so").is_file())
     env_reply = subprocess.run([str(self.prefix / "bin/isos"), "--dump-env"], cwd=self.root, text=True, capture_output=True, check=True)
     self.assertIn("ISOS_AETHER_BIN_DIR=", env_reply.stdout)
     self.assertIn("ISOS_MODE=product", env_reply.stdout)
@@ -119,16 +127,21 @@ class ProductInstallerTest(unittest.TestCase):
     )
     self.assertIn(f"ISOS_HOME={self.root / 'explicit-home'}", explicit_reply.stdout)
     self.assertIn("ISOS_AETHER_BIN_DIR=", explicit_reply.stdout)
-    self.assertTrue((self.prefix / "current/share/isos/eos/contracts.manifest").is_file())
+    self.assertTrue((self.prefix / "current/share/isos/contract/proto/gateway.proto").is_file())
+    self.assertTrue((self.prefix / "current/share/isos/contract/schemas/north-http.openapi.json").is_file())
+    self.assertEqual(
+      (self.prefix / "current/share/isos/contract/catalog.json").read_bytes(),
+      (ROOT / "contract/catalog.json").read_bytes(),
+    )
     self.assertEqual((self.prefix / "current/share/isos/LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes())
     installed_factory = self.prefix / "current/share/isos/ei/share/defaults/ei/modes.toml"
     self.assertTrue(installed_factory.is_file())
     self.assertFalse(installed_factory.is_symlink())
     self.assertTrue((self.prefix / "current/share/isos/ei/share/defaults/island.toml").is_file())
-    self.assertIn('share = ["share", ".."]', (self.prefix / "current/share/isos/ei/etc/island.toml").read_text())
+    self.assertIn('share = ["../contract"]', (self.prefix / "current/share/isos/ei/etc/island.toml").read_text())
     self.assertTrue(archive.is_file())
     release = json.loads((self.prefix / "current/RELEASE.json").read_text())
-    self.assertEqual(release["product_version"], "0.2.1")
+    self.assertEqual(release["product_version"], "0.2.3")
     self.assertEqual(release["schema_version"], "1")
     checksum = subprocess.run(["sha256sum", "-c", archive.name + ".sha256"], cwd=self.root, text=True, capture_output=True)
     self.assertEqual(checksum.returncode, 0, checksum.stderr)
@@ -157,9 +170,9 @@ class ProductInstallerTest(unittest.TestCase):
     cargo.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" > '{called}'\n")
     cargo.chmod(0o755)
     npm = self.root / "fake-bin/npm"
-    npm.write_text("#!/bin/sh\nexit 0\n")
+    npm.write_text("#!/bin/sh\nmkdir -p node_modules\nexit 0\n")
     npm.chmod(0o755)
-    recipe = self.checkout / "ei/scripts/platform/dispatch.sh"
+    recipe = self.checkout / "scripts/ei/platform/dispatch.sh"
     recipe.parent.mkdir(parents=True)
     recipe.write_text("#!/bin/sh\nexit 0\n")
     recipe.chmod(0o755)
@@ -180,10 +193,19 @@ class ProductInstallerTest(unittest.TestCase):
     self.assertNotEqual(result.returncode, 0)
     self.assertEqual((self.prefix / "current").resolve(), before)
 
+  def test_missing_eos_demo_library_does_not_switch_current(self) -> None:
+    self.assertEqual(self.run_install("--no-build").returncode, 0)
+    before = (self.prefix / "current").resolve()
+    (self.checkout / "target/release/libaether_runtime.so").unlink()
+    result = self.run_install("--no-build")
+    self.assertNotEqual(result.returncode, 0)
+    self.assertIn("EOS demo node library", result.stderr)
+    self.assertEqual((self.prefix / "current").resolve(), before)
+
   def test_factory_default_link_outside_component_fails_before_switch(self) -> None:
     self.assertEqual(self.run_install("--no-build").returncode, 0)
     before = (self.prefix / "current").resolve()
-    factory = self.checkout / "share/ei/defaults/ei/modes.toml"
+    factory = self.checkout / "config/defaults/ei/modes.toml"
     factory.unlink()
     factory.symlink_to(self.root / "outside.toml")
     (self.root / "outside.toml").write_text("[modes]\n")

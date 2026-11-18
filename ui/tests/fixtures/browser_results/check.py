@@ -27,17 +27,17 @@ assert "authority_grant" not in exact["request"] and "target_path" not in exact[
 assert next(case for case in cases if case["id"] == "stop_during_outage")["expect"] == "isos_stop_visible_enabled"
 assert next(case for case in cases if case["id"] == "log_no_owner_correlation")["expect"] == "show_command_id_open_unfiltered_current_run"
 for path in [
-    root / "docs/isosui/interfaces/browser-results.md",
-    root / "docs_cn/isosui/interfaces/browser-results_cn.md",
-    root / "docs/isosui/design-browser-results.md",
-    root / "docs_cn/isosui/design-browser-results_cn.md",
+    root / "docs/isos/interfaces/api/client.md",
+    root / "docs_cn/isos/interfaces/api/client_cn.md",
+    root / "docs/isos/core/ui/webui.md",
+    root / "docs_cn/isos/core/ui/webui_cn.md",
 ]:
     assert path.is_file(), path
     source = path.read_text()
     for status in ["Completed", "Failed", "Cancelled", "Rejected", "InProgress", "OutcomeUnknown"]:
         assert status in source, f"{path}: missing {status}"
     assert "Stop" in source and "active_revision" in source, path
-for path in [root / "docs/isosui/usage.md", root / "docs_cn/isosui/usage_cn.md"]:
+for path in [root / "docs/isos/core/ui/webui.md", root / "docs_cn/isos/core/ui/webui_cn.md"]:
     source = path.read_text()
     assert "Failed" in source and "InProgress" in source, path
     if "usage" in path.name:

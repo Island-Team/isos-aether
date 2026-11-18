@@ -168,7 +168,7 @@
       "id": "R03-24",
       "class": "bypass",
       "stimulus": "Private manual, primitive, skill_execute, skill_result, dispatch, stop, manual_stop, cancel, result, skill_cancel, old primitive_typed header, browser shutdown, or wrong-UID private shutdown",
-      "expect": "No production alternate actuator/cancel/result route; zero adapter release; owner-only private shutdown accepted while bridge/wrong-UID shutdown denied; R06 still owns MuJoCo stop ordering",
+      "expect": "No production alternate actuator/cancel/result route; zero adapter release; owner-only private shutdown accepted while bridge/wrong-UID shutdown denied; R06 still owns package hardware stop ordering",
       "evidence": "boundary"
     },
     {

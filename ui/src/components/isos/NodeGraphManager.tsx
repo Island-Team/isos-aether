@@ -1,50 +1,69 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import ReactFlow, { Background, Handle, MiniMap, Position, ReactFlowProvider, SelectionMode, type Connection, type Edge, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from 'reactflow';
+import ReactFlow, { Background, Handle, MiniMap, Position, ReactFlowProvider, SelectionMode, useUpdateNodeInternals, type Connection, type Edge, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { catalogTypeKey, combineNodeTypeCatalogs, type NodeOptions, getGraphCatalogSnapshot, getNewNodeGraph, getNodeTypes, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, getNodeGraph, getNodeSets, getProcessStatus, getCoreReadiness, getNodeOptions, graphCatalogReadOnlyReason, nodeGraphHasEditableShape, nodeGraphReadOnlyReason, previewNodeSet, validateConnection, validateNodeGraph, type CoreReadiness, type DataTypeDefinition, type GraphPoolEntry, type NodeGraph, type NodeGraphDiagnostic, type NodeInstance, type NodeSetDefinition, type NodeSetPreview, type NodeTypeDefinition, type ProcessStatus, type ValidatedEdge } from '@/services/isos/node-graph';
+import { catalogTypeKey, combineNodeTypeCatalogs, type NodeOptions, getGraphCatalogSnapshot, getNewNodeGraph, getNodeTypes, getGraphPool, getGraphPoolEntry, putGraphPoolEntry, getNodeGraph, getInstalledPackages, getProcessStatus, getCoreReadiness, getNodeOptions, graphCatalogReadOnlyReason, nodeGraphHasEditableShape, nodeGraphReadOnlyReason, validateConnection, validateNodeGraph, type CoreReadiness, type CoreReadinessEntry, type DataTypeDefinition, type GraphPoolEntry, type InstalledPackage, type NodeGraph, type NodeGraphDiagnostic, type NodeInstance, type NodeTypeCatalog, type NodeTypeDefinition, type ProcessStatus, type ValidatedEdge } from '@/services/isos/node-graph';
+import { subscribeRuntimeStatus } from '@/services/isos/runtime-status-stream';
 import type { Language } from '@/types';
 import { hasActiveDeployment } from './deployment-phase';
-import { addNode, addableTypes, admittedConnection, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, removeNode, removedNodePaths, renameNode, sameNodePath, updateNode, type GraphNode } from './node-graph-edits';
-import { interfaceVisual, nodeVisualStyle, portVisual, dataTypeColor } from './node-visuals';
-import { applyNodeSelection, asyncDemoLayout, graphLayoutKey, graphMirrorKey, parseNodeMirrors, parseNodePositions, removeSelectedNodes, type NodeMirrors, type NodePositions } from './graph-canvas-state';
-import { GraphCoreWindow, readCoreWindow, type CoreWindowState } from './GraphCoreWindow';
+import { addNode, addableTypes, admittedConnection, bindPrimitiveTarget, canonicalNodePath, connectNodes, disconnectInput, graphNodes, inputSources, nextNodeId, nodePath, packageGraphDraft, portInput, removeNode, renameNode, sameNodePath, updateDesiredRate, updateNode, type GraphNode } from './node-graph-edits';
+import { interfaceVisual, nodeVisualStyle, nodeInteractionRoles, portVisual, dataTypeColor } from './node-visuals';
+import { applyNodeDimensions, applyNodeSelection, asyncDemoLayout, DEFAULT_GRAPH_PANEL_WIDTHS, fitGraphPanelWidths, graphLayoutKey, graphMirrorKey, graphPanelWidthsKey, parseGraphPanelWidths, parseNodeMirrors, parseNodePositions, preserveNodePositions, resizeGraphPanel, removeSelectedNodes, type GraphPanelWidths, type NodeMirrors, type NodePositions, type NodeSizes } from './graph-canvas-state';
 import { edgeContracts, edgeInputDiagnostics } from './edge-idl';
 import { validatedApply } from './validated-apply';
-import { EiWorkbench } from './EiWorkbench';
 import { clampInfoCard } from './node-info-card';
 import { processRunFeedback } from './process-run-feedback';
+import { startupPhaseText } from './startup-phase';
 import { stopReplyFeedback, stopFailureFeedback } from './stop-feedback';
 import { requestRunStop } from './run-stop-fence';
 import { deploymentStopEpoch, runDeployment, stopDeploymentConverged } from './deployment-control';
 import { browserLog } from '@/services/isos/browser-logs';
 import { publishUiMessage } from '@/services/isos/ui-messages';
+import { callExternalNode } from '@/services/isos/external-node';
 import { getButtonActivationResult, newButtonEventId, sendButtonActivation, type ButtonActivationResult } from '@/services/isos/node-events';
 import { IsosApiError } from '@/services/isos/api-client';
 import { draftValidationStamp, validationDisplayIsCurrent, validationResponseIsCurrent, type DraftValidationStamp } from './draft-validation';
-import { CatalogSelector, settingOptionGroup } from './CatalogSelector';
-import { CatalogBrowser } from './CatalogBrowser';
+import { CatalogSelector, settingOptionGroup, unavailableSelections } from './CatalogSelector';
+import { CatalogBrowser, packageAccent, packagePin } from './CatalogBrowser';
+import { PackageLibrary, installedPin } from './PackageLibrary';
+import { PackageConfigPanel } from './PackageConfigPanel';
 import { ArmMonitorView, useArmMonitor, type ArmMonitorReading } from './ArmMonitor';
 import { DEFAULT_MONITOR_REFRESH_HZ, monitorRefreshHz } from '@/services/isos/arm-monitor';
-import { catalogReloadGraph, catalogReloadIsCurrent, catalogSelectionBlocks, optionResponseIsCurrent, type OptionSnapshot } from './catalog-options';
+import { catalogErrorIsStable, catalogReloadGraph, catalogReloadIsCurrent, catalogSelectionBlocks, displayNodeOptions, draftAdapterOptions, optionResponseIsCurrent, type OptionSnapshot } from './catalog-options';
 import './node-graph-manager.scss';
 
-interface Props { lang: Language; visible?: boolean; onDirtyChange?: (dirty: boolean) => void; onOpenPanel?: (name: 'control' | 'logs') => void; onStopIntent?: (runId: string | null) => void; onStopOutcome?: (feedback: { text: string; alert: boolean }, terminalRun?: string | null) => void }
-interface FlowData { entry: GraphNode; error: boolean; mirrored: boolean; lane?: 'forward' | 'return'; lang: Language; dataTypes: DataTypeDefinition[]; options?: NodeOptions | null; readOnly?: boolean; currentRun?: boolean; runId?: string | null; activeRevision?: string | null; monitorReading?: ArmMonitorReading; onSettingsChange?: (path: string, settings: Record<string, unknown>) => void; onNodeChange?: (path: string, change: Partial<NodeInstance>) => void }
+interface Props { lang: Language; visible?: boolean; panelMenu?: React.ReactNode; onDirtyChange?: (dirty: boolean) => void; onNoticesChange?: (notices: { text: string; alert: boolean }[]) => void; onOpenPanel?: (name: 'logs') => void; onOpenPage?: (name: 'ei' | 'eos') => void; onStopIntent?: (runId: string | null) => void; onStopOutcome?: (feedback: { text: string; alert: boolean }, terminalRun?: string | null) => void }
+type InspectorTarget = 'none' | 'package' | 'type' | 'node' | 'edge' | 'multi';
+interface FlowData { entry: GraphNode; error: boolean; mirrored: boolean; lane?: 'forward' | 'return'; lang: Language; dataTypes: DataTypeDefinition[]; currentRun?: boolean; runId?: string | null; activeRevision?: string | null; monitorReading?: ArmMonitorReading; onSelect?: (path: string) => void }
 const COPY = {
-  en: { nodeSets: 'Package node sets', previewRemoves: 'Package preview would remove existing nodes. Edit the graph explicitly before adding this set.', noNodeSets: 'No installed package offers a node set.', chooseSet: 'Choose a node set', previewSet: 'Preview nodes', addSet: 'Add previewed nodes', previewCount: 'nodes will be added', previewStale: 'The graph changed. Preview the set again.', title: 'Node graph', connect: 'Connect to local IsOS', add: 'Add node', refresh: 'Refresh', validate: 'Check graph', apply: 'Apply graph', saved: 'Graph file applied and core configuration generated. Restart to use this revision.', valid: 'Graph is valid.', dirty: 'Unsaved changes', clean: 'Saved', catalog: 'Node library', inspector: 'Node configuration', diagnostics: 'Diagnostics', noSelection: 'Select a node to edit it.', selectedCount: 'nodes selected', noNodes: 'Add a registered node type to start.', id: 'Node ID', label: 'Label', description: 'Description', settings: 'Settings', gui: 'Show MuJoCo window when EOS starts this backend', details: 'Hardware and advanced fields (JSON)', applyDetails: 'Apply fields', remove: 'Remove node', capabilities: 'Capabilities', source: 'Source', target: 'Target', invalid: 'Invalid JSON object.', duplicate: 'Node ID already exists or is invalid.', port: 'Connect matching typed ports by dragging from an output to an input.', robot: 'Robot', name: 'Name', lifecycle: 'Lifecycle', type: 'Type', disconnected: 'IsOS node graph API is unavailable.', stale: 'Graph changed on the server. Refresh and retry.', discard: 'Discard unsaved changes?', choose: 'Choose a type', process: 'Process status', noStatus: 'Process status is not available from this IsOS build.', search: 'Search types', undo: 'Undo', redo: 'Redo', disconnect: 'Disconnect line', hint: 'Left drag selects nodes; middle drag pans. Right-click to add or disconnect. Delete removes selected nodes.', savedRevision: 'Saved', activeRevision: 'Active' },
-  cn: { nodeSets: '软件包节点集', previewRemoves: '软件包预览会删除现有节点。请先明确编辑节点图，再添加此节点集。', noNodeSets: '已安装的软件包没有提供节点集。', chooseSet: '选择节点集', previewSet: '预览节点', addSet: '添加已预览节点', previewCount: '个节点将被添加', previewStale: '节点图已更改，请重新预览。', title: '节点图', connect: '连接本机 IsOS', add: '添加节点', refresh: '刷新', validate: '检查节点图', apply: '应用节点图', saved: '图库文件已应用，核心配置已生成。重启后使用此修订。', valid: '节点图有效。', dirty: '未保存更改', clean: '已保存', catalog: '节点库', inspector: '节点配置', diagnostics: '诊断', noSelection: '选择节点后编辑配置。', selectedCount: '个节点已选中', noNodes: '添加已注册的节点类型以开始。', id: '节点 ID', label: '标签', description: '描述', settings: '设置', gui: 'EOS 启动此后端时显示 MuJoCo 窗口', details: '硬件与高级字段（JSON）', applyDetails: '应用字段', remove: '删除节点', capabilities: '能力', source: '来源', target: '目标', invalid: 'JSON 对象无效。', duplicate: '节点 ID 已存在或无效。', port: '从输出端口拖到类型相同的输入端口以连接。', robot: '机器人', name: '名称', lifecycle: '生命周期', type: '类型', disconnected: 'IsOS 节点图 API 不可用。', stale: '服务器上的图已更改。刷新后重试。', discard: '放弃未保存的更改？', choose: '选择类型', process: '进程状态', noStatus: '当前 IsOS 版本未提供进程状态。', search: '搜索类型', undo: '撤销', redo: '重做', disconnect: '断开连线', hint: '左键拖动框选节点，中键拖动平移。右键添加节点或断开连线。Delete 删除选中节点。', savedRevision: '已保存', activeRevision: '运行中' },
+  en: { title: 'Node graph', connect: 'Connect to local IsOS', add: 'Add node', refresh: 'Refresh', validate: 'Check graph', apply: 'Apply graph', saved: 'Graph file applied and core configuration generated. Restart to use this revision.', valid: 'Graph is valid.', dirty: 'Unsaved changes', clean: 'Saved', catalog: 'Node library', inspector: 'Node configuration', diagnostics: 'Diagnostics', noSelection: 'Select a node to edit it.', selectedCount: 'nodes selected', noNodes: 'Add a registered node type to start.', id: 'Node ID', label: 'Label', description: 'Description', settings: 'Settings', gui: 'Show package service window when available', details: 'Hardware and advanced fields (JSON)', applyDetails: 'Apply fields', remove: 'Remove node', capabilities: 'Capabilities', source: 'Source', target: 'Target', invalid: 'Invalid JSON object.', duplicate: 'Node ID already exists or is invalid.', port: 'Connect matching typed ports by dragging from an output to an input.', robot: 'Robot', name: 'Name', lifecycle: 'Lifecycle', type: 'Type', disconnected: 'IsOS node graph API is unavailable.', stale: 'Graph changed on the server. Refresh and retry.', discard: 'Discard unsaved changes?', choose: 'Choose a type', process: 'Process status', noStatus: 'Process status is not available from this IsOS build.', search: 'Search types', undo: 'Undo', redo: 'Redo', disconnect: 'Disconnect line', hint: 'Left drag selects nodes; middle drag pans. Right-click to add or disconnect. Delete removes selected nodes.', savedRevision: 'Saved', activeRevision: 'Active' },
+  cn: { title: '节点图', connect: '连接本机 IsOS', add: '添加节点', refresh: '刷新', validate: '检查节点图', apply: '应用节点图', saved: '图库文件已应用，核心配置已生成。重启后使用此修订。', valid: '节点图有效。', dirty: '未保存更改', clean: '已保存', catalog: '节点库', inspector: '节点配置', diagnostics: '诊断', noSelection: '选择节点后编辑配置。', selectedCount: '个节点已选中', noNodes: '添加已注册的节点类型以开始。', id: '节点 ID', label: '标签', description: '描述', settings: '设置', gui: '可用时显示软件包服务窗口', details: '硬件与高级字段（JSON）', applyDetails: '应用字段', remove: '删除节点', capabilities: '能力', source: '来源', target: '目标', invalid: 'JSON 对象无效。', duplicate: '节点 ID 已存在或无效。', port: '从输出端口拖到类型相同的输入端口以连接。', robot: '机器人', name: '名称', lifecycle: '生命周期', type: '类型', disconnected: 'IsOS 节点图 API 不可用。', stale: '服务器上的图已更改。刷新后重试。', discard: '放弃未保存的更改？', choose: '选择类型', process: '进程状态', noStatus: '当前 IsOS 版本未提供进程状态。', search: '搜索类型', undo: '撤销', redo: '重做', disconnect: '断开连线', hint: '左键拖动框选节点，中键拖动平移。右键添加节点或断开连线。Delete 删除选中节点。', savedRevision: '已保存', activeRevision: '运行中' },
 } as const;
 
-export function FlowNode({ data, selected }: NodeProps<FlowData>): React.ReactElement {
+export function CoreStatusBadge({ name, core, lang }: { name: 'EI' | 'EOS'; core?: CoreReadinessEntry; lang: Language }): React.ReactElement {
+  const state = !core ? 'unknown' : core.enabled === false ? 'disabled' : core.ready ? 'ready' : 'attention';
+  const labels = lang === 'cn'
+    ? { ready: '就绪', attention: '需处理', disabled: '未启用', unknown: '未知', running: '运行中', stopped: '已停止', path: '程序路径', version: '版本', reason: '原因', action: '建议' }
+    : { ready: 'Ready', attention: 'Attention', disabled: 'Disabled', unknown: 'Unknown', running: 'Running', stopped: 'Stopped', path: 'Binary path', version: 'Version', reason: 'Reason', action: 'Action' };
+  return <details className={`node-graph-core-status node-graph-core-status--${state}`}>
+    <summary role="button" aria-label={`${name}: ${labels[state]}`}><span className="node-graph-core-status__dot" aria-hidden="true" />{name} · {labels[state]}</summary>
+    <div className="node-graph-core-status__detail" role="note"><strong>{name}</strong><p>{labels[state]} · {core ? (core.running ? labels.running : labels.stopped) : labels.unknown}</p><p>{labels.version}: {core?.version || '—'}</p><p>{labels.path}: <code>{core?.path || '—'}</code></p>{core?.reason && <p>{labels.reason}: {core.reason === 'pending_apply' ? (lang === 'cn' ? '图库文件已保存，等待应用以更新部署配置' : 'Graph file saved; Apply to update deployment configuration') : core.reason}</p>}{core?.action && <p>{labels.action}: {core.action}</p>}</div>
+  </details>;
+}
+
+export function FlowNode({ id, data, selected }: NodeProps<FlowData>): React.ReactElement {
   const { entry } = data;
+  const updateNodeInternals = useUpdateNodeInternals();
+  useLayoutEffect(() => { updateNodeInternals(id); }, [id, data.mirrored, updateNodeInternals]);
   const [open, setOpen] = useState(false);
-  const [configureOpen, setConfigureOpen] = useState(false);
   const [pendingEvent, setPendingEvent] = useState<string | null>(null);
   const [lastEventId, setLastEventId] = useState<string | null>(null);
   const [eventResult, setEventResult] = useState<ButtonActivationResult | null>(null);
   const [eventError, setEventError] = useState('');
   const [eventUncertain, setEventUncertain] = useState(false);
+  const [externalPayload, setExternalPayload] = useState('{}');
+  const [externalReply, setExternalReply] = useState('');
+  const [externalPending, setExternalPending] = useState(false);
   const [submittedFence, setSubmittedFence] = useState<string | null>(null);
   const eventPollAbort = useRef<AbortController | null>(null);
   const [location, setLocation] = useState({ left: 8, top: 8 });
@@ -52,13 +71,9 @@ export function FlowNode({ data, selected }: NodeProps<FlowData>): React.ReactEl
   const hoverTimer = useRef<number | null>(null);
   const pointerFocus = useRef(false);
   const cardRef = useRef<HTMLElement | null>(null);
-  const configCloseRef = useRef<HTMLButtonElement | null>(null);
-  const configureButtonRef = useRef<HTMLButtonElement | null>(null);
   const currentFence = data.currentRun && data.runId && data.activeRevision ? `${data.runId}:${data.activeRevision}` : null;
   const currentFenceRef = useRef(currentFence);
   currentFenceRef.current = currentFence;
-  useEffect(() => { if (configureOpen) configCloseRef.current?.focus(); }, [configureOpen]);
-  const closeConfigure = (): void => { setConfigureOpen(false); configureButtonRef.current?.focus(); };
   const place = (x: number, y: number): void => setLocation(clampInfoCard(x + 16, y + 16, 340, 340, window.innerWidth, window.innerHeight));
   const cancelHover = (): void => { if (hoverTimer.current !== null) { window.clearTimeout(hoverTimer.current); hoverTimer.current = null; } };
   const show = (x: number, y: number): void => { cancelHover(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); place(x, y); setOpen(true); };
@@ -69,6 +84,25 @@ export function FlowNode({ data, selected }: NodeProps<FlowData>): React.ReactEl
   useEffect(() => { if (!open) return; const clamp = (): void => setLocation((value) => clampInfoCard(value.left, value.top, 340, 340, window.innerWidth, window.innerHeight)); window.addEventListener('resize', clamp); return () => window.removeEventListener('resize', clamp); }, [open]);
   const labels = data.lang === 'cn' ? { info: '节点信息', type: '类型描述', instance: '实例描述', input: '输入', output: '输出', missing: '目录无描述', close: '关闭' } : { info: 'Node information', type: 'Type description', instance: 'Instance description', input: 'Inputs', output: 'Outputs', missing: 'No catalog description', close: 'Close' };
   const buttonNode = entry.node.node_type === 'isos.ui.button.trigger@v0.2';
+  const externalUiNode = entry.definition?.implementation?.interface === 'isos.ui.external.v1'
+    && entry.definition.implementation.version === '1'
+    && entry.definition.implementation.lifecycle_adapter === 'unix-socket-v1';
+  const interactionRoles = nodeInteractionRoles(entry.definition);
+  const roleOrder = ['publisher', 'subscriber', 'service', 'action'] as const;
+  const roleLabels = data.lang === 'cn'
+    ? { publisher: '发布', subscriber: '订阅', service: '服务', action: '动作' }
+    : { publisher: 'Publisher', subscriber: 'Subscriber', service: 'Service', action: 'Action' };
+  const callExternal = async (op: 'input' | 'read', port: string): Promise<void> => {
+    if (!data.currentRun || !data.runId || !data.activeRevision || externalPending) return;
+    const fence = `${data.runId}:${data.activeRevision}`;
+    setExternalPending(true); setExternalReply('');
+    try {
+      const payload: unknown = op === 'read' ? null : JSON.parse(externalPayload);
+      const reply = await callExternalNode({ schema_version: 1, node_path: entry.path, run_id: data.runId, active_revision: data.activeRevision, op, port, payload });
+      setExternalReply(currentFenceRef.current === fence ? JSON.stringify(reply.payload, null, 2) : (data.lang === 'cn' ? '运行已改变；旧结果已丢弃。' : 'Run changed; prior result discarded.'));
+    } catch (error) { setExternalReply(error instanceof Error ? error.message : String(error)); }
+    finally { setExternalPending(false); }
+  };
   const activate = async (): Promise<void> => {
     if (!buttonNode || !data.currentRun || !data.runId || !data.activeRevision || pendingEvent) return;
     const eventId = newButtonEventId();
@@ -120,26 +154,35 @@ export function FlowNode({ data, selected }: NodeProps<FlowData>): React.ReactEl
       setEventError(error instanceof Error ? error.message : String(error));
     } finally { eventPollAbort.current = null; setPendingEvent(null); }
   };
-  return <div className={`node-graph-card${selected ? ' node-graph-card--selected' : ''}${data.error ? ' node-graph-card--error' : ''}${data.mirrored ? ' node-graph-card--mirrored' : ''}`} style={nodeVisualStyle(entry.definition) as React.CSSProperties} tabIndex={0} aria-label={`${entry.node.label || entry.node.id}: ${entry.node.node_type}`} onMouseEnter={(event) => showAfterPause(event.clientX, event.clientY)} onMouseMove={(event) => showAfterPause(event.clientX, event.clientY)} onMouseLeave={hideSoon} onPointerDown={() => { pointerFocus.current = true; cancelHover(); setOpen(false); }} onPointerUp={() => { pointerFocus.current = false; }} onPointerCancel={() => { pointerFocus.current = false; }} onFocus={(event) => { if (pointerFocus.current || event.target !== event.currentTarget) return; const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }} onBlur={(event) => { if (!cardRef.current?.contains(event.relatedTarget as globalThis.Node)) hideSoon(); }} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}>
+  return <div className={`node-graph-card${interactionRoles.map((role) => ` node-graph-card--${role}`).join('')}${selected ? ' node-graph-card--selected' : ''}${data.error ? ' node-graph-card--error' : ''}${data.mirrored ? ' node-graph-card--mirrored' : ''}`} style={nodeVisualStyle(entry.definition) as React.CSSProperties} tabIndex={0} role="group" aria-label={`${entry.node.label || entry.node.id}: ${entry.node.node_type}. ${data.lang === 'cn' ? '按 Enter 编辑' : 'Press Enter to edit'}`} onMouseEnter={(event) => showAfterPause(event.clientX, event.clientY)} onMouseMove={(event) => showAfterPause(event.clientX, event.clientY)} onMouseLeave={hideSoon} onPointerDown={() => { pointerFocus.current = true; cancelHover(); setOpen(false); }} onPointerUp={() => { pointerFocus.current = false; }} onPointerCancel={() => { pointerFocus.current = false; }} onFocus={(event) => { if (pointerFocus.current || event.target !== event.currentTarget) return; const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }} onBlur={(event) => { if (!cardRef.current?.contains(event.relatedTarget as globalThis.Node)) hideSoon(); }} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } else if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); event.stopPropagation(); setOpen(false); data.onSelect?.(entry.path); } }}>
+    {interactionRoles.length > 0 && <div className="node-graph-card__role-strip" aria-label={interactionRoles.map((role) => roleLabels[role]).join(', ')}>{roleOrder.map((role) => <span key={role} className={`node-graph-card__role-slot node-graph-card__role-slot--${role}${interactionRoles.includes(role) ? ' node-graph-card__role-slot--active' : ''}`} title={roleLabels[role]}>{roleLabels[role].slice(0, 1)}</span>)}</div>}
     <div className="node-graph-card__heading"><small>{entry.path.split('/')[1]} / {entry.path.split('/')[2]}</small><span>{entry.node.node_type.split('@').pop() || 'v0.2'}</span></div>
-    {data.lane && <small className="node-graph-card__lane">{data.lane === 'forward' ? (data.lang === 'cn' ? '前向 · 异步命令 →' : 'Forward · async command →') : (data.lang === 'cn' ? '← 返回 · 最新状态' : '← Return · latest state')}</small>}<strong>{entry.node.label || entry.node.id}</strong><button type="button" className="node-graph-card__info nodrag nowheel" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} aria-expanded={open} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); show(bounds.right, bounds.top); }}>ⓘ</button>
-    <div className="node-graph-card__actions nodrag nowheel"><button ref={configureButtonRef} type="button" aria-expanded={configureOpen} aria-label={`${data.lang === 'cn' ? '配置' : 'Configure'}: ${entry.node.label || entry.node.id}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (configureOpen) { closeConfigure(); return; } const bounds = event.currentTarget.getBoundingClientRect(); place(bounds.right, bounds.top); setOpen(false); setConfigureOpen(true); }}>{data.lang === 'cn' ? '配置' : 'Configure'}</button>{buttonNode && <button type="button" disabled={!data.currentRun || !!pendingEvent} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void activate(); }}>{pendingEvent ? (data.lang === 'cn' ? '发送中…' : 'Sending…') : (data.lang === 'cn' ? '触发' : 'Activate')}</button>}</div>
+    {data.lane && <small className="node-graph-card__lane">{data.lane === 'forward' ? (data.lang === 'cn' ? '前向 · 异步命令 →' : 'Forward · async command →') : (data.lang === 'cn' ? '← 返回 · 最新状态' : '← Return · latest state')}</small>}<strong>{entry.node.label || entry.node.id}</strong>
+    {buttonNode && <div className="node-graph-card__actions nodrag nowheel"><small className="node-graph-card__command-route">{data.lang === 'cn' ? 'UI → EI · 激活事件' : 'UI → EI · activation event'}</small><button type="button" disabled={!data.currentRun || !!pendingEvent} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void activate(); }}>{pendingEvent ? (data.lang === 'cn' ? '发送中…' : 'Sending…') : (data.lang === 'cn' ? '触发' : 'Activate')}</button></div>}
+    {(/^(?:eos\.dispatcher|isos\.eos_dispatcher)\.primitive_/.test(entry.node.node_type)) && <div className="node-graph-card__command-route node-graph-card__command-route--eos">{data.lang === 'cn' ? 'UI → EOS · Dispatcher 控制端点' : 'UI → EOS · Dispatcher control endpoint'}</div>}
     {buttonNode && (eventResult || eventError) && <small className="node-graph-card__result" role={eventError || eventUncertain || submittedFence !== currentFence ? 'alert' : 'status'}>{lastEventId && <code>{lastEventId}</code>} · {submittedFence !== currentFence ? (data.lang === 'cn' ? '旧运行的结果；当前状态已改变' : 'Prior run result; current state changed') : eventError ? `${eventUncertain ? (data.lang === 'cn' ? '结果不确定；请勿自动重试' : 'Outcome uncertain; do not retry automatically') : ''} · ${eventError}` : eventResult ? `${eventResult.status}${eventResult.joint_positions_rad ? ` · ${eventResult.joint_positions_rad.join(', ')} rad` : ''}${eventUncertain ? (data.lang === 'cn' ? ' · 结果不确定；请勿自动重试' : ' · Outcome uncertain; do not retry automatically') : ''}` : ''}</small>}
     {entry.node.node_type === 'isos.ui.monitor.arm@v0.2' && <ArmMonitorView lang={data.lang} reading={data.monitorReading || { snapshot: null, receivedAt: null, error: '' }} expectedRunId={data.runId} expectedRevision={data.activeRevision} compact />}
-    <div className="node-graph-card__badges"><span>{entry.definition?.core || 'unknown'}</span><span>{entry.definition?.kind || 'unknown'}</span>{entry.node.package && <span>{entry.node.package.id}@{entry.node.package.version}</span>}</div>
+    {externalUiNode && <div className="node-graph-card__external nodrag nowheel">
+      {entry.definition?.inputs.map((port) => <div key={`input:${port.name}`}><label>{port.name} · {port.data_type}<textarea aria-label={`${port.name} JSON`} value={externalPayload} onChange={(event) => setExternalPayload(event.target.value)} rows={3} /></label><button type="button" disabled={!data.currentRun || externalPending} onClick={() => void callExternal('input', port.name)}>{data.lang === 'cn' ? '发送' : 'Send'}</button></div>)}
+      {entry.definition?.outputs.map((port) => <button key={`read:${port.name}`} type="button" disabled={!data.currentRun || externalPending} onClick={() => void callExternal('read', port.name)}>{data.lang === 'cn' ? `读取 ${port.name}` : `Read ${port.name}`}</button>)}
+      {externalReply && <pre role="status">{externalReply}</pre>}
+    </div>}
+    <div className="node-graph-card__badges"><span>{entry.definition?.core || 'unknown'}</span><span>{entry.definition?.kind || 'unknown'}</span>{interactionRoles.map((role) => <span key={role} className={`node-graph-card__role node-graph-card__role--${role}`}>{roleLabels[role]}</span>)}{entry.node.package && <span>{entry.node.package.id}@{entry.node.package.version}</span>}</div>
     <div className="node-graph-card__ports">{!entry.definition && <span className="node-graph-card__no-ports" role="alert">{data.lang === 'cn' ? '目录类型不可用；无法显示端口' : 'Catalog type unavailable; ports cannot be shown'}</span>}{entry.definition && !entry.definition.inputs.length && !entry.definition.outputs.length && <span className="node-graph-card__no-ports">{entry.node.node_type.endsWith('.health@v0.2') ? (data.lang === 'cn' ? '无图端口 · 归属方健康' : 'No graph ports · owner health') : (data.lang === 'cn' ? '无图端口' : 'No graph ports')}</span>}<div>{entry.definition?.inputs.map((port) => <div className={`node-graph-card__port ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><Handle type="target" position={data.mirrored ? Position.Right : Position.Left} id={`in:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /><span>{port.name}{port.required ? ' *' : ''}</span><small>{port.data_type}</small></div>)}</div><div>{entry.definition?.outputs.map((port) => <div className={`node-graph-card__port node-graph-card__port--output ${portVisual(port).className}`} style={portVisual(port).style as React.CSSProperties} key={port.name}><span>{port.name}</span><small>{port.data_type}</small><Handle type="source" position={data.mirrored ? Position.Left : Position.Right} id={`out:${port.name}`} title={`${port.name}: ${port.data_type} · ${port.transport || 'in_process'} · ${port.delivery_mode || 'snapshot'}`} /></div>)}</div></div>
     {open && createPortal(<aside ref={cardRef} className="node-graph-info-card nodrag nowheel" role="note" aria-label={`${labels.info}: ${entry.node.label || entry.node.id}`} style={location} onMouseEnter={(event) => { event.stopPropagation(); if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }} onMouseLeave={(event) => { event.stopPropagation(); hideSoon(); }} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.stopPropagation(); } }}><button type="button" onClick={() => setOpen(false)} aria-label={labels.close}>×</button><h3>{entry.node.label || entry.node.id}</h3><code>{entry.node.node_type}</code><p><strong>{labels.type}:</strong> {entry.definition?.description || labels.missing}</p><p><strong>{labels.instance}:</strong> {entry.node.description || '—'}</p>{([['input', entry.definition?.inputs], ['output', entry.definition?.outputs]] as const).map(([direction, ports]) => <section key={direction}><h4>{labels[direction]}</h4><ul>{ports?.map((port) => { const payload = data.dataTypes.find((item) => item.id === port.data_type); const schema = payload?.schema; const units = [...new Set(Object.values(schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))]; return <li key={port.name}><code>{port.name}</code> · {port.data_type}{units.length ? ` · ${units.join(', ')}` : ''}{port.description ? ` · ${port.description}` : ''}{port.transport ? ` · ${port.transport}` : ''}{port.delivery_mode ? ` · ${port.delivery_mode}` : ''}{port.contract ? ` · ${port.contract.owner}/${port.contract.id}@${port.contract.version}` : ' · static declaration'}{payload ? ` · ${payload.codec} · ${payload.media_type} · ${payload.max_payload_bytes} bytes · fields: ${Object.keys(schema?.properties || {}).join(', ') || '—'}` : ''}</li>; })}</ul></section>)}</aside>, document.body)}
-    {configureOpen && createPortal(<aside className="node-graph-config-card nodrag nowheel" role="dialog" aria-label={`${data.lang === 'cn' ? '配置' : 'Configure'}: ${entry.node.label || entry.node.id}`} style={location} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { closeConfigure(); event.stopPropagation(); } }}><button ref={configCloseRef} type="button" className="node-graph-config-card__close" onClick={closeConfigure} aria-label={labels.close}>×</button><h3>{entry.node.label || entry.node.id}</h3><QuickNodeSettings data={data} /></aside>, document.body)}
+
   </div>;
 }
 const nodeTypes = { profile: FlowNode };
 export function EdgeIdlPanel({ edge, entries, dataTypes = [], diagnostics, validated, processStatus, lang }: { edge: Edge; entries: GraphNode[]; dataTypes?: DataTypeDefinition[]; diagnostics: NodeGraphDiagnostic[]; validated: boolean; processStatus: ProcessStatus | null; lang: Language }): React.ReactElement {
   const { sourceType, targetType, sourcePort, targetPort, sourceIdl } = edgeContracts(entries, edge, dataTypes);
+  const binding = entries.find((item) => sameNodePath(item.path, edge.target))?.node.inputs?.[String(edge.targetHandle).replace(/^in:/, '')];
+  const desired = binding ? portInput(binding).desired_rate_hz : undefined;
   const declaration = sourcePort?.delivery_mode === 'declaration' && targetPort?.delivery_mode === 'declaration';
   const protocol = sourcePort?.contract;
   const units = [...new Set(Object.values(sourceIdl?.schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))];
   const issues = validated ? edgeInputDiagnostics({ ...edge, inputIndex: edge.data?.inputIndex, inputCount: edge.data?.inputCount }, diagnostics) : [];
-  return <section className="node-graph-edge-idl"><h2>{declaration ? (lang === 'cn' ? '静态拓扑连接' : 'Static topology link') : (lang === 'cn' ? '实时数据连接' : 'Live data connection')}</h2><p><code>{edge.source}.{sourcePort?.name || '—'}</code> → <code>{edge.target}.{targetPort?.name || '—'}</code></p>{declaration ? <p>{lang === 'cn' ? '此连接只声明节点顺序，不传输数据。' : 'This link declares node order and carries no data.'}</p> : <><p>{lang === 'cn' ? '通道' : 'Channel'}: {sourcePort?.transport || '—'} · {lang === 'cn' ? '传送方式' : 'Delivery'}: {sourcePort?.delivery_mode || '—'}</p><p>{lang === 'cn' ? '协议' : 'Protocol'}: {protocol ? `${protocol.owner}/${protocol.id}@${protocol.version}` : '—'}</p><p>{lang === 'cn' ? '数据类型' : 'Payload type'}: {sourceType || '—'}{units.length ? ` · ${units.join(', ')}` : ''}</p>{sourceIdl && <p>{sourceIdl.codec} · {sourceIdl.media_type} · {sourceIdl.max_payload_bytes} bytes · {lang === 'cn' ? '字段' : 'Fields'}: {Object.keys(sourceIdl.schema?.properties || {}).join(', ') || '—'}</p>}</>}{sourceType !== targetType && <p role="alert">{lang === 'cn' ? '端口类型不匹配。' : 'Port types do not match.'}</p>}{issues.map((issue, index) => <p role="alert" key={index}>{issue.message}</p>)}<p>{lang === 'cn' ? '部署状态' : 'Deployment state'}: {processStatus?.state || '—'}</p></section>;
+  return <section className="node-graph-edge-idl"><h2>{declaration ? (lang === 'cn' ? '静态拓扑连接' : 'Static topology link') : (lang === 'cn' ? '实时数据连接' : 'Live data connection')}</h2><p><code>{edge.source}.{sourcePort?.name || '—'}</code> → <code>{edge.target}.{targetPort?.name || '—'}</code></p>{declaration ? <p>{lang === 'cn' ? '此连接只声明节点顺序，不传输数据。' : 'This link declares node order and carries no data.'}</p> : <><p>{lang === 'cn' ? '通道' : 'Channel'}: {sourcePort?.transport || '—'} · {lang === 'cn' ? '传送方式' : 'Delivery'}: {sourcePort?.delivery_mode || '—'}</p><p>{lang === 'cn' ? '源官方频率' : 'Official source frequency'}: {typeof sourcePort?.frequency_hz === 'number' ? `${sourcePort.frequency_hz} Hz` : '—'}</p><p>{lang === 'cn' ? '目标输入期望范围' : 'Destination input desired range'}: {desired?.min ?? '—'}–{desired?.max ?? '—'} Hz</p><p>{lang === 'cn' ? '协议' : 'Protocol'}: {protocol ? `${protocol.owner}/${protocol.id}@${protocol.version}` : '—'}</p><p>{lang === 'cn' ? '数据类型' : 'Payload type'}: {sourceType || '—'}{units.length ? ` · ${units.join(', ')}` : ''}</p>{sourceIdl && <p>{sourceIdl.codec} · {sourceIdl.media_type} · {sourceIdl.max_payload_bytes} bytes · {lang === 'cn' ? '字段' : 'Fields'}: {Object.keys(sourceIdl.schema?.properties || {}).join(', ') || '—'}</p>}</>}{sourceType !== targetType && <p role="alert">{lang === 'cn' ? '端口类型不匹配。' : 'Port types do not match.'}</p>}{issues.map((issue, index) => <p role="alert" key={index}>{issue.message}</p>)}<p>{lang === 'cn' ? '部署状态' : 'Deployment state'}: {processStatus?.state || '—'}</p></section>;
 }
 const DETAIL_FIELDS = ['frame_id', 'joint_names', 'adapter', 'health_timing', 'observation', 'movement', 'references', 'service_bindings'] as const;
 
@@ -160,6 +203,10 @@ export function parseSetting(raw: string, dataType: string): unknown {
   return raw;
 }
 
+export function adapterSettingDataType(name: string): 'positive_number' | 'string' {
+  return name === 'frequency_hz' ? 'positive_number' : 'string';
+}
+
 function SettingEditor({ name, dataType, required, value, onChange, description, unit, min, max, choices, lang = 'en' }: { name: string; dataType: string; required: boolean; value: unknown; onChange: (value: unknown) => void; description?: string; unit?: string; min?: number; max?: number; choices?: string[]; lang?: Language }): React.ReactElement {
   const helpId = React.useId();
   const [draft, setDraft] = useState(() => settingValue(value, dataType));
@@ -171,38 +218,36 @@ function SettingEditor({ name, dataType, required, value, onChange, description,
   return <label className="node-graph-setting"><span>{name}{required ? ' *' : ''}</span>{dataType === 'endpoint' ? <><pre aria-describedby={helpId}>{draft}</pre><small>{lang === 'cn' ? '端点由归属方管理；请在归属方配置中修改。' : 'Owner-managed endpoint; edit the owning configuration.'}</small></> : effectiveChoices?.length ? <select aria-describedby={helpId} value={draft} onChange={(event) => { setDraft(event.target.value); onChange(dataType === 'boolean' ? event.target.value === 'true' : event.target.value); }}><option value="">—</option>{!effectiveChoices.includes(draft) && draft && <option value={draft}>{draft}</option>}{effectiveChoices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}</select> : ['string_array', 'string_table', 'array', 'object'].includes(dataType) ? <textarea aria-describedby={helpId} rows={dataType === 'string_table' || dataType === 'object' ? 4 : 3} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} /> : <input aria-describedby={helpId} type={dataType?.includes('integer') || dataType === 'positive_number' || dataType === 'number' ? 'number' : 'text'} step={dataType === 'positive_number' || dataType === 'number' ? 'any' : undefined} min={min} max={max} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />}<small id={helpId} className="node-graph-setting__metadata">{guidance}{min !== undefined || max !== undefined ? ` · ${min ?? '−∞'}…${max ?? '+∞'}` : ''}</small>{error && <small role="alert" className="node-graph-error">{error}</small>}</label>;
 }
 
-function QuickNodeSettings({ data }: { data: FlowData }): React.ReactElement {
-  const { entry, lang } = data;
-  const fields = entry.definition?.settings || [];
-  const basic = fields.filter((field) => field.required && field.default === undefined);
-  const advanced = fields.filter((field) => !basic.includes(field));
-  const change = (name: string, value: unknown): void => {
-    const settings = { ...entry.node.settings };
-    const field = fields.find((candidate) => candidate.name === name);
-    if (value === undefined || value === '' && !field?.required || field?.default !== undefined && JSON.stringify(value) === JSON.stringify(field.default)) delete settings[name]; else settings[name] = value;
-    data.onSettingsChange?.(entry.path, settings);
-  };
-  const renderField = (field: NodeTypeDefinition['settings'][number]): React.ReactElement => {
-    const group = settingOptionGroup(data.options || null, entry.path, field.name);
-    const effective = entry.node.settings?.[field.name] ?? field.default;
-    const overridden = Object.prototype.hasOwnProperty.call(entry.node.settings || {}, field.name);
-    return <div key={field.name} className="node-graph-config-card__field">
-      {group ? <CatalogSelector group={group} label={field.name} value={String(effective ?? '')} lang={lang} pin={entry.node.package} help={field.description} onChange={(value) => change(field.name, value)} /> : field.selector ? <p role="status">{lang === 'cn' ? '选项尚未就绪；请刷新拥有方选项。' : 'Options are unavailable; refresh owner options.'}</p> : <SettingEditor name={field.name} dataType={field.data_type} required={field.required} description={field.description} unit={field.unit} min={field.min} max={field.max} choices={field.choices} value={effective} lang={lang} onChange={(value) => change(field.name, value)} />}
-      {advanced.includes(field) && <div className="node-graph-config-card__default"><small>{field.default === undefined ? (overridden ? (lang === 'cn' ? '已设置可选值' : 'Optional override') : (lang === 'cn' ? '未设置可选值' : 'Optional, unset')) : `${overridden ? (lang === 'cn' ? '已覆盖默认值' : 'Override') : (lang === 'cn' ? '使用默认值' : 'Default')}: ${settingValue(field.default, field.data_type)}`}</small>{overridden && <button type="button" onClick={() => change(field.name, undefined)}>{lang === 'cn' ? '恢复默认' : 'Reset to default'}</button>}</div>}
-    </div>;
-  };
-  return <fieldset disabled={data.readOnly} className="node-graph-readonly-fieldset"><h4>{lang === 'cn' ? '基本设置' : 'Basic'}</h4>{basic.map(renderField)}{entry.definition?.lifecycle === 'adapter' && <HardwareFields mode="basic" node={entry.node} path={entry.path} definition={entry.definition} options={data.options || null} lang={lang} onChange={(change) => data.onNodeChange?.(entry.path, change)} />}{!basic.length && entry.definition?.lifecycle !== 'adapter' && <p>{lang === 'cn' ? '无需填写；节点已就绪。' : 'Nothing required; this node is ready.'}</p>}<details><summary>{lang === 'cn' ? '高级设置' : 'Advanced'}</summary>{advanced.length ? advanced.map(renderField) : <p>{lang === 'cn' ? '没有其他目录设置。' : 'No additional catalog settings.'}</p>}{entry.definition?.lifecycle === 'adapter' && <HardwareFields mode="advanced" node={entry.node} path={entry.path} definition={entry.definition} options={data.options || null} lang={lang} onChange={(change) => data.onNodeChange?.(entry.path, change)} />}</details></fieldset>;
-}
-
-function HardwareFields({ node, path, definition, options, lang, onChange, mode = 'all' }: { node: NodeInstance; path: string; definition: NodeTypeDefinition; options: NodeOptions | null; lang: Language; onChange: (change: Partial<NodeInstance>) => void; mode?: 'all' | 'basic' | 'advanced' }): React.ReactElement {
+function HardwareFields({ node, path, definition, options, optionsCurrent = true, adapterPreviewAvailable = false, lang, onChange, mode = 'all' }: { node: NodeInstance; path: string; definition: NodeTypeDefinition; options: NodeOptions | null; optionsCurrent?: boolean; adapterPreviewAvailable?: boolean; lang: Language; onChange: (change: Partial<NodeInstance>) => void; mode?: 'all' | 'basic' | 'advanced' }): React.ReactElement {
   const adapter = node.adapter || { type: '', settings: {} };
   const adapterSettings = adapter.settings || {};
-  const setAdapter = (key: string, value: unknown): void => onChange({ adapter: { ...adapter, settings: { ...adapterSettings, [key]: value } } });
+  const setAdapter = (key: string, value: unknown): void => {
+    if (key === 'service_instance') {
+      onChange({ adapter: { ...adapter, settings: { service_instance: value } } });
+      return;
+    }
+    if (key === 'device_id') {
+      const choice = settingOptionGroup(options, path, 'adapter.settings.device_id')?.options.find((item) => item.value === value && item.available);
+      const profile = choice?.profile;
+      if (profile && (!adapter.type || profile.adapter?.type === adapter.type)) {
+        onChange({ adapter: { ...adapter, ...profile.adapter, settings: {
+          ...adapterSettings, ...profile.adapter?.settings, service_instance: adapterSettings.service_instance,
+        } }, frame_id: profile.frame_id, capabilities: profile.capabilities,
+          health_timing: profile.health_timing, observation: profile.observation,
+          movement: undefined, joint_names: undefined });
+        return;
+      }
+    }
+    onChange({ adapter: { ...adapter, settings: { ...adapterSettings, [key]: value } } });
+  };
   const adapterTypeGroup = settingOptionGroup(options, path, 'adapter.type');
-  const deviceGroup = settingOptionGroup(options, path, 'adapter.settings.device_id');
-  const simulatorGroup = settingOptionGroup(options, path, 'adapter.settings.simulator_node');
-  const ownerDeviceOptions = adapter.type === 'mujoco-v2' || !!deviceGroup;
-  const ownerSimulatorOptions = adapter.type === 'mujoco-v2' || !!simulatorGroup;
+  const adapterSettingGroups = (options?.setting_options || []).filter((group) => group.node_path === path && group.setting.startsWith('adapter.settings.'));
+  const adapterSettingNames = [...new Set([
+    ...Object.keys(adapterSettings).filter((key) => key !== 'socket_path'),
+    ...adapterSettingGroups.map((group) => group.setting.slice('adapter.settings.'.length)),
+    ...(adapter.package ? ['service_instance'] : []),
+    ...(definition.kind === 'camera' && definition.package ? ['service_instance', 'device_id', 'frequency_hz'] : []),
+  ])].sort();
   const timing = node.health_timing;
   const observation = node.observation;
   const movement = node.movement;
@@ -210,10 +255,11 @@ function HardwareFields({ node, path, definition, options, lang, onChange, mode 
   return <div className="node-graph-hardware-fields">
     {mode !== 'advanced' && <>
     <h3>Adapter</h3>
-    {adapterTypeGroup ? <CatalogSelector group={adapterTypeGroup} label={lang === 'cn' ? '适配器族' : 'Adapter family'} value={adapter.type} lang={lang} onChange={(value) => onChange({ adapter: { ...adapter, type: value } })} /> : <p role="status" className="node-graph-error">{lang === 'cn' ? '适配器选项尚未就绪。请检查 EOS 服务。' : 'Adapter options are unavailable. Check the EOS service.'}</p>}
-    {(['backend', 'socket_path'] as const).map((key) => <SettingEditor key={`${node.id}:${key}`} name={key} dataType="string" required value={adapterSettings[key]} onChange={(value) => setAdapter(key, value)} />)}
-    {deviceGroup ? <CatalogSelector group={deviceGroup} pin={node.adapter?.package} label="device_id" value={String(adapterSettings.device_id || '')} lang={lang} onChange={(value) => setAdapter('device_id', value)} /> : ownerDeviceOptions ? <p role="status" className="node-graph-error">{lang === 'cn' ? '设备选项尚未就绪。请检查 EOS 服务。' : 'Device options are unavailable. Check the EOS service.'}</p> : <SettingEditor name="device_id" dataType="string" required value={adapterSettings.device_id} onChange={(value) => setAdapter('device_id', value)} />}
-    {simulatorGroup ? <CatalogSelector group={simulatorGroup} pin={node.adapter?.package} label="simulator_node" value={String(adapterSettings.simulator_node || '')} lang={lang} onChange={(value) => setAdapter('simulator_node', value)} /> : ownerSimulatorOptions ? <p role="status" className="node-graph-error">{lang === 'cn' ? '模拟器节点选项尚未就绪。请检查 EOS 服务。' : 'Simulator node options are unavailable. Check the EOS service.'}</p> : adapterSettings.simulator_node !== undefined ? <SettingEditor name="simulator_node" dataType="string" required value={adapterSettings.simulator_node} onChange={(value) => setAdapter('simulator_node', value)} /> : null}
+    {adapterTypeGroup ? <CatalogSelector group={adapterTypeGroup} disabled={!optionsCurrent && !adapterPreviewAvailable} label={lang === 'cn' ? '适配器族' : 'Adapter family'} value={adapter.type} lang={lang} onChange={(value) => onChange({ adapter: { ...adapter, type: value, ...(definition.package ? { package: definition.package } : {}) } })} /> : <p role="status" className={options ? 'node-graph-error' : undefined}>{options ? (lang === 'cn' ? '适配器选项不可用。请检查 EOS 服务。' : 'Adapter options are unavailable. Check the EOS service.') : (lang === 'cn' ? '正在加载适配器选项…' : 'Loading adapter choices…')}</p>}
+    {adapterSettingNames.map((key) => {
+      const group = settingOptionGroup(options, path, `adapter.settings.${key}`);
+      return group ? <CatalogSelector key={key} group={group} disabled={!optionsCurrent} pin={adapter.package} label={key} value={String(adapterSettings[key] || '')} lang={lang} onChange={(value) => setAdapter(key, value)} /> : definition.kind === 'camera' && definition.package && (key === 'service_instance' || key === 'device_id') ? <p key={key} role="status" className={options ? 'node-graph-error' : undefined}>{options ? (lang === 'cn' ? `${key} 的已验证选项不可用。请检查软件包配置。` : `Verified ${key} choices are unavailable. Check package configuration.`) : (lang === 'cn' ? `正在加载 ${key} 选项…` : `Loading ${key} choices…`)}</p> : <SettingEditor key={key} name={key} dataType={adapterSettingDataType(key)} required={key === 'service_instance' || (key === 'frequency_hz' && definition.kind === 'camera' && !!definition.package)} max={key === 'frequency_hz' ? 1000 : undefined} value={adapterSettings[key]} onChange={(value) => setAdapter(key, value)} />;
+    })}
     <SettingEditor name="frame_id" dataType="string" required value={node.frame_id} onChange={(value) => onChange({ frame_id: String(value) })} />
     {definition.kind === 'manipulator' && <SettingEditor name="joint_names" dataType="string_array" required value={node.joint_names} onChange={(value) => onChange({ joint_names: value as string[] })} />}
     </>}
@@ -228,7 +274,25 @@ function HardwareFields({ node, path, definition, options, lang, onChange, mode 
   </div>;
 }
 
-function NodeInspector({ entry, entries, lang, options, runId, activeRevision, currentRun, onChange, onBind, onRename, onRemove }: { entry: GraphNode; entries: GraphNode[]; lang: Language; options: NodeOptions | null; runId: string | null; activeRevision: string | null; currentRun: boolean; onChange: (change: Partial<NodeInstance>) => void; onBind: (target: string) => void; onRename: (id: string) => void; onRemove: () => void }): React.ReactElement {
+function PortRateEditor({ entry, entries, lang, onChange }: { entry: GraphNode; entries: GraphNode[]; lang: Language; onChange: (input: string, rate: { min?: number; max?: number }) => void }): React.ReactElement {
+  const [drafts, setDrafts] = useState<Record<string, { min: string; max: string }>>({});
+  const [error, setError] = useState<Record<string, string>>({});
+  const cn = lang === 'cn';
+  const bindings = Object.entries(entry.node.inputs || {});
+  useEffect(() => { setDrafts(Object.fromEntries(bindings.map(([name, binding]) => { const rate = portInput(binding).desired_rate_hz; return [name, { min: rate?.min === undefined ? '' : String(rate.min), max: rate?.max === undefined ? '' : String(rate.max) }]; }))); setError({}); }, [entry.node.inputs]);
+  const commit = (name: string): void => {
+    const draft = drafts[name]; if (!draft) return;
+    const min = draft.min.trim() ? Number(draft.min) : undefined;
+    const max = draft.max.trim() ? Number(draft.max) : undefined;
+    if (min !== undefined && (!Number.isFinite(min) || min <= 0) || max !== undefined && (!Number.isFinite(max) || max <= 0) || min !== undefined && max !== undefined && min > max) {
+      setError((current) => ({ ...current, [name]: cn ? '期望频率必须为有限正数，且最小值不能大于最大值。' : 'Desired rates must be finite and positive, with minimum no greater than maximum.' })); return;
+    }
+    setError((current) => ({ ...current, [name]: '' })); onChange(name, { ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) });
+  };
+  return <section className="node-graph-port-rates"><h3>{cn ? '输入端口期望频率' : 'Input port desired rates'}</h3>{bindings.map(([name, binding]) => <fieldset key={name}><legend>{name}</legend><p>{cn ? '源官方频率' : 'Official source frequency'}: {inputSources(binding).map((source) => { const producer = entries.find((item) => sameNodePath(item.path, source.node)); const rate = producer?.definition?.outputs.find((port) => port.name === source.output)?.frequency_hz; return `${source.node}.${source.output}: ${typeof rate === 'number' ? `${rate} Hz` : '—'}`; }).join(', ')}</p>{(['min', 'max'] as const).map((bound) => <label key={bound}>{bound === 'min' ? cn ? '期望最小值（Hz）' : 'Desired minimum (Hz)' : cn ? '期望最大值（Hz）' : 'Desired maximum (Hz)'}<input type="number" min="0" step="any" value={drafts[name]?.[bound] ?? ''} onChange={(event) => setDrafts((current) => ({ ...current, [name]: { ...current[name], [bound]: event.target.value } }))} onBlur={() => commit(name)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>)}{error[name] && <p role="alert" className="node-graph-error">{error[name]}</p>}</fieldset>)}</section>;
+}
+
+function NodeInspector({ entry, entries, dataTypes, lang, options, optionsCurrent = true, optionsFailed = false, adapterPreviewAvailable = false, runId, activeRevision, currentRun, onChange, onBind, onRename, onRemove }: { entry: GraphNode; entries: GraphNode[]; dataTypes: DataTypeDefinition[]; lang: Language; options: NodeOptions | null; optionsCurrent?: boolean; optionsFailed?: boolean; adapterPreviewAvailable?: boolean; runId: string | null; activeRevision: string | null; currentRun: boolean; onChange: (change: Partial<NodeInstance>) => void; onBind: (target: string) => void; onRename: (id: string) => void; onRemove: () => void }): React.ReactElement {
   const copy = COPY[lang];
   const [id, setId] = useState(entry.node.id);
   const [raw, setRaw] = useState('');
@@ -237,12 +301,14 @@ function NodeInspector({ entry, entries, lang, options, runId, activeRevision, c
   useEffect(() => { setId(entry.node.id); setRaw(JSON.stringify(Object.fromEntries(Object.entries(entry.node).filter(([key]) => (DETAIL_FIELDS as readonly string[]).includes(key))), null, 2)); setError(''); }, [entry.path, entry.node]);
   const commitDetails = (): void => { try { const parsed: unknown = JSON.parse(raw); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object' || Object.keys(parsed).some((key) => !(DETAIL_FIELDS as readonly string[]).includes(key))) throw new Error(copy.invalid); const details = parsed as Partial<NodeInstance>; for (const field of DETAIL_FIELDS) if (!(field in details) && field in entry.node) Object.assign(details, { [field]: undefined }); onChange(details); setError(''); } catch { setError(copy.invalid); } };
   return <section className="node-graph-inspector">
-    <h2>{copy.inspector}</h2><p><strong>{lang === 'cn' ? '类型描述' : 'Type description'}:</strong> {entry.definition?.description || (lang === 'cn' ? '当前目录没有类型描述。' : 'No type description in this catalog.')}</p><p><strong>{copy.type}:</strong> {entry.node.node_type}</p><p><strong>{copy.lifecycle}:</strong> {entry.definition?.lifecycle || '—'}</p>
+    <h2>{copy.inspector}</h2>{(entry.definition?.lifecycle === 'adapter' || entry.definition?.settings.some((field) => field.selector)) && !optionsCurrent && <p role={optionsFailed ? 'alert' : 'status'}>{optionsFailed ? (lang === 'cn' ? '选项刷新失败。请检查拥有方服务并刷新。' : 'Choice refresh failed. Check the owner service and refresh.') : (lang === 'cn' ? '选项正在刷新；旧选项暂不可用。' : 'Refreshing choices; previous choices are temporarily unavailable.')}</p>}<p><strong>{lang === 'cn' ? '类型描述' : 'Type description'}:</strong> {entry.definition?.description || (lang === 'cn' ? '当前目录没有类型描述。' : 'No type description in this catalog.')}</p><p><strong>{copy.type}:</strong> {entry.node.node_type}</p><p><strong>{copy.lifecycle}:</strong> {entry.definition?.lifecycle || '—'}</p>
+    <details className="node-graph-port-details"><summary>{lang === 'cn' ? '端口与数据契约' : 'Ports and data contracts'}</summary>{([['input', entry.definition?.inputs], ['output', entry.definition?.outputs]] as const).map(([direction, ports]) => <section key={direction}><h3>{direction === 'input' ? (lang === 'cn' ? '输入' : 'Inputs') : (lang === 'cn' ? '输出' : 'Outputs')}</h3><ul>{ports?.map((port) => { const payload = dataTypes.find((item) => item.id === port.data_type); const fields = Object.keys(payload?.schema?.properties || {}); const units = [...new Set(Object.values(payload?.schema?.properties || {}).map((field) => field['x-unit']).filter(Boolean))]; return <li key={port.name}><code>{port.name}</code> · {port.data_type}{port.description ? ` · ${port.description}` : ''}{port.transport ? ` · ${port.transport}` : ''}{port.delivery_mode ? ` · ${port.delivery_mode}` : ''}{typeof port.frequency_hz === 'number' ? ` · ${port.frequency_hz} Hz` : ''}{port.contract ? ` · ${port.contract.owner}/${port.contract.id}@${port.contract.version}` : ''}{payload ? ` · ${payload.codec} · ${payload.media_type} · ${payload.max_payload_bytes} bytes · ${lang === 'cn' ? '字段' : 'fields'}: ${fields.join(', ') || '—'}` : ''}{units.length ? ` · ${units.join(', ')}` : ''}</li>; })}</ul></section>)}</details>
+    <details className="node-graph-debug-details"><summary>{lang === 'cn' ? '调试数据（所有节点）' : 'Debug data (all nodes)'}</summary><p>{lang === 'cn' ? '当前图中的节点实例。未填写的字段保持未设置；类型声明与软件包来源如下。' : 'Node instance in the current graph. Omitted fields remain unset; the type declaration and package source follow.'}</p><h3>{lang === 'cn' ? '节点实例' : 'Node instance'}</h3><pre aria-label={lang === 'cn' ? '节点实例 JSON' : 'Node instance JSON'}>{JSON.stringify(entry.node, null, 2)}</pre><h3>{lang === 'cn' ? '类型声明' : 'Type declaration'}</h3><pre aria-label={lang === 'cn' ? '类型声明 JSON' : 'Type declaration JSON'}>{entry.definition ? JSON.stringify(entry.definition, null, 2) : (lang === 'cn' ? '所选目录中没有类型声明。' : 'No type declaration in the selected catalog.')}</pre></details>
     <label>{copy.id}<input value={id} onChange={(event) => setId(event.target.value.toLowerCase())} onBlur={() => { if (id !== entry.node.id) onRename(id.trim()); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
     <label>{copy.label}<input value={entry.node.label} onChange={(event) => onChange({ label: event.target.value })} /></label>
     <label>{lang === 'cn' ? '实例描述' : 'Instance description'}<textarea rows={2} value={entry.node.description} onChange={(event) => onChange({ description: event.target.value })} /></label>
     <h3>{copy.capabilities}</h3><div className="node-graph-capabilities">{entry.definition?.capabilities.map((capability) => <label key={capability}><input type="checkbox" checked={entry.node.capabilities?.includes(capability) || false} onChange={(event) => onChange({ capabilities: event.target.checked ? [...(entry.node.capabilities || []), capability] : (entry.node.capabilities || []).filter((item) => item !== capability) })} />{capability}</label>)}</div>
-    {(/^(?:eos\.dispatcher|isos\.eos_dispatcher)\.primitive_/.test(entry.node.node_type)) && <section className="node-graph-binding"><h3>{lang === 'cn' ? '原语绑定' : 'Primitive binding'}</h3><p>{options?.primitive_bindings.find((option) => option.node_type === entry.node.node_type)?.reason || ''}</p><label>{lang === 'cn' ? '目标硬件' : 'Target hardware'}<select value={bindingTarget} onChange={(event) => onBind(event.target.value)}><option value="">—</option>{bindingTarget && !options?.targets.some((target) => sameNodePath(target.path, bindingTarget)) && <option value={bindingTarget}>{bindingTarget}</option>}{options?.targets.filter((target) => target.device_kind === (entry.node.node_type.includes('_base') ? 'base' : 'manipulator')).map((target) => <option key={target.path} value={target.path} disabled={!target.available}>{target.path}{target.available ? '' : ` — ${target.reason || 'unavailable'}`}</option>)}</select></label>{!options && <p role="status">{lang === 'cn' ? '节点选项服务不可用' : 'Node options service unavailable'}</p>}</section>}
+    {(/^(?:eos\.dispatcher|isos\.eos_dispatcher)\.primitive_/.test(entry.node.node_type)) && <section className="node-graph-binding"><h3>{lang === 'cn' ? '原语绑定' : 'Primitive binding'}</h3><p className="node-graph-card__command-route">{lang === 'cn' ? 'UI → EOS · 直接类型化命令，经 EOS Dispatcher 准入；此控制端点不是图端口。' : 'UI → EOS · direct typed command through EOS Dispatcher admission; this control endpoint is not a graph port.'}</p><p>{options?.primitive_bindings.find((option) => option.node_type === entry.node.node_type)?.reason || ''}</p><label>{lang === 'cn' ? '目标硬件' : 'Target hardware'}<select value={bindingTarget} onChange={(event) => onBind(event.target.value)}><option value="">—</option>{bindingTarget && !options?.targets.some((target) => sameNodePath(target.path, bindingTarget)) && <option value={bindingTarget}>{bindingTarget}</option>}{options?.targets.filter((target) => target.device_kind === (entry.node.node_type.includes('_base') ? 'base' : 'manipulator')).map((target) => <option key={target.path} value={target.path} disabled={!target.available}>{target.path}{target.available ? '' : ` — ${target.reason || 'unavailable'}`}</option>)}</select></label>{!options && <p role="status">{lang === 'cn' ? '节点选项服务不可用' : 'Node options service unavailable'}</p>}</section>}
 
     {!!entry.definition?.settings.length && <><h3>{copy.settings}</h3>{entry.definition.settings.map((field) => {
       const group = settingOptionGroup(options, entry.path, field.name);
@@ -252,17 +318,17 @@ function NodeInspector({ entry, entries, lang, options, runId, activeRevision, c
         onChange({ settings });
       };
       if (field.selector?.provider === 'ui') return <p key={`${entry.path}:${field.name}`} role="alert" className="node-graph-error">{lang === 'cn' ? '当前图不支持浏览器输入选择器。' : 'Browser input selectors are unsupported by the current graph.'}</p>;
-      if (group) return <CatalogSelector key={`${entry.path}:${field.name}`} group={group} pin={entry.node.package} help={field.description} label={field.name} value={String(entry.node.settings?.[field.name] ?? field.default ?? '')} lang={lang} onChange={update} />;
+      if (group) return <CatalogSelector key={`${entry.path}:${field.name}`} disabled={!optionsCurrent} group={group} pin={entry.node.package} help={field.description} label={field.name} value={String(entry.node.settings?.[field.name] ?? field.default ?? '')} lang={lang} onChange={update} />;
       if (field.selector) return <div key={`${entry.path}:${field.name}`} className="node-graph-catalog-selector"><strong>{field.name}</strong>{field.description && <small>{field.description}</small>}<p role="status" className="node-graph-error">{lang === 'cn' ? '此节点的可用选项尚未就绪。请检查拥有方服务，然后刷新选项。' : 'Options for this node are unavailable. Check the owner service, then refresh options.'}</p></div>;
       return <SettingEditor key={`${entry.path}:${field.name}`} lang={lang} name={field.name} dataType={field.data_type} required={field.required} description={field.description} unit={field.unit} min={field.min} max={field.max} choices={field.choices} value={entry.node.settings?.[field.name] ?? field.default} onChange={update} />;
     })}</>}
-    {entry.definition?.lifecycle === 'adapter' && <HardwareFields node={entry.node} path={entry.path} definition={entry.definition} options={options} lang={lang} onChange={onChange} />}
+    {entry.definition?.lifecycle === 'adapter' && <HardwareFields node={entry.node} path={entry.path} definition={entry.definition} options={options} optionsCurrent={optionsCurrent} adapterPreviewAvailable={adapterPreviewAvailable} lang={lang} onChange={onChange} />}
     {entry.definition?.lifecycle === 'adapter' && <><h3>{copy.details}</h3><textarea rows={12} value={raw} onChange={(event) => setRaw(event.target.value)} /><button type="button" onClick={commitDetails}>{copy.applyDetails}</button></>}
     {error && <p role="alert" className="node-graph-error">{error}</p>}<button type="button" className="node-graph-remove" onClick={onRemove}>{copy.remove}</button>
   </section>;
 }
 
-export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPanel, onStopIntent, onStopOutcome }: Props): React.ReactElement {
+export function NodeGraphManager({ lang, visible = true, panelMenu, onDirtyChange, onNoticesChange, onOpenPanel, onOpenPage, onStopIntent, onStopOutcome }: Props): React.ReactElement {
   const copy = COPY[lang];
   const [graph, setGraph] = useState<NodeGraph | null>(null);
   const [rawGraph, setRawGraph] = useState<unknown>(null);
@@ -270,14 +336,16 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const [revision, setRevision] = useState('');
   const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
   const [types, setTypes] = useState<NodeTypeDefinition[]>([]);
+  const [adapterCatalog, setAdapterCatalog] = useState<NodeTypeCatalog | null>(null);
   const [dataTypes, setDataTypes] = useState<DataTypeDefinition[]>([]);
-  const [nodeSets, setNodeSets] = useState<NodeSetDefinition[]>([]);
-  const [setKey, setSetKey] = useState('');
-  const [setValues, setSetValues] = useState<Record<string, string>>({});
-  const [setPreview, setSetPreview] = useState<{ result: NodeSetPreview; source: string } | null>(null);
   const [processStatus, setProcessStatus] = useState<ProcessStatus | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [inspectorTarget, setInspectorTarget] = useState<InspectorTarget>('none');
   const [typeId, setTypeId] = useState('');
+  const [libraryView, setLibraryView] = useState<'nodes' | 'packages'>('nodes');
+  const [installedPackages, setInstalledPackages] = useState<InstalledPackage[]>([]);
+  const [selectedPackagePin, setSelectedPackagePin] = useState('');
+  const [packageConfigDirty, setPackageConfigDirty] = useState(false);
   const [newId, setNewId] = useState('');
   const [quickSearch, setQuickSearch] = useState('');
   const [quickAdd, setQuickAdd] = useState<{ left: number; top: number; x: number; y: number } | null>(null);
@@ -288,13 +356,13 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
-  const lastCanvasSize = useRef('');
   const canvasRef = useRef<HTMLDivElement>(null);
   const quickSearchRef = useRef<HTMLInputElement>(null);
   const overviewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [undoStack, setUndoStack] = useState<NodeGraph[]>([]);
   const [redoStack, setRedoStack] = useState<NodeGraph[]>([]);
   const [diagnostics, setDiagnostics] = useState<NodeGraphDiagnostic[]>([]);
+  const [warnings, setWarnings] = useState<NodeGraphDiagnostic[]>([]);
   const [validationStamp, setValidationStamp] = useState<DraftValidationStamp | null>(null);
   const [validatedEdges, setValidatedEdges] = useState<ValidatedEdge[]>([]);
   const [edgeInputInvalid, setEdgeInputInvalid] = useState(false);
@@ -302,9 +370,11 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const [frontNode, setFrontNode] = useState<string | null>(null);
   const setMessage = (text: string, error = false): void => { publishUiMessage(text, error ? 'error' : 'info'); };
   const [optionSnapshot, setOptionSnapshot] = useState<OptionSnapshot | null>(null);
+  const [optionErrorDraft, setOptionErrorDraft] = useState('');
   const optionRequest = useRef(0);
   const catalogReloadRequest = useRef(0);
   const statusRequest = useRef(0);
+  const statusStreamReady = useRef(false);
   const readinessRequest = useRef(0);
   const lastDeploymentFailure = useRef('');
   const graphForCatalog = useRef(graph);
@@ -340,43 +410,57 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   const editGeneration = useRef(0);
   const activeGesture = useRef(false);
   const [positions, setPositions] = useState<NodePositions>({});
+  const [panelWidths, setPanelWidths] = useState<GraphPanelWidths>(DEFAULT_GRAPH_PANEL_WIDTHS);
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
+  const panelResize = useRef<{ panel: keyof GraphPanelWidths; x: number; width: number } | null>(null);
+  const [nodeSizes, setNodeSizes] = useState<NodeSizes>({});
   const [mirrors, setMirrors] = useState<NodeMirrors>({});
   const [viewOpen, setViewOpen] = useState(false);
-  const [coreWindows, setCoreWindows] = useState<Record<'ei', CoreWindowState>>(() => ({ ei: readCoreWindow('isosui-graph-ei-window', 190) }));
+  useEffect(() => { const resize = (): void => setViewportWidth(window.innerWidth); window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize); }, []);
   const dirty = Boolean(graph && JSON.stringify(graph) !== saved);
   const readOnly = readOnlyReason !== null;
   const draftKey = graph ? JSON.stringify(graph) : '';
   const currentDraft = useRef(draftKey);
   currentDraft.current = draftKey;
   const nodeOptions = optionSnapshot?.draft === draftKey ? optionSnapshot.options : null;
+  const previewOptions = graph && adapterCatalog ? draftAdapterOptions(graph, adapterCatalog) : null;
+  const displayOptions = displayNodeOptions(nodeOptions, optionSnapshot?.options || null, previewOptions);
+  const optionRefreshing = !!graph && !nodeOptions && optionErrorDraft !== draftKey;
   useEffect(() => {
     const requestId = ++optionRequest.current;
     if (!graph || readOnly) return;
     const draft = JSON.stringify(graph);
-    const timer = window.setTimeout(() => { void getNodeOptions(graph).then((options) => {
-      if (optionResponseIsCurrent(requestId, optionRequest.current, draft, currentDraft.current)) setOptionSnapshot({ draft, options });
-    }).catch(() => { if (requestId === optionRequest.current) setOptionSnapshot(null); }); }, 250);
-    return () => { window.clearTimeout(timer); optionRequest.current += 1; };
-  }, [graph, readOnly, packageGeneration]);
+    const controller = new AbortController();
+    setOptionErrorDraft('');
+    const timeout = window.setTimeout(() => controller.abort(), 35000);
+    const timer = window.setTimeout(() => { void getNodeOptions(graph, controller.signal).then((options) => {
+      if (optionResponseIsCurrent(requestId, optionRequest.current, draft, currentDraft.current)) { setOptionSnapshot({ draft, options }); setOptionErrorDraft(''); }
+    }).catch(() => {
+      if (!optionResponseIsCurrent(requestId, optionRequest.current, draft, currentDraft.current)) return;
+      if (adapterCatalog) setOptionSnapshot({ draft, options: draftAdapterOptions(graph, adapterCatalog) });
+      setOptionErrorDraft(draft);
+    }).finally(() => window.clearTimeout(timeout)); }, 250);
+    return () => { window.clearTimeout(timer); window.clearTimeout(timeout); controller.abort(); optionRequest.current += 1; };
+  }, [graph, readOnly, packageGeneration, adapterCatalog]);
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   const entries = useMemo(() => graph ? graphNodes(graph, types) : [], [graph, types]);
   const monitorRateHz = useMemo(() => { try { return monitorRefreshHz(saved ? JSON.parse(saved) as NodeGraph : null); } catch { return DEFAULT_MONITOR_REFRESH_HZ; } }, [saved]);
   const monitorReading = useArmMonitor(visible && entries.some((entry) => entry.node.node_type === 'isos.ui.monitor.arm@v0.2'), monitorRateHz);
-  const selectorBlocked = catalogSelectionBlocks(graph?.version, entries, nodeOptions);
-  useEffect(() => { if (graph) browserLog('debug', `Graph revision ${revision.slice(0, 8) || 'unsaved'}: ${entries.length} nodes; visible=${visible}`); }, [graph, revision, visible]);
+  const selectorBlocked = catalogSelectionBlocks(graph?.version, entries, optionErrorDraft === draftKey ? null : nodeOptions);
+  const stableCatalogError = catalogErrorIsStable(selectorBlocked && (optionErrorDraft === draftKey || unavailableSelections(nodeOptions).length > 0), draftKey, optionSnapshot, optionErrorDraft);
+  const catalogNotice = stableCatalogError ? (lang === 'cn' ? '当前草稿的目录选项不可用。检查图仍可使用；修复选项后才能保存或运行。' : 'Catalog options for this draft are unavailable. Check graph remains available; repair the choice before saving or running.') : null;
   useEffect(() => {
-    if (!visible || !flowInstance || !entries.length) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const observer = new ResizeObserver(() => {
-      const size = `${canvas.clientWidth}x${canvas.clientHeight}`;
-      if (size === lastCanvasSize.current) return;
-      lastCanvasSize.current = size;
-      browserLog(canvas.clientWidth && canvas.clientHeight ? 'debug' : 'warn', `Graph canvas ${size}; viewport ${JSON.stringify(flowInstance.getViewport())}`);
-    });
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, [visible, flowInstance, entries.length]);
+    const notices = [
+      catalogNotice && { text: catalogNotice, alert: true },
+      fallbackNotice && { text: fallbackNotice, alert: false },
+      readOnlyReason && { text: `${lang === 'cn' ? '只读节点图：' : 'Read-only graph: '}${readOnlyReason}`, alert: true },
+      viewLost && { text: lang === 'cn' ? '节点可能在视野之外。使用“显示全图”恢复。' : 'Nodes may be outside the view. Use Fit graph to recover.', alert: false },
+      processStatus?.last_error && { text: processStatus.last_error, alert: true },
+    ].filter((notice): notice is { text: string; alert: boolean } => Boolean(notice));
+    onNoticesChange?.(notices);
+  }, [catalogNotice, fallbackNotice, readOnlyReason, viewLost, processStatus?.last_error, lang, onNoticesChange]);
+  useEffect(() => () => onNoticesChange?.([]), [onNoticesChange]);
+  useEffect(() => { if (graph) browserLog('debug', `Graph revision ${revision.slice(0, 8) || 'unsaved'}: ${entries.length} nodes; visible=${visible}`); }, [graph, revision, visible]);
   useEffect(() => {
     if (!visible || !flowInstance || !entries.length || initialFitDone.current) return;
     let frame = 0;
@@ -419,8 +503,10 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     return () => window.clearTimeout(timer);
   }, [graph, visible, flowInstance, entries.length]);
   const availableTypes = useMemo(() => addableTypes(types), [types]);
-  const quickTypes = useMemo(() => availableTypes.filter((type) => `${type.id} ${type.core} ${type.layer} ${type.group} ${type.kind}`.toLowerCase().includes(quickSearch.toLowerCase())), [availableTypes, quickSearch]);
-  const selectedSet = nodeSets.find((set) => `${set.package.id}@${set.package.version}/${set.id}` === setKey);
+  const selectedPackage = installedPackages.find((entry) => installedPin(entry) === selectedPackagePin);
+  const selectedLibraryType = availableTypes.find((type) => catalogTypeKey(type) === typeId);
+  const selectLibraryType = (key: string): void => { setTypeId(key); setSelected([]); setSelectedEdge(''); setInspectorTarget(key ? 'type' : 'none'); setSideCollapsed(false); };
+  const quickTypes = useMemo(() => availableTypes.filter((type) => !(type.package && type.implementation?.kind === 'managed_process') && `${type.id} ${type.core} ${type.layer} ${type.group} ${type.kind} ${type.package?.id || ''} ${type.package?.version || ''}`.toLowerCase().includes(quickSearch.toLowerCase())), [availableTypes, quickSearch]);
   useEffect(() => { if (quickAdd) quickSearchRef.current?.focus(); }, [quickAdd]);
   useEffect(() => { if (diagnostics.length) setDiagnosticsOpen(true); }, [diagnostics]);
   useEffect(() => () => { if (overviewTimer.current) clearTimeout(overviewTimer.current); }, []);
@@ -430,6 +516,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     overviewTimer.current = setTimeout(() => setShowOverview(false), 1800);
   };
   const chosen = selected.length === 1 ? entries.find((entry) => entry.path === selected[0]) : undefined;
+  const refreshLibraries = (): void => { window.dispatchEvent(new Event('isosui:packages-changed')); };
   const refreshPool = async (): Promise<void> => {
     try { setPoolEntries((await getGraphPool()).graphs); }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
@@ -440,20 +527,21 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     setBusy(true);
     try {
       const [entry, snapshot] = await Promise.all([getGraphPoolEntry(name), getGraphCatalogSnapshot()]);
-      if (!nodeGraphHasEditableShape(entry.graph) || entry.graph.version !== '0.2.0') throw new Error('Selected pool graph is not an editable 0.2.0 graph.');
+      if (!nodeGraphHasEditableShape(entry.graph) || !['0.2.0', '0.2.1'].includes(entry.graph.version)) throw new Error('Selected pool graph cannot be opened.');
       const catalog = combineNodeTypeCatalogs(snapshot.selected, snapshot.global);
       const sameAsSaved = JSON.stringify(entry.graph) === JSON.stringify(snapshot.graph.graph);
-      const poolReadOnlyReason = sameAsSaved
+      const poolReadOnlyReason = entry.graph.version === '0.2.0' ? (lang === 'cn' ? '旧版 0.2.0 图；可预览转换草稿。' : 'Legacy 0.2.0 graph; preview a conversion draft.') : sameAsSaved
         ? graphCatalogReadOnlyReason(snapshot)
         : snapshot.reason || nodeGraphReadOnlyReason({ ...snapshot.graph, graph: entry.graph, read_only: false, diagnostics: [] }, catalog.types);
       editGeneration.current += 1;
       catalogReloadRequest.current += 1;
       setGraph(entry.graph); setRawGraph(null); setRevision(entry.revision); setSaved(JSON.stringify(entry.graph));
       setNewEmptyDraft(false); setReadOnlyReason(poolReadOnlyReason); setGraphLoadError('');
-      setTypes(catalog.types); setDataTypes(catalog.data_types || []);
-      setDiagnostics([]); setValidatedEdges([]); setValidationStamp(null);
-      setSelected([]); setUndoStack([]); setRedoStack([]);
+      setTypes(catalog.types); setDataTypes(catalog.data_types || []); setAdapterCatalog(catalog);
+      setDiagnostics([]); setWarnings([]); setValidatedEdges([]); setValidationStamp(null);
+      setSelected([]); setSelectedEdge(''); setInspectorTarget('none'); setUndoStack([]); setRedoStack([]);
       setPositions(parseNodePositions(localStorage.getItem(graphLayoutKey(entry.graph))));
+      setPanelWidths(parseGraphPanelWidths(localStorage.getItem(graphPanelWidthsKey(entry.graph))));
       setMirrors(parseNodeMirrors(localStorage.getItem(graphMirrorKey(entry.graph))));
       layoutKeyRef.current = graphLayoutKey(entry.graph);
       setOptionSnapshot(null);
@@ -463,6 +551,23 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       setFallbackNotice('');
       localStorage.setItem('isosui-graph-pool-last-name', entry.name);
       setMessage(lang === 'cn' ? `已打开图库文件“${entry.name}”。` : `Opened graph file “${entry.name}”.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
+    finally { setBusy(false); }
+  };
+  const previewGraphConversion = async (): Promise<void> => {
+    if (!graph || graph.version !== '0.2.0' || !poolName || busy) return;
+    setBusy(true);
+    try {
+      const entry = await getGraphPoolEntry(poolName);
+      if (entry.revision !== poolRevision || JSON.stringify(entry.graph) !== JSON.stringify(graph)) throw new Error(copy.stale);
+      const converted = { ...entry.graph, version: '0.2.1' };
+      const catalog = await getNodeTypes();
+      const reason = nodeGraphReadOnlyReason({ revision: entry.revision, graph: converted }, catalog.types);
+      if (reason) throw new Error(reason);
+      setGraph(converted); setTypes(catalog.types); setDataTypes(catalog.data_types || []); setAdapterCatalog(catalog);
+      setReadOnlyReason(null); setSaved(JSON.stringify(entry.graph));
+      setDiagnostics([]); setWarnings([]); setValidatedEdges([]); setValidationStamp(null);
+      setMessage(lang === 'cn' ? '已预览 0.2.1 转换草稿。请保存文件，再明确应用。' : 'Conversion draft is ready. Save the file, then explicitly Apply it.');
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
     finally { setBusy(false); }
   };
@@ -495,28 +600,30 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
     finally { setBusy(false); }
   };
-  const newDemoGraph = async (): Promise<void> => {
+  const newDemoGraph = async (template: 'demo' | 'package' = 'demo'): Promise<void> => {
     if (busy) return;
     if (dirty && !window.confirm(copy.discard)) return;
     setBusy(true);
     try {
       const document = await getNewNodeGraph();
-      if (!nodeGraphHasEditableShape(document.graph) || document.graph.version !== '0.2.0') throw new Error('IsOS did not provide an editable 0.2.0 graph.');
+      if (!nodeGraphHasEditableShape(document.graph) || document.graph.version !== '0.2.1') throw new Error('IsOS did not provide an editable 0.2.1 graph.');
       const catalog = await getNodeTypes();
       editGeneration.current += 1;
       catalogReloadRequest.current += 1;
-      setGraph(document.graph);
+      setGraph(template === 'package' ? packageGraphDraft(document.graph) : document.graph);
       setRawGraph(null);
       setRevision(document.revision);
       setSaved('');
       setPoolName(''); setPoolRevision('');
       setNewEmptyDraft(true);
-      setTypes(catalog.types); setDataTypes(catalog.data_types || []);
+      setTypes(catalog.types); setDataTypes(catalog.data_types || []); setAdapterCatalog(catalog);
       setReadOnlyReason(null); setGraphLoadError('');
-      setDiagnostics([]); setValidatedEdges([]); setValidationStamp(null);
-      setSelected([]); setUndoStack([]); setRedoStack([]);
-      setPositions({}); setMirrors({}); setOptionSnapshot(null);
-      setMessage(lang === 'cn' ? '已载入当前节点演示草稿。保存后才会替换已保存的节点图。' : 'Current node demo loaded as a draft. Save it to replace the saved graph.');
+      setDiagnostics([]); setWarnings([]); setValidatedEdges([]); setValidationStamp(null);
+      setSelected([]); setSelectedEdge(''); setInspectorTarget('none'); setUndoStack([]); setRedoStack([]);
+      setPositions({}); setPanelWidths({ ...DEFAULT_GRAPH_PANEL_WIDTHS }); setMirrors({}); setOptionSnapshot(null);
+      setMessage(template === 'package'
+        ? (lang === 'cn' ? '已载入空白软件包图草稿。添加节点后保存到新的图库文件。' : 'Empty package graph loaded as a draft. Add nodes, then save it as a new graph file.')
+        : (lang === 'cn' ? '已载入当前节点演示草稿。保存后才会替换已保存的节点图。' : 'Current node demo loaded as a draft. Save it to replace the saved graph.'));
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); }
     finally { setBusy(false); }
   };
@@ -531,6 +638,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     setValidatedEdges([]);
     setEdgeInputInvalid(false);
     setDiagnostics([]);
+    setWarnings([]);
     try {
       const snapshot = await getGraphCatalogSnapshot();
       const { graph: document } = snapshot;
@@ -542,6 +650,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
         const layoutKey = graphLayoutKey(document.graph);
         if (layoutKeyRef.current !== layoutKey) {
           setPositions(parseNodePositions(localStorage.getItem(layoutKey)));
+          setPanelWidths(parseGraphPanelWidths(localStorage.getItem(graphPanelWidthsKey(document.graph))));
           setMirrors(parseNodeMirrors(localStorage.getItem(graphMirrorKey(document.graph))));
           layoutKeyRef.current = layoutKey;
         }
@@ -553,15 +662,13 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       setRevision(document.revision);
       if (document.pool_name) { setPoolName(document.pool_name); setPoolSelected(document.pool_name); setPoolRevision(document.revision); }
       setTypes(catalog?.types || []);
-      setDataTypes(catalog?.data_types || []);
-      setNodeSets([]);
-      setSetKey(''); setSetValues({}); setSetPreview(null);
-      void getNodeSets().then((sets) => { if (catalogRequestId === catalogReloadRequest.current && generation === editGeneration.current) setNodeSets(sets.sets); }).catch(() => undefined);
-      void getProcessStatus().then((status) => { if (catalogRequestId === catalogReloadRequest.current && statusRequestId === statusRequest.current) setProcessStatus(status); }).catch(() => undefined);
+      setDataTypes(catalog?.data_types || []); setAdapterCatalog(catalog); setOptionSnapshot(null);
+      void getProcessStatus().then((status) => { if (!statusStreamReady.current && catalogRequestId === catalogReloadRequest.current && statusRequestId === statusRequest.current) setProcessStatus(status); }).catch(() => undefined);
       void getCoreReadiness().then((cores) => { if (catalogRequestId === catalogReloadRequest.current && readinessRequestId === readinessRequest.current) setReadiness(cores); }).catch(() => undefined);
       setTypeId('');
       setSelected((current) => shaped ? current.filter((path) => graphNodes(document.graph, []).some((entry) => entry.path === path)) : []);
       setDiagnostics(document.diagnostics || []);
+      setWarnings(document.warnings || []);
       setReadOnlyReason(graphCatalogReadOnlyReason(snapshot));
       setGraphLoadError('');
       setUndoStack([]); setRedoStack([]); setMessage('');
@@ -585,13 +692,17 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     let active = true;
     let statusPending = false;
     let readinessPending = false;
+    const unsubscribe = subscribeRuntimeStatus((snapshot) => {
+      statusStreamReady.current = snapshot !== null;
+      if (snapshot) { ++statusRequest.current; setProcessStatus(snapshot.process_status); }
+    });
     const statusTimer = window.setInterval(() => {
-      if (document.visibilityState !== 'visible' || statusPending) return;
+      if (document.visibilityState !== 'visible' || statusPending || statusStreamReady.current) return;
       statusPending = true;
       const requestId = ++statusRequest.current;
-      void getProcessStatus().then((status) => { if (active && requestId === statusRequest.current) setProcessStatus(status); })
+      void getProcessStatus().then((status) => { if (active && !statusStreamReady.current && requestId === statusRequest.current) setProcessStatus(status); })
         .catch(() => undefined).finally(() => { statusPending = false; });
-    }, 3000);
+    }, 1500);
     const readinessTimer = window.setInterval(() => {
       if (document.visibilityState !== 'visible' || readinessPending) return;
       readinessPending = true;
@@ -599,14 +710,14 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       void getCoreReadiness().then((readiness) => { if (active && requestId === readinessRequest.current) setReadiness(readiness); })
         .catch(() => undefined).finally(() => { readinessPending = false; });
     }, 30000);
-    return () => { active = false; ++statusRequest.current; ++readinessRequest.current; window.clearInterval(statusTimer); window.clearInterval(readinessTimer); };
+    return () => { active = false; statusStreamReady.current = false; unsubscribe(); ++statusRequest.current; ++readinessRequest.current; window.clearInterval(statusTimer); window.clearInterval(readinessTimer); };
   }, [visible]);
   useEffect(() => {
-    const reloadCatalog = (): void => { setValidatedEdges([]); const requestId = ++catalogReloadRequest.current; optionRequest.current += 1; setOptionSnapshot(null); setPackageGeneration((value) => value + 1); void Promise.all([getGraphCatalogSnapshot(), getNodeSets()]).then(([snapshot, sets]) => {
+    const reloadCatalog = (): void => { setValidatedEdges([]); const requestId = ++catalogReloadRequest.current; optionRequest.current += 1; setOptionSnapshot(null); setAdapterCatalog(null); setPackageGeneration((value) => value + 1); void getGraphCatalogSnapshot().then((snapshot) => {
       if (!catalogReloadIsCurrent(requestId, catalogReloadRequest.current)) return;
       const { graph: document } = snapshot;
       const catalog = combineNodeTypeCatalogs(snapshot.selected, snapshot.global);
-      setTypes(catalog.types); setDataTypes(catalog.data_types || []); setNodeSets(sets.sets); setSetKey(''); setSetValues({}); setSetPreview(null);
+      setTypes(catalog.types); setDataTypes(catalog.data_types || []); setAdapterCatalog(catalog);
       const currentGraph = catalogReloadGraph(document.revision, revisionForCatalog.current, graphForCatalog.current, document.graph);
       const savedReason = graphCatalogReadOnlyReason(snapshot);
       setReadOnlyReason(savedReason || (currentGraph
@@ -614,42 +725,36 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
         : 'Saved graph revision changed; refresh before editing.'));
     }).catch((error: unknown) => { if (catalogReloadIsCurrent(requestId, catalogReloadRequest.current)) { setReadOnlyReason('Graph catalog could not be checked.'); setMessage(error instanceof Error ? error.message : String(error)); } }); };
     window.addEventListener('isosui:packages-changed', reloadCatalog);
-    return () => { window.removeEventListener('isosui:packages-changed', reloadCatalog); catalogReloadRequest.current += 1; };
+    window.addEventListener('focus', reloadCatalog);
+    const onVisible = (): void => { if (document.visibilityState === 'visible') reloadCatalog(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.removeEventListener('isosui:packages-changed', reloadCatalog); window.removeEventListener('focus', reloadCatalog); document.removeEventListener('visibilitychange', onVisible); catalogReloadRequest.current += 1; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const load = (): void => { void getInstalledPackages().then((result) => { if (active) setInstalledPackages(result.installed); }).catch((error: unknown) => { if (active) setMessage(error instanceof Error ? error.message : String(error), true); }); };
+    load();
+    window.addEventListener('isosui:packages-changed', load);
+    return () => { active = false; window.removeEventListener('isosui:packages-changed', load); };
   }, []);
   useEffect(() => { if (!graph) return; const key = graphLayoutKey(graph); const timer = window.setTimeout(() => localStorage.setItem(key, JSON.stringify(positions)), 250); return () => window.clearTimeout(timer); }, [graph?.robot.id, positions]);
+  const panelWidthsKey = graph ? graphPanelWidthsKey(graph) : '';
+  useEffect(() => { if (!panelWidthsKey) return; const timer = window.setTimeout(() => localStorage.setItem(panelWidthsKey, JSON.stringify(panelWidths)), 250); return () => window.clearTimeout(timer); }, [panelWidthsKey, panelWidths]);
   useEffect(() => { if (graph) localStorage.setItem(graphMirrorKey(graph), JSON.stringify(mirrors)); }, [graph?.robot.id, mirrors]);
-  useEffect(() => { for (const id of ['ei'] as const) localStorage.setItem(`isosui-graph-${id}-window`, JSON.stringify(coreWindows[id])); }, [coreWindows]);
-  const updateCoreWindow = (id: 'ei', patch: Partial<CoreWindowState>): void => setCoreWindows((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
   useEffect(() => { const beforeUnload = (event: BeforeUnloadEvent): void => { if (dirty) event.preventDefault(); }; window.addEventListener('beforeunload', beforeUnload); return () => window.removeEventListener('beforeunload', beforeUnload); }, [dirty]);
   const edit = (change: (current: NodeGraph) => NodeGraph): void => {
     if (!graph || readOnly) return;
     const next = change(graph);
     if (next === graph || JSON.stringify(next) === JSON.stringify(graph)) return;
-    editGeneration.current += 1; setUndoStack((stack) => [...stack.slice(-49), graph]); setRedoStack([]); setGraph(next); setSetPreview(null); setValidatedEdges([]); setDiagnostics([]); setValidationStamp(null);
-  };
-  const undo = (): void => { if (!graph || readOnly || !undoStack.length) return; editGeneration.current += 1; setRedoStack((stack) => [...stack, graph]); setGraph(undoStack[undoStack.length - 1]); setSetPreview(null); setDiagnostics([]); setValidationStamp(null); setValidatedEdges([]); setUndoStack(undoStack.slice(0, -1)); };
-  const redo = (): void => { if (!graph || readOnly || !redoStack.length) return; editGeneration.current += 1; setUndoStack((stack) => [...stack, graph]); setGraph(redoStack[redoStack.length - 1]); setSetPreview(null); setDiagnostics([]); setValidationStamp(null); setValidatedEdges([]); setRedoStack(redoStack.slice(0, -1)); };
-  const previewPackageSet = async (): Promise<void> => {
-    if (!graph || readOnly || !selectedSet) return;
-    setBusy(true);
-    try {
-      const source = JSON.stringify(graph);
-      const result = await previewNodeSet(selectedSet, graph, setValues);
-      if (removedNodePaths(graph, result.graph).length) throw new Error(copy.previewRemoves);
-      setSetPreview({ result, source });
-      setMessage(`${result.added_paths.length} ${copy.previewCount}.`);
+    const oldPaths = graphNodes(graph, []).map((entry) => entry.path);
+    if (graphNodes(next, []).some((entry) => !oldPaths.includes(entry.path))) {
+      setPositions((current) => preserveNodePositions(oldPaths, current));
     }
-    catch (error) { setSetPreview(null); setMessage(error instanceof Error ? error.message : String(error), true); }
-    finally { setBusy(false); }
+    editGeneration.current += 1; setUndoStack((stack) => [...stack.slice(-49), graph]); setRedoStack([]); setGraph(next); setValidatedEdges([]); setDiagnostics([]); setWarnings([]); setValidationStamp(null);
   };
-  const addPreviewedSet = (): void => {
-    if (!graph || readOnly || !setPreview || setPreview.source !== JSON.stringify(graph)) { setMessage(copy.previewStale, true); setSetPreview(null); return; }
-    edit(() => setPreview.result.graph);
-    setSelected(setPreview.result.added_paths.map(canonicalNodePath));
-    setMessage(`${setPreview.result.added_paths.length} ${copy.previewCount}.`);
-    setSetPreview(null);
-  };
-  const add = (automatic = false): void => { const definition = availableTypes.find((type) => catalogTypeKey(type) === typeId); if (!definition || !graph || readOnly) return; const id = automatic || !newId.trim() ? nextNodeId(graph, definition) : newId.trim(); try { edit((current) => addNode(current, definition, id)); setSelected([nodePath(definition, id)]); setNewId(''); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : copy.duplicate, true); } };
+  const undo = (): void => { if (!graph || readOnly || !undoStack.length) return; editGeneration.current += 1; setRedoStack((stack) => [...stack, graph]); setGraph(undoStack[undoStack.length - 1]); setDiagnostics([]); setWarnings([]); setValidationStamp(null); setValidatedEdges([]); setUndoStack(undoStack.slice(0, -1)); };
+  const redo = (): void => { if (!graph || readOnly || !redoStack.length) return; editGeneration.current += 1; setUndoStack((stack) => [...stack, graph]); setGraph(redoStack[redoStack.length - 1]); setDiagnostics([]); setWarnings([]); setValidationStamp(null); setValidatedEdges([]); setRedoStack(redoStack.slice(0, -1)); };
+  const add = (automatic = false): void => { const definition = availableTypes.find((type) => catalogTypeKey(type) === typeId); if (!definition || !graph || readOnly) return; const id = automatic || !newId.trim() ? nextNodeId(graph, definition) : newId.trim(); try { edit((current) => addNode(current, definition, id)); setSelected([nodePath(definition, id)]); setInspectorTarget('node'); setSideCollapsed(false); setNewId(''); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : copy.duplicate, true); } };
   const addAtCursor = (definition: NodeTypeDefinition): void => {
     if (!quickAdd || !graph || readOnly || definition.deprecated) return;
     const id = nextNodeId(graph, definition);
@@ -657,7 +762,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       edit((current) => addNode(current, definition, id));
       const path = nodePath(definition, id);
       setPositions((current) => ({ ...current, [path]: { x: quickAdd.x, y: quickAdd.y } }));
-      setSelected([path]); setQuickAdd(null); setMessage('');
+      setSelected([path]); setInspectorTarget('node'); setSideCollapsed(false); setQuickAdd(null); setMessage('');
     } catch (error) { setMessage(error instanceof Error ? error.message : copy.duplicate, true); }
   };
   const openQuickAdd = (event: React.MouseEvent<HTMLDivElement>): void => {
@@ -700,10 +805,10 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); }
-    else if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length) { event.preventDefault(); edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); }
+    else if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length) { event.preventDefault(); edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); setInspectorTarget('none'); }
     else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !quickAdd && !edgeMenu && selected.length) { event.preventDefault(); setMirrors((current) => { const next = { ...current }; for (const path of selected) next[path] = !(next[path] ?? asyncDemoLayout(entries.map((entry) => entry.path))?.mirrors[path] ?? false); return next; }); }
   }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [graph, undoStack, redoStack, selected, quickAdd, edgeMenu, visible, readOnly]);
-  const validate = async (): Promise<boolean> => { if (!graph || readOnly) return false; const generation = editGeneration.current; setBusy(true); try { const result = await validateNodeGraph(graph); if (!validationResponseIsCurrent(generation, editGeneration.current)) return false; setDiagnostics(result.diagnostics); setValidatedEdges(result.valid && Array.isArray(result.edges) ? result.edges : []); setValidationStamp(draftValidationStamp(graph, generation)); setMessage(result.valid ? copy.valid : `${result.diagnostics.length} ${copy.diagnostics.toLowerCase()}`, !result.valid); return result.valid; } catch (error) { if (validationResponseIsCurrent(generation, editGeneration.current)) { setValidationStamp(null); setMessage(error instanceof Error ? error.message : String(error), true); } return false; } finally { setBusy(false); } };
+  const validate = async (): Promise<boolean> => { if (!graph || readOnly) return false; const generation = editGeneration.current; setBusy(true); try { const result = await validateNodeGraph(graph); if (!validationResponseIsCurrent(generation, editGeneration.current)) return false; setDiagnostics(result.diagnostics); setWarnings(result.warnings || []); setValidatedEdges(result.valid && Array.isArray(result.edges) ? result.edges : []); setValidationStamp(draftValidationStamp(graph, generation)); setMessage(result.valid ? (result.warnings?.length ? (lang === 'cn' ? `节点图有效，存在 ${result.warnings.length} 条警告。` : `Graph is valid with ${result.warnings.length} warning(s).`) : copy.valid) : `${result.diagnostics.length} ${copy.diagnostics.toLowerCase()}`, !result.valid); return result.valid; } catch (error) { if (validationResponseIsCurrent(generation, editGeneration.current)) { setValidationStamp(null); setWarnings([]); setMessage(error instanceof Error ? error.message : String(error), true); } return false; } finally { setBusy(false); } };
   const saveSnapshot = async (snapshot: NodeGraph): Promise<string | null> => {
     if (selectorBlocked || edgeInputInvalid) { setMessage(edgeInputInvalid ? (lang === 'cn' ? '请修复连线服务质量字段。' : 'Repair the edge QoS fields.') : (lang === 'cn' ? '请等待选项更新并修复不可用的目录选项。' : 'Wait for options to refresh and repair unavailable catalog selections.'), true); return null; }
     const generation = editGeneration.current;
@@ -721,6 +826,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     }
     const applyChecked = (targetName: string, targetRevision: string) => validatedApply(snapshot, targetName, targetRevision, () => validationResponseIsCurrent(generation, editGeneration.current), (checked) => {
       setDiagnostics(checked.diagnostics);
+      setWarnings(checked.warnings || []);
       setValidatedEdges(checked.valid && Array.isArray(checked.edges) ? checked.edges : []);
       setValidationStamp(draftValidationStamp(snapshot, generation));
     });
@@ -766,7 +872,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       return null;
     }
     const catalog = combineNodeTypeCatalogs(selected.selected, selected.global);
-    setTypes(catalog.types); setDataTypes(catalog.data_types || []);
+    setTypes(catalog.types); setDataTypes(catalog.data_types || []); setAdapterCatalog(catalog);
     setReadOnlyReason(null);
     setMessage(newerDraft ? (lang === 'cn' ? '已保存先前版本，新的修改仍未保存。' : 'Earlier draft saved; newer edits remain unsaved.') : copy.saved);
     return newerDraft ? null : document.revision;
@@ -778,6 +884,7 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     if (!graph || readOnly || busy || stopping || selectorBlocked || edgeInputInvalid) return;
     if (newEmptyDraft) { await apply(); return; }
     setBusy(true);
+    onOpenPanel?.('logs');
     const generation = editGeneration.current;
     const stopAtStart = deploymentStopEpoch();
     try {
@@ -787,7 +894,9 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
       const latestStatus = await getProcessStatus();
       if (generation !== editGeneration.current || stopAtStart !== deploymentStopEpoch()) { setMessage(lang === 'cn' ? '运行前节点图或停止状态已更改，请再次检查。' : 'Graph or Stop state changed before run. Check again.', true); return; }
       const operation = hasActiveDeployment(latestStatus) ? 'restart' : 'run';
-      const status = await runDeployment(operation, nextRevision);
+      await runDeployment(operation, nextRevision);
+      if (stopAtStart !== deploymentStopEpoch()) return;
+      const status = await getProcessStatus();
       if (stopAtStart !== deploymentStopEpoch()) return;
       setProcessStatus(status);
       const readinessRequestId = ++readinessRequest.current;
@@ -817,13 +926,13 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
   };
   const validationCurrent = !!graph && validationDisplayIsCurrent(validationStamp, graph, editGeneration.current);
   const demoLayout = useMemo(() => asyncDemoLayout(entries.map((entry) => entry.path)), [entries]);
-  const nodes = useMemo<Node<FlowData>[]>(() => entries.map((entry, index) => ({ id: entry.path, type: 'profile', position: positions[entry.path] || demoLayout?.positions[entry.path] || { x: 50 + (index % 3) * 330, y: 50 + Math.floor(index / 3) * 220 }, zIndex: frontNode === entry.path ? 20 : selected.includes(entry.path) ? 1 : 0, data: { entry, error: diagnostics.some((item) => item.path.includes(entry.path)), mirrored: mirrors[entry.path] ?? demoLayout?.mirrors[entry.path] ?? false, lane: demoLayout?.lanes[entry.path], lang, dataTypes, options: nodeOptions, readOnly, currentRun: !dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision, runId: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.run_id || null : null, activeRevision: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.active_revision || null : null, monitorReading, onSettingsChange: (path, settings) => edit((current) => updateNode(current, path, { settings })), onNodeChange: (path, change) => edit((current) => updateNode(current, path, change)) }, selected: selected.includes(entry.path) })), [entries, positions, selected, frontNode, diagnostics, mirrors, demoLayout, lang, dataTypes, dirty, readOnly, processStatus, revision, nodeOptions, monitorReading]);
+  const nodes = useMemo<Node<FlowData>[]>(() => entries.map((entry, index) => ({ id: entry.path, type: 'profile', position: positions[entry.path] || demoLayout?.positions[entry.path] || { x: 50 + (index % 3) * 330, y: 50 + Math.floor(index / 3) * 220 }, ...nodeSizes[entry.path], zIndex: frontNode === entry.path ? 2000 : selected.includes(entry.path) ? 1 : 0, data: { entry, error: diagnostics.some((item) => item.path.includes(entry.path)), mirrored: mirrors[entry.path] ?? demoLayout?.mirrors[entry.path] ?? false, lane: demoLayout?.lanes[entry.path], lang, dataTypes, currentRun: !dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision, runId: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.run_id || null : null, activeRevision: !processStatus ? undefined : processStatus.state === 'running' || processStatus.state === 'degraded' ? processStatus.active_revision || null : null, monitorReading, onSelect: (path: string) => { setSelected([path]); setSelectedEdge(''); setInspectorTarget('node'); setSideCollapsed(false); setFrontNode(path); } }, selected: selected.includes(entry.path) })).sort((a, b) => Number(a.id === frontNode) - Number(b.id === frontNode)), [entries, positions, nodeSizes, selected, frontNode, diagnostics, mirrors, demoLayout, lang, dataTypes, dirty, readOnly, processStatus, revision, monitorReading]);
   const edges = useMemo<Edge[]>(() => entries.flatMap((entry) => Object.entries(entry.node.inputs || {}).flatMap(([input, sources]) => {
     const sourceList = inputSources(sources);
     return sourceList.map((source, inputIndex) => {
     const port = entries.find((candidate) => sameNodePath(candidate.path, source.node))?.definition?.outputs.find((item) => item.name === source.output);
     const admitted = validationCurrent ? validatedEdges.find((candidate) => candidate.source === canonicalNodePath(source.node) && candidate.output === source.output && candidate.target === entry.path && candidate.input === input) : undefined;
-    const visual = interfaceVisual(port, admitted ? admitted.frequency_hz : source.frequency_hz, admitted ? admitted.priority : source.priority ?? 0);
+    const visual = interfaceVisual(port, admitted ? admitted.frequency_hz : portInput(sources).desired_rate_hz?.max, admitted ? admitted.priority : source.priority ?? 0);
     const id = `${entry.path}:${input}:${inputIndex}:${canonicalNodePath(source.node)}:${source.output}`;
     const label = port?.data_type || source.output;
     const edge = { source: canonicalNodePath(source.node), sourceHandle: `out:${source.output}`, target: entry.path, targetHandle: `in:${input}`, data: { inputIndex, inputCount: sourceList.length } };
@@ -835,8 +944,19 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     });
   })), [entries, selectedEdge, diagnostics, validatedEdges, validationCurrent, lang]);
   const edgeDetail = selectedEdge ? edges.find((edge) => edge.id === selectedEdge) : undefined;
+  const visibleInspectorTarget: InspectorTarget = inspectorTarget === 'package' && !selectedPackage || inspectorTarget === 'type' && !selectedLibraryType || inspectorTarget === 'node' && !chosen || inspectorTarget === 'edge' && !edgeDetail || inspectorTarget === 'multi' && selected.filter((path) => entries.some((entry) => entry.path === path)).length < 2 ? 'none' : inspectorTarget;
+  useEffect(() => { if (inspectorTarget !== 'none' && visibleInspectorTarget === 'none') setInspectorTarget('none'); }, [inspectorTarget, visibleInspectorTarget]);
   const onNodesChange = (changes: NodeChange[]): void => {
-    if (changes.some((change) => change.type === 'select')) setSelected((current) => applyNodeSelection(current, changes));
+    if (changes.some((change) => change.type === 'dimensions')) setNodeSizes((current) => applyNodeDimensions(current, changes));
+    if (changes.some((change) => change.type === 'select')) {
+      const next = applyNodeSelection(selected, changes);
+      setSelected(next);
+      setInspectorTarget(next.length > 1 ? 'multi' : next.length ? 'node' : 'none');
+      if (changes.some((change) => change.type === 'select' && change.selected)) {
+        setSelectedEdge('');
+        setSideCollapsed(false);
+      }
+    }
     setPositions((current) => {
     const moved = changes.filter((change): change is Extract<NodeChange, { type: 'position' }> => change.type === 'position' && Boolean(change.position));
     if (!moved.length) return current;
@@ -846,53 +966,59 @@ export function NodeGraphManager({ lang, visible = true, onDirtyChange, onOpenPa
     return changed ? next : current;
     });
   };
+  const displayedPanelWidths = fitGraphPanelWidths(panelWidths, viewportWidth);
+  const resizeHandle = (panel: keyof GraphPanelWidths): React.ReactElement => {
+    const label = panel === 'library' ? copy.catalog : copy.inspector;
+    const maximum = resizeGraphPanel(displayedPanelWidths, panel, Infinity, viewportWidth)[panel];
+    return <div className={`node-graph-resize node-graph-resize--${panel}`} role="separator" tabIndex={0} aria-orientation="vertical" aria-label={`${lang === 'cn' ? '调整宽度' : 'Resize'} ${label}`} aria-controls={panel === 'library' ? 'node-graph-library' : 'node-graph-inspector'} aria-valuemin={panel === 'library' ? 225 : 270} aria-valuemax={maximum} aria-valuenow={displayedPanelWidths[panel]}
+      onKeyDown={(event) => { const delta = event.key === 'ArrowRight' ? 20 : event.key === 'ArrowLeft' ? -20 : 0; if (!delta) return; event.preventDefault(); setPanelWidths((current) => resizeGraphPanel(fitGraphPanelWidths(current, viewportWidth), panel, displayedPanelWidths[panel] + (panel === 'library' ? delta : -delta), viewportWidth)); }}
+      onDoubleClick={() => setPanelWidths((current) => resizeGraphPanel(fitGraphPanelWidths(current, viewportWidth), panel, DEFAULT_GRAPH_PANEL_WIDTHS[panel], viewportWidth))}
+      onPointerDown={(event) => { event.preventDefault(); panelResize.current = { panel, x: event.clientX, width: displayedPanelWidths[panel] }; event.currentTarget.setPointerCapture(event.pointerId); }}
+      onPointerMove={(event) => { const start = panelResize.current; if (!start || start.panel !== panel) return; const change = (event.clientX - start.x) * (panel === 'library' ? 1 : -1); setPanelWidths((current) => resizeGraphPanel(fitGraphPanelWidths(current, viewportWidth), panel, start.width + change, viewportWidth)); }}
+      onPointerUp={() => { panelResize.current = null; }} onPointerCancel={() => { panelResize.current = null; }} />;
+  };
   return <ReactFlowProvider><main className="node-graph-manager">
-    <header><h1>{copy.title}</h1><div role="toolbar" aria-label={copy.title}>
+    <header><h1>{copy.title}</h1>{panelMenu}<div className="node-graph-actions" role="toolbar" aria-label={copy.title}>
       <button className="node-graph-icon-button" type="button" onClick={undo} disabled={readOnly || !undoStack.length || busy} title={`${copy.undo} (Ctrl+Z)`} aria-label={copy.undo}><span className="node-graph-history-arrow" aria-hidden="true" /></button>
       <button className="node-graph-icon-button" type="button" onClick={redo} disabled={readOnly || !redoStack.length || busy} title={`${copy.redo} (Ctrl+Shift+Z)`} aria-label={copy.redo}><span className="node-graph-history-arrow node-graph-history-arrow--redo" aria-hidden="true" /></button>
-      <div className="node-graph-view"><button type="button" aria-expanded={viewOpen} onClick={() => setViewOpen((value) => !value)}>{lang === 'cn' ? '视图' : 'View'} ▾</button>{viewOpen && <div className="node-graph-view__menu" role="menu"><button type="button" role="menuitemcheckbox" aria-checked={!libraryCollapsed} onClick={() => setLibraryCollapsed((value) => !value)}>{copy.catalog}</button><button type="button" role="menuitemcheckbox" aria-checked={!sideCollapsed} onClick={() => setSideCollapsed((value) => !value)}>{copy.inspector}</button><button type="button" role="menuitemcheckbox" aria-checked={diagnosticsOpen && !sideCollapsed} onClick={() => { if (diagnosticsOpen && !sideCollapsed) setDiagnosticsOpen(false); else { setSideCollapsed(false); setDiagnosticsOpen(true); } }}>{copy.diagnostics}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '日志' : 'Logs'}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('control')}>EOS</button><button type="button" role="menuitemcheckbox" aria-checked={coreWindows.ei.open} onClick={() => updateCoreWindow('ei', { open: !coreWindows.ei.open })}>EI</button></div>}</div>
+      <div className="node-graph-view"><button type="button" aria-expanded={viewOpen} onClick={() => setViewOpen((value) => !value)}>{lang === 'cn' ? '视图' : 'View'} ▾</button>{viewOpen && <div className="node-graph-view__menu" role="menu"><button type="button" role="menuitemcheckbox" aria-checked={!libraryCollapsed} onClick={() => setLibraryCollapsed((value) => !value)}>{copy.catalog}</button><button type="button" role="menuitemcheckbox" aria-checked={!sideCollapsed} onClick={() => setSideCollapsed((value) => !value)}>{copy.inspector}</button><button type="button" role="menuitemcheckbox" aria-checked={diagnosticsOpen && !sideCollapsed} onClick={() => { if (diagnosticsOpen && !sideCollapsed) setDiagnosticsOpen(false); else { setSideCollapsed(false); setDiagnosticsOpen(true); } }}>{copy.diagnostics}</button><button type="button" role="menuitem" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '日志' : 'Logs'}</button><button type="button" role="menuitem" onClick={() => onOpenPage?.('eos')}>EOS</button><button type="button" role="menuitem" onClick={() => onOpenPage?.('ei')}>EI</button></div>}</div>
       <button type="button" onClick={() => { browserLog('info', `Fit graph requested; ${entries.length} nodes; viewport ${JSON.stringify(flowInstance?.getViewport())}`); setViewLost(false); void flowInstance?.fitView({ padding: 0.15, duration: 200 }); }}>{lang === 'cn' ? '显示全图' : 'Fit graph'}</button>
       <button type="button" className="node-graph-primary-action" onClick={() => void runPrimary()} disabled={readOnly || busy || !graph || selectorBlocked || edgeInputInvalid} title={lang === 'cn' ? '保存更改（如有）并启动；运行中则重启' : 'Save changes if needed, then start or restart the deployment'}>{newEmptyDraft ? copy.apply : primaryLabel}</button>
+      <button type="button" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '日志' : 'Logs'}</button>
       {(running || busy) && <button type="button" onClick={() => void stop()} disabled={stopping}>{lang === 'cn' ? '停止' : 'Stop'}</button>}
       <details className="node-graph-advanced" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>{lang === 'cn' ? '高级操作' : 'Advanced'} ▾</summary><div>
         <button type="button" onClick={() => void validate()} disabled={readOnly || busy || !graph}>{copy.validate}</button><small>{lang === 'cn' ? '检查草稿，不保存' : 'Check draft without saving'}</small>
         <button type="button" onClick={() => void apply()} disabled={readOnly || busy || !graph || selectorBlocked || edgeInputInvalid}>{copy.apply}</button><small>{lang === 'cn' ? '检查并应用图库文件，同时生成核心配置' : 'Check and Apply the graph file; generate core configuration'}</small>
         <button type="button" onClick={() => void (poolName ? loadPoolGraph(poolName) : refresh(true))} disabled={busy}>{lang === 'cn' ? '重新载入当前文件' : 'Reload current file'}</button><small>{lang === 'cn' ? '丢弃修改并重新读取当前图库文件' : 'Discard edits and reread the current graph file'}</small>
         <button type="button" onClick={() => void newDemoGraph()} disabled={busy}>{lang === 'cn' ? '载入当前节点演示' : 'Load current node demo'}</button><small>{lang === 'cn' ? '载入当前演示草稿；保存后才会替换当前节点图' : 'Load the current demo as a draft; the saved graph changes only when you save it'}</small>
+        <button type="button" onClick={() => void newDemoGraph('package')} disabled={busy}>{lang === 'cn' ? '新建软件包图' : 'New package graph'}</button><small>{lang === 'cn' ? '从空白草稿开始；添加节点后另存为新文件' : 'Start with an empty draft; add nodes and save as a new file'}</small>
         <label>{lang === 'cn' ? '图库文件' : 'Graph file'}<select value={poolSelected} onChange={(event) => { setPoolSelected(event.target.value); }}><option value="">—</option>{poolEntries.map((entry) => <option key={entry.name} value={entry.name}>{entry.name}</option>)}</select></label>
         <small>{poolName ? (lang === 'cn' ? `当前编辑：${poolName}${poolFileExists ? '。保存将替换同名文件。' : '。原文件不存在；保存时需要新文件名。'}` : `Editing: ${poolName}${poolFileExists ? '. Save will replace the file with the same name.' : '. The file is missing; Save will ask for a new name.'}`) : (lang === 'cn' ? '尚未绑定图库文件；保存时需要文件名。' : 'No graph file is bound; Save will ask for a name.')}</small>
         <button type="button" onClick={() => void refreshPool()} disabled={busy}>{lang === 'cn' ? '刷新图库' : 'Refresh pool'}</button>
         <button type="button" onClick={() => void loadPoolGraph()} disabled={busy || !poolSelected}>{lang === 'cn' ? '打开文件' : 'Open file'}</button>
+        {graph?.version === '0.2.0' && <button type="button" onClick={() => void previewGraphConversion()} disabled={busy || !poolName}>{lang === 'cn' ? '预览转换为 0.2.1' : 'Preview conversion to 0.2.1'}</button>}
         <button type="button" onClick={() => void savePoolGraph()} disabled={busy || !graph}>{lang === 'cn' ? '保存文件' : 'Save file'}</button><small>{lang === 'cn' ? '保存文件后，应用时才更新部署配置' : 'Save the file, then Apply to update deployment configuration'}</small>
       </div></details>
       <span role="status">{dirty ? copy.dirty : copy.clean} · {copy.savedRevision}: {revision.slice(0, 8) || '—'} · {copy.activeRevision}: {processStatus?.active_revision?.slice(0, 8) || '—'}</span>
-    </div></header>
-    {selectorBlocked && <p className="node-graph-error" role="status">{lang === 'cn' ? '当前草稿的目录选项尚未就绪，或已保存选项不可用。检查图仍可使用；修复后才能保存或运行。' : 'Catalog options for this draft are pending or a saved choice is unavailable. Check graph remains available; repair the choice before saving or running.'}</p>}
-    {fallbackNotice && <p className="node-graph-note" role="status">{fallbackNotice}</p>}
-    {readOnlyReason && <p className="node-graph-error" role="alert">{lang === 'cn' ? '只读节点图：' : 'Read-only graph: '}{readOnlyReason}</p>}
+    </div><div className="node-graph-core-statuses" aria-label={lang === 'cn' ? '归属方状态' : 'Owner status'}><CoreStatusBadge name="EI" core={readiness?.cores.find((core) => core.core === 'ei')} lang={lang} /><CoreStatusBadge name="EOS" core={readiness?.cores.find((core) => core.core === 'eos')} lang={lang} /></div></header>
+    {!onNoticesChange && <>{catalogNotice && <p className="node-graph-error" role="alert">{catalogNotice}</p>}{fallbackNotice && <p className="node-graph-note" role="status">{fallbackNotice}</p>}{readOnlyReason && <p className="node-graph-error" role="alert">{lang === 'cn' ? '只读节点图：' : 'Read-only graph: '}{readOnlyReason}</p>}{viewLost && <p className="node-graph-note" role="status">{lang === 'cn' ? '节点可能在视野之外。使用“显示全图”恢复。' : 'Nodes may be outside the view. Use Fit graph to recover.'}</p>}{processStatus?.last_error && <p className="node-graph-error" role="alert">{processStatus.last_error}</p>}</>}
+    {startupPhaseText(processStatus, lang, busy) && <p className="node-graph-note" role="status">{startupPhaseText(processStatus, lang, busy)} · <button type="button" onClick={() => onOpenPanel?.('logs')}>{lang === 'cn' ? '查看日志' : 'View Logs'}</button></p>}
     {graphLoadError && <p className="node-graph-error" role="alert">{lang === 'cn' ? '无法打开已保存的节点图。' : 'The saved graph cannot be opened.'} <button type="button" onClick={() => void newDemoGraph()} disabled={busy}>{lang === 'cn' ? '载入当前节点演示' : 'Load current node demo'}</button></p>}
-    {readiness?.cores.map((core) => {
-      const disabled = core.enabled === false;
-      const alert = !disabled && !core.ready;
-      return <p key={core.core} className={alert ? 'node-graph-error' : 'node-graph-note'} role={alert ? 'alert' : 'status'}>
-        <strong>{core.core.toUpperCase()}</strong>: {core.configured ? `${core.version || '—'} · ${core.path || '—'}` : (lang === 'cn' ? '未配置程序路径' : 'Binary path not configured')}
-        {' · '}{disabled ? (lang === 'cn' ? '保存的节点图中未启用' : 'Not enabled in the saved graph') : (core.running ? (lang === 'cn' ? '运行中' : 'Running') : (lang === 'cn' ? '已停止' : 'Stopped'))}
-        {!disabled && core.reason ? ` · ${core.reason === 'pending_apply' ? (lang === 'cn' ? '图库文件已保存，等待应用以更新部署配置' : 'Graph file saved; Apply to update deployment configuration') : core.reason}` : ''}{!disabled && core.action && core.reason !== 'pending_apply' ? ` · ${core.action}` : ''}
-      </p>;
-    })}
-    {viewLost && <p className="node-graph-note" role="status">{lang === 'cn' ? '节点可能在视野之外。使用“显示全图”恢复。' : 'Nodes may be outside the view. Use Fit graph to recover.'}</p>}{processStatus?.last_error && <p className="node-graph-error" role="alert">{processStatus.last_error}</p>}
-    <div className={`node-graph-body${libraryCollapsed ? ' node-graph-body--library-collapsed' : ''}${sideCollapsed ? ' node-graph-body--side-collapsed' : ''}`}><aside className="node-graph-library" hidden={libraryCollapsed}><h2>{copy.catalog}</h2><CatalogBrowser types={availableTypes} value={typeId} lang={lang} onChange={setTypeId} /><label>{copy.id}<input value={newId} placeholder={graph && availableTypes.find((type) => catalogTypeKey(type) === typeId) ? nextNodeId(graph, availableTypes.find((type) => catalogTypeKey(type) === typeId)!) : ''} onChange={(event) => setNewId(event.target.value.toLowerCase())} /></label><button type="button" onClick={() => add()} disabled={readOnly || !graph || !availableTypes.some((type) => catalogTypeKey(type) === typeId)}>{copy.add}</button><p>{copy.port}</p><p>{copy.hint}</p><div className="node-graph-legend" aria-label={lang === 'cn' ? '端口颜色' : 'Port colors'}><h3>{lang === 'cn' ? '端口颜色：准确数据类型' : 'Port color: exact data type'}</h3>{(dataTypes.length ? dataTypes.slice(0, 5).map((item) => item.id) : ['camera_frame', 'vision_frame', 'base_observation']).map((id) => <span key={id} style={{ '--port': dataTypeColor(id) } as React.CSSProperties}><i aria-hidden="true" />{id}</span>)}</div><div className="node-graph-interface-legend" aria-label={lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}><strong>{lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}</strong><span>{lang === 'cn' ? '端口形状表示通道：进程内圆形 / Unix 方形 / HTTP 盾形 / WebSocket 菱形 / ROS 2 六边形' : 'Port shape shows channel: in-process circle / Unix square / HTTP shield / WebSocket diamond / ROS 2 hexagon'}</span><span>{lang === 'cn' ? '连线图案表示连线上限：<1 Hz 稀疏点；1–<10 Hz 点线；10–<30 Hz 长划线；≥30 Hz 实线；无限制为长短交替线' : 'Line pattern shows edge cap: <1 Hz sparse dots; 1–<10 Hz dotted; 10–<30 Hz long dashes; ≥30 Hz solid; unlimited alternating dash'}</span><span>{lang === 'cn' ? '连线颜色表示优先级：红色较高，蓝色较低；具体 nice 值见连线详情' : 'Line color shows priority: red is higher, blue is lower; inspect the line for its exact nice value'}</span></div><section className="node-graph-set-library"><h2>{copy.nodeSets}</h2>{nodeSets.length ? <><label>{copy.chooseSet}<select value={setKey} onChange={(event) => { const key = event.target.value; const chosenSet = nodeSets.find((set) => `${set.package.id}@${set.package.version}/${set.id}` === key); setSetKey(key); setSetValues(Object.fromEntries(Object.entries(chosenSet?.parameters || {}).map(([name, parameter]) => [name, parameter.default || '']))); setSetPreview(null); }}><option value="">—</option>{nodeSets.map((set) => { const key = `${set.package.id}@${set.package.version}/${set.id}`; return <option key={key} value={key}>{set.package.id}@{set.package.version} / {set.id}</option>; })}</select></label>{selectedSet && <><p>{selectedSet.nodes.length} {copy.previewCount}</p>{Object.entries(selectedSet.parameters).map(([name, parameter]) => <label key={name}>{name}<input type="text" value={setValues[name] ?? parameter.default ?? ''} onChange={(event) => { setSetValues((current) => ({ ...current, [name]: event.target.value })); setSetPreview(null); }} /></label>)}<button type="button" disabled={readOnly || !graph || busy} onClick={() => void previewPackageSet()}>{copy.previewSet}</button>{setPreview && <div className="node-graph-set-preview" role="status"><strong>{setPreview.result.added_paths.length} {copy.previewCount}</strong><ul>{setPreview.result.added_paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul><button type="button" onClick={addPreviewedSet} disabled={readOnly || busy || setPreview.source !== JSON.stringify(graph)}>{copy.addSet}</button></div>}</>}</> : <p>{copy.noNodeSets}</p>}</section>{graph && <><h2>{copy.robot}</h2><label>{copy.id}<input value={graph.robot.id} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, id: event.target.value } }))} /></label><label>{copy.name}<input value={graph.robot.name} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, name: event.target.value } }))} /></label></>}</aside>
-      <div className="node-graph-canvas" ref={canvasRef} onContextMenu={openQuickAdd} onPointerDownCapture={(event) => { if (event.button === 0 && !(event.target as HTMLElement).closest('.node-graph-edge-menu, .node-graph-quick-add')) { setQuickAdd(null); setEdgeMenu(null); } activeGesture.current = true; }} onPointerUpCapture={() => { activeGesture.current = false; }} onPointerCancelCapture={() => { activeGesture.current = false; }} onMouseMove={revealOverview} onTouchMove={revealOverview}>{graph ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} nodesConnectable={!readOnly} onInit={(instance) => { setFlowInstance(instance); browserLog('debug', 'Graph canvas initialized'); }} onEdgeContextMenu={openEdgeMenu} onEdgeClick={(_, edge) => { setEdgeInputInvalid(false); setSelectedEdge(edge.id); setSideCollapsed(false); setQuickAdd(null); }} onMove={revealOverview} onNodesChange={onNodesChange} onConnect={connect} onNodeClick={(_, node) => { setFrontNode(node.id); setQuickAdd(null); setSelectedEdge(''); setEdgeInputInvalid(false); }} onNodeDragStart={(_, node) => setFrontNode(node.id)} onSelectionStart={() => { activeGesture.current = true; }} onSelectionEnd={() => { activeGesture.current = false; }} selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1]} deleteKeyCode={null} onPaneClick={() => { setSelected([]); setQuickAdd(null); setEdgeMenu(null); setSelectedEdge(''); setEdgeInputInvalid(false); }} onDoubleClick={(event) => { if ((event.target as HTMLElement).classList.contains('react-flow__pane')) add(true); }} minZoom={0.2} maxZoom={2}><Background color="var(--border)" /><MiniMap className={showOverview ? 'node-graph-minimap--visible' : 'node-graph-minimap--hidden'} pannable zoomable /></ReactFlow> : rawGraph ? <pre className="node-graph-raw" aria-label={lang === 'cn' ? '原始节点图' : 'Raw node graph'}>{JSON.stringify(rawGraph, null, 2)}</pre> : <div className="node-graph-empty"><p>{copy.disconnected}</p><button type="button" onClick={() => void refresh()}>{copy.connect}</button></div>}{graph && !entries.length && <p className="node-graph-empty">{copy.noNodes}</p>}{edgeMenu && <div className="node-graph-edge-menu" role="menu" style={{ left: edgeMenu.left, top: edgeMenu.top }}><button type="button" role="menuitem" onClick={() => { const edge = edges.find((item) => item.id === edgeMenu.id); if (edge) edit((current) => disconnectInput(current, edge.target, String(edge.targetHandle).replace(/^in:/, ''), edge.source, String(edge.sourceHandle).replace(/^out:/, ''))); setEdgeMenu(null); }}>{copy.disconnect}</button></div>}{quickAdd && <div className="node-graph-quick-add" role="dialog" aria-label={copy.add} style={{ left: quickAdd.left, top: quickAdd.top }} onContextMenu={(event) => event.stopPropagation()}><input ref={quickSearchRef} type="search" aria-label={copy.search} placeholder={copy.search} value={quickSearch} onChange={(event) => setQuickSearch(event.target.value)} /><div className="node-graph-quick-add__list">{quickTypes.map((type) => <button type="button" key={type.id} onMouseEnter={() => setQuickDetail(type.id)} onFocus={() => setQuickDetail(type.id)} onClick={() => addAtCursor(type)}><strong>{type.group}</strong><small>{type.core} / {type.layer} · {type.id}</small></button>)}</div>{quickDetail && <div className="node-graph-quick-add__detail" role="note">{(() => { const type = quickTypes.find((item) => item.id === quickDetail); return type ? <><strong>{type.id}</strong><p>{type.core} / {type.layer} / {type.group} · {type.lifecycle}</p><p>{type.capabilities.join(', ') || '—'}</p><small>{type.inputs.length} {lang === 'cn' ? '输入' : 'inputs'} · {type.outputs.length} {lang === 'cn' ? '输出' : 'outputs'} · {type.settings.length} {lang === 'cn' ? '设置' : 'settings'}</small></> : null; })()}</div>}</div>}
-        {visible && <><GraphCoreWindow title="EI" state={coreWindows.ei} onChange={(patch) => updateCoreWindow('ei', patch)} lang={lang}><EiWorkbench lang={lang} onOpenGraph={() => updateCoreWindow('ei', { open: false })} /></GraphCoreWindow></>}
+    <div className={`node-graph-body${libraryCollapsed ? ' node-graph-body--library-collapsed' : ''}${sideCollapsed ? ' node-graph-body--side-collapsed' : ''}`} style={{ '--library-width': `${displayedPanelWidths.library}px`, '--side-width': `${displayedPanelWidths.side}px` } as React.CSSProperties}><aside id="node-graph-library" className="node-graph-library" hidden={libraryCollapsed}><div className="node-graph-library__rail" role="group" aria-label={lang === 'cn' ? '图库视图' : 'Library view'}><button type="button" aria-pressed={libraryView === 'nodes'} aria-label={copy.catalog} title={copy.catalog} onClick={() => setLibraryView('nodes')}><span aria-hidden="true">▤</span></button><button type="button" aria-pressed={libraryView === 'packages'} aria-label={lang === 'cn' ? '软件包库' : 'Package library'} title={lang === 'cn' ? '软件包库' : 'Package library'} onClick={() => setLibraryView('packages')}><span aria-hidden="true">▣</span></button></div><h2>{libraryView === 'nodes' ? copy.catalog : (lang === 'cn' ? '软件包库' : 'Package library')}</h2>{libraryView === 'nodes' ? <CatalogBrowser types={availableTypes} value={typeId} lang={lang} onChange={selectLibraryType} /> : <PackageLibrary installed={installedPackages} types={availableTypes} selectedPin={selectedPackagePin} selectedType={typeId} lang={lang} onSelectPackage={(pin) => { if (pin === selectedPackagePin) { setInspectorTarget('package'); setSideCollapsed(false); return true; } if (packageConfigDirty && !window.confirm(lang === 'cn' ? '软件包配置有未保存的修改。要切换软件包吗？' : 'Package configuration has unsaved changes. Switch packages?')) return false; setPackageConfigDirty(false); setSelectedPackagePin(pin); setInspectorTarget('package'); setSideCollapsed(false); return true; }} onSelectType={selectLibraryType} onRefresh={() => void refreshLibraries()} />}<label>{copy.id}<input value={newId} placeholder={graph && selectedLibraryType ? nextNodeId(graph, selectedLibraryType) : ''} onChange={(event) => setNewId(event.target.value.toLowerCase())} /></label><button type="button" onClick={() => add()} disabled={readOnly || !graph || !selectedLibraryType}>{copy.add}</button>{libraryView === 'nodes' && <><p>{copy.port}</p><p>{copy.hint}</p><div className="node-graph-legend" aria-label={lang === 'cn' ? '端口颜色' : 'Port colors'}><h3>{lang === 'cn' ? '端口颜色：准确数据类型' : 'Port color: exact data type'}</h3>{(dataTypes.length ? dataTypes.slice(0, 5).map((item) => item.id) : ['camera_frame', 'vision_frame', 'base_observation']).map((id) => <span key={id} style={{ '--port': dataTypeColor(id) } as React.CSSProperties}><i aria-hidden="true" />{id}</span>)}</div><div className="node-graph-interface-legend" aria-label={lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}><strong>{lang === 'cn' ? '接口视觉规则' : 'Interface visual rules'}</strong><span>{lang === 'cn' ? '端口形状表示通道：进程内圆形 / Unix 方形 / HTTP 盾形 / WebSocket 菱形 / ROS 2 六边形' : 'Port shape shows channel: in-process circle / Unix square / HTTP shield / WebSocket diamond / ROS 2 hexagon'}</span><span>{lang === 'cn' ? '连线图案表示连线上限：<1 Hz 稀疏点；1–<10 Hz 点线；10–<30 Hz 长划线；≥30 Hz 实线；无限制为长短交替线' : 'Line pattern shows edge cap: <1 Hz sparse dots; 1–<10 Hz dotted; 10–<30 Hz long dashes; ≥30 Hz solid; unlimited alternating dash'}</span><span>{lang === 'cn' ? '连线颜色表示优先级：红色较高，蓝色较低；具体 nice 值见连线详情' : 'Line color shows priority: red is higher, blue is lower; inspect the line for its exact nice value'}</span></div></>}{graph && <><h2>{copy.robot}</h2><label>{copy.id}<input value={graph.robot.id} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, id: event.target.value } }))} /></label><label>{copy.name}<input value={graph.robot.name} onChange={(event) => edit((current) => ({ ...current, robot: { ...current.robot, name: event.target.value } }))} /></label></>}</aside>
+      <div className="node-graph-canvas" ref={canvasRef} onContextMenu={openQuickAdd} onPointerDownCapture={(event) => { if (event.button === 0 && !(event.target as HTMLElement).closest('.node-graph-edge-menu, .node-graph-quick-add')) { setQuickAdd(null); setEdgeMenu(null); } activeGesture.current = true; }} onPointerUpCapture={() => { activeGesture.current = false; }} onPointerCancelCapture={() => { activeGesture.current = false; }} onMouseMove={revealOverview} onTouchMove={revealOverview}>{graph ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} nodesConnectable={!readOnly} elementsSelectable elevateNodesOnSelect={false} onInit={(instance) => { setFlowInstance(instance); browserLog('debug', 'Graph canvas initialized'); }} onEdgeContextMenu={openEdgeMenu} onEdgeClick={(_, edge) => { setEdgeInputInvalid(false); setSelectedEdge(edge.id); setSelected([]); setInspectorTarget('edge'); setSideCollapsed(false); setQuickAdd(null); }} onMove={revealOverview} onNodesChange={onNodesChange} onConnect={connect} onNodeClick={(_, node) => { setFrontNode(node.id); setSelected([node.id]); setInspectorTarget('node'); setSideCollapsed(false); setQuickAdd(null); setSelectedEdge(''); setEdgeInputInvalid(false); }} onNodeDragStart={(_, node) => setFrontNode(node.id)} onSelectionStart={() => { activeGesture.current = true; }} onSelectionEnd={() => { activeGesture.current = false; }} selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1]} deleteKeyCode={null} onPaneClick={() => { setSelected([]); setQuickAdd(null); setEdgeMenu(null); setSelectedEdge(''); setInspectorTarget('none'); setEdgeInputInvalid(false); }} onDoubleClick={(event) => { if ((event.target as HTMLElement).classList.contains('react-flow__pane')) add(true); }} minZoom={0.2} maxZoom={2}><Background color="var(--border)" /><MiniMap className={showOverview ? 'node-graph-minimap--visible' : 'node-graph-minimap--hidden'} pannable zoomable /></ReactFlow> : rawGraph ? <pre className="node-graph-raw" aria-label={lang === 'cn' ? '原始节点图' : 'Raw node graph'}>{JSON.stringify(rawGraph, null, 2)}</pre> : <div className="node-graph-empty"><p>{copy.disconnected}</p><button type="button" onClick={() => void refresh()}>{copy.connect}</button></div>}{graph && !entries.length && <p className="node-graph-empty">{copy.noNodes}</p>}{edgeMenu && <div className="node-graph-edge-menu" role="menu" style={{ left: edgeMenu.left, top: edgeMenu.top }}><button type="button" role="menuitem" onClick={() => { const edge = edges.find((item) => item.id === edgeMenu.id); if (edge) edit((current) => disconnectInput(current, edge.target, String(edge.targetHandle).replace(/^in:/, ''), edge.source, String(edge.sourceHandle).replace(/^out:/, ''))); setEdgeMenu(null); }}>{copy.disconnect}</button></div>}{quickAdd && <div className="node-graph-quick-add" role="dialog" aria-label={copy.add} style={{ left: quickAdd.left, top: quickAdd.top }} onContextMenu={(event) => event.stopPropagation()}><input ref={quickSearchRef} type="search" aria-label={copy.search} placeholder={copy.search} value={quickSearch} onChange={(event) => setQuickSearch(event.target.value)} /><div className="node-graph-quick-add__list">{quickTypes.map((type) => <button type="button" key={catalogTypeKey(type)} onMouseEnter={() => setQuickDetail(catalogTypeKey(type))} onFocus={() => setQuickDetail(catalogTypeKey(type))} onClick={() => addAtCursor(type)}><strong>{type.group}</strong><small>{type.core} / {type.layer} · {type.id} · {type.package ? `${type.package.id}@${type.package.version}` : (lang === 'cn' ? '内置' : 'Built-in')}</small></button>)}</div>{quickDetail && <div className="node-graph-quick-add__detail" role="note">{(() => { const type = quickTypes.find((item) => catalogTypeKey(item) === quickDetail); return type ? <><strong>{type.id}</strong><p>{type.core} / {type.layer} / {type.group} · {type.lifecycle} · {type.package ? `${type.package.id}@${type.package.version}` : (lang === 'cn' ? '内置' : 'Built-in')}</p><p>{type.capabilities.join(', ') || '—'}</p><small>{type.inputs.length} {lang === 'cn' ? '输入' : 'inputs'} · {type.outputs.length} {lang === 'cn' ? '输出' : 'outputs'} · {type.settings.length} {lang === 'cn' ? '设置' : 'settings'}</small></> : null; })()}</div>}</div>}
+
       </div>
-      <aside className="node-graph-side" hidden={sideCollapsed}>{edgeDetail ? <EdgeIdlPanel key={edgeDetail.id} edge={edgeDetail} entries={entries} dataTypes={dataTypes} diagnostics={diagnostics} validated={validationCurrent} processStatus={processStatus} lang={lang} /> : chosen ? <><fieldset disabled={readOnly} className="node-graph-readonly-fieldset"><NodeInspector key={chosen.path} entry={chosen} entries={entries} lang={lang} options={nodeOptions} runId={processStatus?.run_id || null} activeRevision={processStatus?.active_revision || null} currentRun={!dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision} onBind={(target) => { try { edit((current) => bindPrimitiveTarget(current, types, chosen.path, target)); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } }} onChange={(change) => edit((current) => updateNode(current, chosen.path, change))} onRename={(id) => { try { edit((current) => renameNode(current, chosen.path, id)); setSelected([`${chosen.path.slice(0, chosen.path.lastIndexOf('/') + 1)}${id}`]); setMessage(''); } catch { setMessage(copy.duplicate, true); } }} onRemove={() => { edit((current) => removeNode(current, chosen.path)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => path !== chosen.path))); setSelected([]); }} /></fieldset><h3>{copy.target}</h3><ul>{Object.entries(chosen.node.inputs || {}).flatMap(([input, sources]) => inputSources(sources).map((source) => <li key={`${input}:${source.node}:${source.output}`}>{input} ← {canonicalNodePath(source.node)}.{source.output}<button type="button" aria-label={`${copy.remove} ${input}`} disabled={readOnly} onClick={() => edit((current) => disconnectInput(current, chosen.path, input, source.node, source.output))}>×</button></li>))}</ul></> : selected.length > 1 ? <div className="node-graph-multi-selection"><p><strong>{selected.length}</strong> {copy.selectedCount}</p><button type="button" disabled={readOnly} onClick={() => { edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); }}>{copy.remove}</button></div> : <p>{copy.noSelection}</p>}
+      <aside id="node-graph-inspector" className="node-graph-side" hidden={sideCollapsed}>{selectedPackage && <div hidden={visibleInspectorTarget !== 'package'}>{/* Keep the configuration draft mounted across inspector selections. */}<section className="node-package-details" style={{ '--package-accent': packageAccent(selectedPackagePin) } as React.CSSProperties}><h2><span className="node-library-package-dot" aria-hidden="true" />{selectedPackagePin}</h2><dl><dt>{lang === 'cn' ? '来源' : 'Source'}</dt><dd>{selectedPackage.local_link ? (lang === 'cn' ? '本机链接' : 'Local link') : (lang === 'cn' ? '已安装归档' : 'Installed archive')}</dd><dt>{lang === 'cn' ? '源提交' : 'Source commit'}</dt><dd><code>{selectedPackage.source_commit || '—'}</code></dd><dt>SHA-256</dt><dd><code>{selectedPackage.asset_sha256 || '—'}</code></dd></dl>{selectedPackage.configurable ? <PackageConfigPanel key={selectedPackagePin} id={selectedPackage.id} version={selectedPackage.version} lang={lang} onDirtyChange={setPackageConfigDirty} onSaved={() => window.dispatchEvent(new Event('isosui:packages-changed'))} /> : <p>{lang === 'cn' ? '此软件包没有配置描述。' : 'This package has no configuration descriptor.'}</p>}</section></div>}{visibleInspectorTarget === 'edge' && edgeDetail ? <EdgeIdlPanel key={edgeDetail.id} edge={edgeDetail} entries={entries} dataTypes={dataTypes} diagnostics={diagnostics} validated={validationCurrent} processStatus={processStatus} lang={lang} /> : visibleInspectorTarget === 'node' && chosen ? <><fieldset disabled={readOnly} className="node-graph-readonly-fieldset"><NodeInspector key={chosen.path} entry={chosen} entries={entries} dataTypes={dataTypes} lang={lang} options={displayOptions} optionsCurrent={!!nodeOptions && optionErrorDraft !== draftKey} optionsFailed={!optionRefreshing && (!nodeOptions || optionErrorDraft === draftKey)} adapterPreviewAvailable={!!previewOptions} runId={processStatus?.run_id || null} activeRevision={processStatus?.active_revision || null} currentRun={!dirty && !readOnly && processStatus?.state === 'running' && processStatus.run_id_state === 'known' && processStatus.active_revision === revision && processStatus.saved_revision === revision} onBind={(target) => { try { edit((current) => bindPrimitiveTarget(current, types, chosen.path, target)); setMessage(''); } catch (error) { setMessage(error instanceof Error ? error.message : String(error), true); } }} onChange={(change) => edit((current) => updateNode(current, chosen.path, change))} onRename={(id) => { try { edit((current) => renameNode(current, chosen.path, id)); setSelected([`${chosen.path.slice(0, chosen.path.lastIndexOf('/') + 1)}${id}`]); setMessage(''); } catch { setMessage(copy.duplicate, true); } }} onRemove={() => { edit((current) => removeNode(current, chosen.path)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => path !== chosen.path))); setSelected([]); setInspectorTarget('none'); }} /><PortRateEditor entry={chosen} entries={entries} lang={lang} onChange={(input, rate) => edit((current) => updateDesiredRate(current, chosen.path, input, rate))} /></fieldset><h3>{copy.target}</h3><ul>{Object.entries(chosen.node.inputs || {}).flatMap(([input, sources]) => inputSources(sources).map((source) => <li key={`${input}:${source.node}:${source.output}`}>{input} ← {canonicalNodePath(source.node)}.{source.output}<button type="button" aria-label={`${copy.remove} ${input}`} disabled={readOnly} onClick={() => edit((current) => disconnectInput(current, chosen.path, input, source.node, source.output))}>×</button></li>))}</ul></> : visibleInspectorTarget === 'multi' && selected.length > 1 ? <div className="node-graph-multi-selection"><p><strong>{selected.length}</strong> {copy.selectedCount}</p><button type="button" disabled={readOnly} onClick={() => { edit((current) => removeSelectedNodes(current, selected)); setPositions((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !selected.includes(path)))); setSelected([]); setInspectorTarget('none'); }}>{copy.remove}</button></div> : visibleInspectorTarget === 'type' && selectedLibraryType ? <div className="node-library-type-details"><h2>{selectedLibraryType.id}</h2><p>{selectedLibraryType.core} / {selectedLibraryType.layer} / {selectedLibraryType.group}</p><p>{packagePin(selectedLibraryType) || (lang === 'cn' ? '内置' : 'Built-in')}</p><p>{selectedLibraryType.description || '—'}</p></div> : visibleInspectorTarget === 'package' ? null : <p>{copy.noSelection}</p>}
         <details className="node-graph-panel" open={diagnosticsOpen} onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}>
-          <summary><strong>{copy.diagnostics}</strong><span>{diagnostics.length || '✓'}</span></summary>
-          {validationCurrent ? diagnostics.length ? <ul>{diagnostics.map((item, index) => <li key={index}><button className="node-graph-diagnostic" type="button" onClick={() => { setSelected([entries.find((entry) => item.path.includes(entry.path))?.path || ''].filter(Boolean)); setSideCollapsed(false); }}><code>{item.path}</code><span>{item.message}</span></button></li>)}</ul> : <p>{copy.valid}</p> : <p>{lang === 'cn' ? '当前草稿尚未检查。' : 'Current draft has not been checked.'}</p>}
+          <summary><strong>{copy.diagnostics}</strong><span>{diagnostics.length + warnings.length || '✓'}</span></summary>
+          {validationCurrent || warnings.length ? diagnostics.length || warnings.length ? <ul>{[...diagnostics, ...warnings].map((item, index) => <li key={index}><button className="node-graph-diagnostic" type="button" onClick={() => { setSelected([entries.find((entry) => item.path.includes(entry.path))?.path || ''].filter(Boolean)); setInspectorTarget('node'); setSideCollapsed(false); }}><strong>{index < diagnostics.length ? (lang === 'cn' ? '错误' : 'Error') : (lang === 'cn' ? '警告' : 'Warning')}</strong><code>{item.path}</code><span>{item.message}</span></button></li>)}</ul> : <p>{copy.valid}</p> : <p>{lang === 'cn' ? '当前草稿尚未检查。' : 'Current draft has not been checked.'}</p>}
         </details>
         <details className="node-graph-panel">
           <summary><strong>{copy.process}</strong><span>{processStatus?.processes.length ?? '—'}</span></summary>
           {processStatus ? <ul>{processStatus.processes.map((process) => <li key={process.id}><strong>{process.id}</strong><span>{process.state || 'running'} · PID {process.pid ?? '—'} · {process.restarts} restarts</span></li>)}</ul> : <p>{copy.noStatus}</p>}
-        </details></aside></div>
+        </details></aside>
+      {!libraryCollapsed && viewportWidth > 700 && resizeHandle('library')}
+      {!sideCollapsed && viewportWidth > 700 && resizeHandle('side')}
+    </div>
   </main></ReactFlowProvider>;
 }

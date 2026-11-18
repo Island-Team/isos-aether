@@ -8,9 +8,8 @@ import shutil
 from pathlib import Path
 
 import pytest
-
-from ei.core.context import ContextBuilder, render_dynamic_message
-from ei.core.perception.admission import Admission
+from ei.core.cognition.context import ContextBuilder, render_dynamic_message
+from ei.core.evidence.perception.admission import Admission
 from ei.lib.config import (
   AgentPromptConfig,
   DecisionConfig,
@@ -50,7 +49,7 @@ def test_authoritative_prompt_file_loads_without_factory_mirror(
   assert not shared_prompts.exists() or not any(
     path.is_file() for path in shared_prompts.rglob("*")
   )
-  assert not (etc_root.parents[2] / "share/ei/defaults/ei/prompts.toml").exists()
+  assert not (etc_root.parents[2] / "config/defaults/ei/prompts.toml").exists()
 
 
 def test_controller_and_reasoner_bindings_must_be_distinct() -> None:

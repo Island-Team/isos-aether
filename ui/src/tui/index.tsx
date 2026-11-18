@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { render, Box, Text, useApp, useInput } from 'ink';
+import WebSocket from 'ws';
 import { createIsosClient, isLoopbackOrigin } from '../services/isos/transport';
 import type { CoreReadiness, CurrentLogPage, ProcessStatus, SetupStatus } from '../services/isos/node-graph';
 
 type Locale = 'en' | 'cn';
 type View = 'home' | 'eos' | 'ei' | 'logs';
-interface UiConfig { default_interface: 'web' | 'tui'; locale: Locale; api_origin: string; poll_interval_ms: number }
+interface UiConfig { default_interface: 'web' | 'tui'; locale: Locale; api_origin: string }
 const words = {
   en: { title: 'IsOS', home: 'Home', eos: 'EOS', ei: 'EI', logs: 'Logs', state: 'State', saved: 'Saved revision', active: 'Active revision', run: 'Run', stop: 'Stop', refresh: 'Refresh', quit: 'Quit', loading: 'Connecting to IsOS…', unavailable: 'Unavailable', noLogs: 'No current events', noCore: 'No owner state', ready: 'Ready', blocked: 'Blocked', confirmRun: 'Press r again to Run the saved revision', confirmStop: 'Press s again to Stop the deployment', cancelled: 'Action cancelled', pending: 'Working…', unknown: 'Stop outcome is uncertain; inspect IsOS status and logs.' },
   cn: { title: 'IsOS', home: '首页', eos: 'EOS', ei: 'EI', logs: '日志', state: '状态', saved: '已保存修订', active: '活动修订', run: '运行', stop: '停止', refresh: '刷新', quit: '退出', loading: '正在连接 IsOS…', unavailable: '不可用', noLogs: '当前没有事件', noCore: '没有所有者状态', ready: '就绪', blocked: '阻止', confirmRun: '再次按 r 运行已保存修订', confirmStop: '再次按 s 停止部署', cancelled: '已取消操作', pending: '处理中…', unknown: '停止结果不确定；请查看 IsOS 状态和日志。' },
@@ -31,7 +32,6 @@ function App({ origin, initialLocale }: { origin: string; initialLocale: Locale 
   const client = useMemo(() => createIsosClient(origin), [origin]);
   const { exit } = useApp();
   const [locale, setLocale] = useState(initialLocale);
-  const [pollInterval, setPollInterval] = useState(2000);
   const [view, setView] = useState<View>('home');
   const [status, setStatus] = useState<ProcessStatus | null>(null);
   const [readiness, setReadiness] = useState<CoreReadiness | null>(null);
@@ -60,12 +60,67 @@ function App({ origin, initialLocale }: { origin: string; initialLocale: Locale 
   useEffect(() => {
     void client<UiConfig>('/system/ui-config').then((config) => {
       if (config.locale === 'en' || config.locale === 'cn') setLocale(config.locale);
-      if (Number.isInteger(config.poll_interval_ms) && config.poll_interval_ms >= 500 && config.poll_interval_ms <= 10000) setPollInterval(config.poll_interval_ms);
     }).catch(() => { /* Older IsOS releases can still display the TUI. */ });
     void refresh();
-    const timer = setInterval(() => void refresh(), pollInterval);
-    return () => clearInterval(timer);
-  }, [client, refresh, pollInterval]);
+  }, [client, refresh]);
+
+  useEffect(() => {
+    let active = true;
+    let statusSocket: WebSocket | null = null;
+    let logSocket: WebSocket | null = null;
+    let statusRetry: ReturnType<typeof setTimeout> | null = null;
+    let logRetry: ReturnType<typeof setTimeout> | null = null;
+    let cursor: string | undefined;
+    const wsUrl = (path: string): URL => {
+      const url = new URL(`/api/isos/v1${path}`, origin);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      return url;
+    };
+    const connectStatus = (): void => {
+      if (!active) return;
+      const socket = new WebSocket(wsUrl('/runtime/status/ws'));
+      statusSocket = socket;
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { type?: string; process_status?: ProcessStatus };
+          if (message.type === 'snapshot' && message.process_status?.schema_version === '0.1.0' && Array.isArray(message.process_status.processes)) {
+            setStatus(message.process_status); setError(null);
+          }
+        } catch { socket.close(); }
+      };
+      socket.onerror = () => socket.close();
+      socket.onclose = () => { if (active && statusSocket === socket) { statusSocket = null; statusRetry = setTimeout(connectStatus, 1000); } };
+    };
+    const connectLogs = (): void => {
+      if (!active) return;
+      const url = wsUrl('/runtime/logs/ws');
+      url.searchParams.set('source', 'all'); url.searchParams.set('level', 'info'); url.searchParams.set('limit', '30');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      const socket = new WebSocket(url);
+      logSocket = socket;
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { type?: string; page?: CurrentLogPage; error?: { code?: string } };
+          if (message.type === 'page' && message.page && Array.isArray(message.page.lines) && typeof message.page.next_cursor === 'string') {
+            cursor = message.page.next_cursor;
+            setLogs((previous) => previous?.scope?.run_id === message.page!.scope.run_id
+              ? { ...message.page!, lines: [...previous.lines, ...message.page!.lines].slice(-30) }
+              : message.page!);
+          } else if (message.type === 'error' && (message.error?.code === 'log_cursor_invalid' || message.error?.code === 'log_cursor_filter_mismatch')) {
+            cursor = undefined; socket.close();
+          }
+        } catch { socket.close(); }
+      };
+      socket.onerror = () => socket.close();
+      socket.onclose = () => { if (active && logSocket === socket) { logSocket = null; logRetry = setTimeout(connectLogs, 1000); } };
+    };
+    if (typeof WebSocket !== 'undefined') { connectStatus(); connectLogs(); }
+    return () => {
+      active = false; statusSocket?.close(); logSocket?.close();
+      if (statusRetry) clearTimeout(statusRetry);
+      if (logRetry) clearTimeout(logRetry);
+    };
+  }, [origin]);
 
   const control = async (operation: 'run' | 'stop'): Promise<void> => {
     setBusy(true);

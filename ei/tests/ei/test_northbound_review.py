@@ -8,11 +8,10 @@ from datetime import UTC, datetime
 
 import pytest
 import websockets
-
-from ei.api.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
-from ei.api.status import HealthState
-from ei.core.memory import EpisodicStore, ReferenceStore
-from ei.core.perception.admission import Admission
+from ei.core.cognition.memory import EpisodicStore, ReferenceStore
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.plan import ActionRecord, PlanRecord, StepOutcome, StepRecord
+from ei.core.system.models.status import HealthState
 from ei.io import NorthboundServer
 from ei.io.northbound import REVIEW_PATH
 from ei.io.state import ServerState

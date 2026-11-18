@@ -1,19 +1,47 @@
 use std::{
   collections::{BTreeMap, BTreeSet},
-  sync::LazyLock,
+  sync::{Arc, LazyLock, Mutex},
 };
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 use crate::{valid_segment, NodeKind, NodeProfile, PackageRef, ProfileError};
 
 static TYPE_IDL: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
-  let source: serde_json::Value = serde_json::from_str(include_str!(
-    "../../../share/isos/contracts/node/node-type.schema.json"
-  ))
-  .expect("embedded node type IDL is JSON");
+  let source: serde_json::Value =
+    serde_json::from_str(include_str!("../../../contract/node/node-type.schema.json"))
+      .expect("embedded node type IDL is JSON");
   jsonschema::validator_for(&source).expect("embedded node type IDL is valid")
 });
+
+// Data descriptors are immutable after registry construction. Compile each
+// distinct schema once: frame validation may run for every camera sample.
+static DATA_SCHEMA_CACHE: LazyLock<Mutex<BTreeMap<[u8; 32], Arc<jsonschema::Validator>>>> =
+  LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+fn compiled_data_schema(
+  schema: &serde_json::Value,
+) -> Result<Arc<jsonschema::Validator>, ProfileError> {
+  let bytes = serde_json::to_vec(schema)
+    .map_err(|error| ProfileError(format!("invalid schema JSON: {error}")))?;
+  let key: [u8; 32] = Sha256::digest(bytes).into();
+  let mut cache = DATA_SCHEMA_CACHE
+    .lock()
+    .map_err(|_| ProfileError("data schema cache unavailable".into()))?;
+  if let Some(validator) = cache.get(&key) {
+    return Ok(Arc::clone(validator));
+  }
+  let validator = Arc::new(
+    jsonschema::validator_for(schema)
+      .map_err(|error| ProfileError(format!("invalid data schema: {error}")))?,
+  );
+  if cache.len() >= 128 {
+    cache.pop_first();
+  }
+  cache.insert(key, Arc::clone(&validator));
+  Ok(validator)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -146,7 +174,7 @@ pub struct Port {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub description: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub expected_rate_hz: Option<f64>,
+  pub frequency_hz: Option<f64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub max_rate_hz: Option<f64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,7 +292,7 @@ pub struct NodeType {
   pub service_outputs: BTreeMap<String, ServiceDescriptor>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub bridge: Option<BridgeDeclaration>,
-  /// Required for registered actuator types beyond the built-in EOS base and arm.
+  /// Required for package actuator types.
   #[serde(default)]
   pub safety_adapter_type: Option<String>,
 }
@@ -275,6 +303,29 @@ pub struct ImplementationDescriptor {
   pub kind: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub abi: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub library: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub interface: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub version: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub lifecycle_adapter: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeLibrary {
+  pub path: String,
+  pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterLibrary {
+  pub family: String,
+  pub library: String,
+  pub sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -377,6 +428,12 @@ pub struct NodeTypeRegistry {
   codecs: BTreeSet<String>,
   adapter_families: BTreeMap<String, AdapterFamilyDescriptor>,
   family_packages: BTreeMap<String, PackageRef>,
+  native_libraries: BTreeMap<String, std::path::PathBuf>,
+  native_digests: BTreeMap<String, String>,
+  family_libraries: BTreeMap<String, std::path::PathBuf>,
+  family_digests: BTreeMap<String, String>,
+  port_routes: Vec<serde_json::Value>,
+  bridge_adapters: Vec<serde_json::Value>,
 }
 
 /// Verified package contribution passed by IsOS, separate from graph instances.
@@ -385,6 +442,14 @@ pub struct NodeTypeRegistry {
 pub struct NodeTypeContribution {
   pub package: PackageRef,
   #[serde(default)]
+  pub libraries: Vec<NativeLibrary>,
+  #[serde(default)]
+  pub adapters: Vec<AdapterLibrary>,
+  #[serde(default)]
+  pub port_routes: Vec<serde_json::Value>,
+  #[serde(default)]
+  pub bridge_adapters: Vec<serde_json::Value>,
+  #[serde(default)]
   pub node_types: Vec<NodeType>,
   #[serde(default)]
   pub safety_adapters: Vec<SafetyAdapterType>,
@@ -392,6 +457,78 @@ pub struct NodeTypeContribution {
   pub data_types: Vec<DataTypeDescriptor>,
   #[serde(default)]
   pub adapter_families: Vec<AdapterFamilyDescriptor>,
+}
+
+fn safe_library_path(path: &str) -> bool {
+  let path = std::path::Path::new(path);
+  path.extension().is_some_and(|ext| ext == "so")
+    && !path.is_absolute()
+    && path
+      .components()
+      .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn valid_digest(digest: &str) -> bool {
+  digest.len() == 64
+    && digest
+      .bytes()
+      .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn verify_native_libraries(
+  path: &std::path::Path,
+  contribution: &NodeTypeContribution,
+) -> Result<(), ProfileError> {
+  let root = contribution_root(path)?;
+  for library in &contribution.libraries {
+    if !safe_library_path(&library.path) || !valid_digest(&library.sha256) {
+      return Err(ProfileError(format!(
+        "invalid native library declaration: {}",
+        library.path
+      )));
+    }
+    let candidate = root.join(&library.path);
+    let resolved = candidate
+      .canonicalize()
+      .map_err(|error| ProfileError(format!("{}: {error}", candidate.display())))?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+      return Err(ProfileError(format!(
+        "native library escapes verified package: {}",
+        library.path
+      )));
+    }
+    let bytes = std::fs::read(&resolved)
+      .map_err(|error| ProfileError(format!("{}: {error}", resolved.display())))?;
+    if bytes.len() > 64 * 1024 * 1024 {
+      return Err(ProfileError(format!(
+        "native library exceeds 64 MiB: {}",
+        library.path
+      )));
+    }
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if digest != library.sha256 {
+      return Err(ProfileError(format!(
+        "native library digest mismatch: {}",
+        library.path
+      )));
+    }
+  }
+  Ok(())
+}
+
+fn contribution_root(path: &std::path::Path) -> Result<std::path::PathBuf, ProfileError> {
+  let parent = path
+    .parent()
+    .ok_or_else(|| ProfileError("node contribution has no package directory".into()))?;
+  let receipt = parent.join("receipt.json");
+  let linked = std::fs::read(&receipt)
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    .and_then(|value| value["local_link"].as_str().map(std::path::PathBuf::from));
+  let root = linked.unwrap_or_else(|| parent.to_path_buf());
+  root
+    .canonicalize()
+    .map_err(|error| ProfileError(format!("{}: {error}", root.display())))
 }
 
 impl NodeTypeRegistry {
@@ -408,7 +545,78 @@ impl NodeTypeRegistry {
       }
       let contribution: NodeTypeContribution = serde_json::from_slice(&bytes)
         .map_err(|e| ProfileError(format!("{}: {e}", path.display())))?;
+      verify_native_libraries(path, &contribution)?;
+      let adapter_libraries: Vec<(String, String, String)> = contribution
+        .adapters
+        .iter()
+        .map(|adapter| {
+          let declared = contribution
+            .libraries
+            .iter()
+            .find(|library| library.path == adapter.library);
+          if !contribution
+            .adapter_families
+            .iter()
+            .any(|family| family.id == adapter.family)
+            || declared.is_none_or(|library| library.sha256 != adapter.sha256)
+          {
+            return Err(ProfileError(format!(
+              "adapter {} lacks a matching verified family and library",
+              adapter.family
+            )));
+          }
+          Ok((
+            adapter.family.clone(),
+            adapter.library.clone(),
+            adapter.sha256.clone(),
+          ))
+        })
+        .collect::<Result<_, _>>()?;
+      let native_types: Vec<(String, String, String)> = contribution
+        .node_types
+        .iter()
+        .filter_map(|node| {
+          let implementation = node.implementation.as_ref()?;
+          if implementation.kind != "native_plugin" {
+            return None;
+          }
+          let library = implementation.library.clone()?;
+          let digest = contribution
+            .libraries
+            .iter()
+            .find(|item| item.path == library)?
+            .sha256
+            .clone();
+          Some((node.id.clone(), library, digest))
+        })
+        .collect();
       registry.register_contribution(contribution)?;
+      for (id, library, digest) in native_types {
+        registry.native_libraries.insert(
+          id.clone(),
+          contribution_root(path)?
+            .join(library)
+            .canonicalize()
+            .map_err(|error| ProfileError(error.to_string()))?,
+        );
+        registry.native_digests.insert(id, digest);
+      }
+      for (family, library, digest) in adapter_libraries {
+        let resolved = contribution_root(path)?
+          .join(library)
+          .canonicalize()
+          .map_err(|error| ProfileError(error.to_string()))?;
+        if registry
+          .family_libraries
+          .insert(family.clone(), resolved)
+          .is_some()
+        {
+          return Err(ProfileError(format!(
+            "duplicate adapter library for {family}"
+          )));
+        }
+        registry.family_digests.insert(family, digest);
+      }
     }
     Ok(registry)
   }
@@ -419,6 +627,37 @@ impl NodeTypeRegistry {
       "button_activation@v0.2",
       "arm_joint_delta@v0.2",
       "arm_monitor_state@v0.2",
+      "image_frame@v0.2",
+      "base_state@v0.2",
+      "joint_state@v0.2",
+      "base_twist_command@v0.2",
+      "joint_position_command@v0.2",
+      "pose_state@v0.2",
+      "gripper_state@v0.2",
+      "normalized_axes_command@v0.2",
+      "gripper_binary_command@v0.2",
+      "control_mode_command@v0.2",
+      "sample_request@v0.2",
+      "movement_binding_request@v0.2",
+      "physical_event@v0.2",
+      "device_status@v0.2",
+      "binding_result@v0.2",
+      "stop_request@v0.2",
+      "stop_latch@v0.2",
+      "evidence_record@v0.2",
+      "episode_reference@v0.2",
+      "gap_record@v0.2",
+      "manifest_request@v0.2",
+      "dataset_manifest_reference@v0.2",
+      "depth_frame_ref@v0.2",
+      "segmentation_mask_ref@v0.2",
+      "point_cloud_ref@v0.2",
+      "physical_detection@v0.2",
+      "imu_sample@v0.2",
+      "force_torque_sample@v0.2",
+      "tactile_sample@v0.2",
+      "contact_event@v0.2",
+      "audio_chunk_ref@v0.2",
     ] {
       registry
         .register_builtin_data_type(DataTypeDescriptor {
@@ -428,7 +667,13 @@ impl NodeTypeRegistry {
           media_type: "application/json".into(),
           codec: "json_v1".into(),
           schema: builtin_data_schema(id),
-          max_payload_bytes: 1024,
+          max_payload_bytes: if id == "image_frame@v0.2" {
+            20 * 1024 * 1024
+          } else if crate::scene_data::is_scene_type(id) {
+            4_096
+          } else {
+            16_384
+          },
         })
         .expect("valid built-in data type");
     }
@@ -440,6 +685,31 @@ impl NodeTypeRegistry {
         supports_stop: true,
       })
       .expect("valid built-in safety adapter");
+    for (id, kind, mode) in [
+      ("base_velocity", NodeKind::Base, "body_velocity"),
+      (
+        "manipulator_joint_position",
+        NodeKind::Manipulator,
+        "joint_positions",
+      ),
+      ("base_normalized_axes", NodeKind::Base, "normalized_axes"),
+      (
+        "manipulator_normalized_cartesian",
+        NodeKind::Manipulator,
+        "normalized_cartesian",
+      ),
+      ("gripper_binary", NodeKind::Gripper, "binary"),
+      ("torso_normalized_axes", NodeKind::Torso, "normalized_axes"),
+    ] {
+      registry
+        .register_safety_adapter(SafetyAdapterType {
+          id: id.into(),
+          kind,
+          movement_modes: vec![mode.into()],
+          supports_stop: true,
+        })
+        .expect("valid general safety declaration");
+    }
     registry.adapter_families.insert(
       "mock-arm".into(),
       AdapterFamilyDescriptor {
@@ -451,7 +721,20 @@ impl NodeTypeRegistry {
         supported_primitives: vec!["arm.delta@1.0.0".into()],
       },
     );
-    for definition in builtin_types() {
+    for mut definition in builtin_types() {
+      if matches!(
+        definition.id.as_str(),
+        "eos.skill.demo.joint_delta@v0.2" | "eos.skill.demo.arm_status@v0.2"
+      ) {
+        definition.implementation = Some(ImplementationDescriptor {
+          kind: "native_plugin".into(),
+          abi: Some("isos_node_v1".into()),
+          library: Some("libaether_runtime.so".into()),
+          interface: None,
+          version: None,
+          lifecycle_adapter: None,
+        });
+      }
       registry
         .register_builtin(definition)
         .expect("valid built-in node type");
@@ -467,6 +750,123 @@ impl NodeTypeRegistry {
     self.types.values()
   }
 
+  pub fn port_routes(&self) -> &[serde_json::Value] {
+    &self.port_routes
+  }
+  pub fn bridge_adapters(&self) -> &[serde_json::Value] {
+    &self.bridge_adapters
+  }
+
+  pub fn catalog_port_routes(&self) -> Vec<serde_json::Value> {
+    let mut routes = self.port_routes.clone();
+    for camera in self.all().filter(|node| {
+      node.core == "eos"
+        && node.kind == NodeKind::Camera
+        && node.outputs.iter().any(|port| {
+          port.name == "frame"
+            && port.data_type.id() == "image_frame@v0.2"
+            && port.transport == Some(PortTransport::InProcess)
+            && port.delivery_mode == DeliveryMode::Event
+            && port.data_class == Some(DataClass::Image)
+        })
+    }) {
+      routes.push(serde_json::json!({"source_type":camera.id,"output":"frame",
+        "target_type":"eos.interface.egress.vision_flow@v0.2","input":"frame",
+        "transport":"in_process","delivery_mode":"event","data_type":"image_frame@v0.2",
+        "contract":{"owner":"eos","id":"image_frame@v0.2","version":"0.2"}}));
+    }
+    let pairs = [
+      (
+        "ei.governance.safety.gate@v0.2",
+        "activation",
+        "eos.interface.ingress.trigger@v0.2",
+        "activation",
+      ),
+      (
+        "eos.interface.ingress.trigger@v0.2",
+        "activation",
+        "eos.skill.demo.joint_delta@v0.2",
+        "activation",
+      ),
+      (
+        "eos.skill.demo.joint_delta@v0.2",
+        "delta",
+        "eos.dispatcher.arm.delta@v0.2",
+        "delta",
+      ),
+      (
+        "eos.dispatcher.arm.delta@v0.2",
+        "delta",
+        "eos.hardware.mock.arm@v0.2",
+        "delta",
+      ),
+      (
+        "eos.hardware.mock.arm@v0.2",
+        "observation",
+        "eos.hardware.mock.arm_output@v0.2",
+        "observation",
+      ),
+      (
+        "eos.hardware.mock.arm_output@v0.2",
+        "observation",
+        "eos.dispatcher.arm.monitor@v0.2",
+        "observation",
+      ),
+      (
+        "eos.hardware.mock.arm_observer@v0.2",
+        "observation",
+        "eos.dispatcher.arm.monitor@v0.2",
+        "observation",
+      ),
+      (
+        "eos.dispatcher.arm.monitor@v0.2",
+        "observation",
+        "eos.skill.demo.arm_status@v0.2",
+        "observation",
+      ),
+      (
+        "eos.skill.demo.arm_status@v0.2",
+        "observation",
+        "eos.interface.egress.arm_status@v0.2",
+        "observation",
+      ),
+      (
+        "eos.interface.egress.arm_status@v0.2",
+        "observation",
+        "ei.io.input.arm_status@v0.2",
+        "observation",
+      ),
+    ];
+    for (source_type, output, target_type, input) in pairs {
+      let port = self
+        .get(target_type)
+        .and_then(|node| node.inputs.iter().find(|port| port.name == input))
+        .or_else(|| {
+          self
+            .get(source_type)
+            .and_then(|node| node.outputs.iter().find(|port| port.name == output))
+        });
+      if let Some(port) = port {
+        routes.push(serde_json::json!({"source_type":source_type,"output":output,"target_type":target_type,"input":input,
+          "transport":port.transport,"delivery_mode":port.delivery_mode,"data_type":port.data_type,"contract":port.contract}));
+      }
+    }
+    routes
+  }
+
+  pub fn catalog_bridge_adapters(&self) -> Vec<serde_json::Value> {
+    let mut adapters = self.bridge_adapters.clone();
+    for node_type in [
+      "eos.interface.ingress.trigger@v0.2",
+      "eos.interface.egress.arm_status@v0.2",
+      "eos.interface.egress.vision_flow@v0.2",
+    ] {
+      adapters
+        .push(serde_json::json!({"core":"eos","adapter":"unix_socket","node_type":node_type}));
+    }
+    adapters
+  }
+
   pub fn definitions(&self) -> impl Iterator<Item = &NodeType> {
     self.all()
   }
@@ -475,8 +875,108 @@ impl NodeTypeRegistry {
     self.packages.get(id)
   }
 
+  pub fn native_library_for_type(&self, id: &str) -> Option<&std::path::Path> {
+    self
+      .native_libraries
+      .get(id)
+      .map(std::path::PathBuf::as_path)
+  }
+
+  pub fn verified_native_library_for_type(
+    &self,
+    id: &str,
+  ) -> Result<&std::path::Path, ProfileError> {
+    let library = self
+      .native_library_for_type(id)
+      .ok_or_else(|| ProfileError(format!("native library unavailable for {id}")))?;
+    let expected = self
+      .native_digests
+      .get(id)
+      .ok_or_else(|| ProfileError(format!("native digest unavailable for {id}")))?;
+    let bytes = std::fs::read(library)
+      .map_err(|error| ProfileError(format!("{}: {error}", library.display())))?;
+    if bytes.len() > 64 * 1024 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != *expected {
+      return Err(ProfileError(format!(
+        "native library changed after catalog: {}",
+        library.display()
+      )));
+    }
+    Ok(library)
+  }
+
+  pub fn verified_adapter_library_for_family(
+    &self,
+    family: &str,
+  ) -> Result<&std::path::Path, ProfileError> {
+    let library = self
+      .family_libraries
+      .get(family)
+      .ok_or_else(|| ProfileError(format!("adapter library unavailable for {family}")))?;
+    let expected = self
+      .family_digests
+      .get(family)
+      .ok_or_else(|| ProfileError(format!("adapter digest unavailable for {family}")))?;
+    let bytes = std::fs::read(library)
+      .map_err(|error| ProfileError(format!("{}: {error}", library.display())))?;
+    if bytes.len() > 64 * 1024 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != *expected {
+      return Err(ProfileError(format!(
+        "adapter library changed after catalog: {}",
+        library.display()
+      )));
+    }
+    Ok(library)
+  }
+
   pub fn data_type(&self, id: &str) -> Option<&DataTypeDescriptor> {
     self.data_types.get(id)
+  }
+
+  pub fn validate_data_payload(
+    &self,
+    id: &str,
+    payload: &serde_json::Value,
+  ) -> Result<(), ProfileError> {
+    let descriptor = self
+      .data_type(id)
+      .ok_or_else(|| ProfileError(format!("unknown data type: {id}")))?;
+    let bytes = serde_json::to_vec(payload)
+      .map_err(|error| ProfileError(format!("invalid data payload: {error}")))?;
+    if bytes.len() as u64 > descriptor.max_payload_bytes {
+      return Err(ProfileError(format!("payload exceeds bound for {id}")));
+    }
+    let schema = compiled_data_schema(&descriptor.schema)
+      .map_err(|error| ProfileError(format!("invalid schema for {id}: {error}")))?;
+    if !schema.is_valid(payload) {
+      return Err(ProfileError(format!("payload does not match {id}")));
+    }
+    if id == "pose_state@v0.2" {
+      let orientation = payload["orientation_xyzw"]
+        .as_array()
+        .ok_or_else(|| ProfileError("pose quaternion missing".into()))?;
+      let norm = orientation
+        .iter()
+        .filter_map(serde_json::Value::as_f64)
+        .map(|value| value * value)
+        .sum::<f64>();
+      if !norm.is_finite() || (norm - 1.0).abs() > 1e-3 {
+        return Err(ProfileError("pose quaternion must have unit norm".into()));
+      }
+    }
+    if id == "gripper_state@v0.2" {
+      let mut names = BTreeSet::new();
+      if payload["channels"].as_array().is_none_or(|channels| {
+        channels.iter().any(|channel| {
+          channel["name"]
+            .as_str()
+            .is_none_or(|name| !names.insert(name))
+        })
+      }) {
+        return Err(ProfileError(
+          "gripper channels must have unique names".into(),
+        ));
+      }
+    }
+    Ok(())
   }
 
   pub fn data_types(&self) -> impl Iterator<Item = &DataTypeDescriptor> {
@@ -508,13 +1008,9 @@ impl NodeTypeRegistry {
               .as_ref()
               .map(|p| (p.id.as_str(), p.version.as_str()))
           ),
-          ("mock-cxx", None)
-            | ("mock-arm", None)
-            | ("mujoco-v2", Some(("island/mujoco-sim", "0.1.1")))
+          ("mock-cxx", None) | ("mock-arm", None)
         );
-        let loadable = !compiled
-          && descriptor.transport == PortTransport::InProcess
-          && self.family_packages.contains_key(&descriptor.id);
+        let loadable = !compiled && self.family_libraries.contains_key(&descriptor.id);
         CatalogAdapterFamily {
           descriptor: descriptor.clone(),
           package,
@@ -545,7 +1041,61 @@ impl NodeTypeRegistry {
     contribution: NodeTypeContribution,
   ) -> Result<(), ProfileError> {
     contribution.package.validate()?;
+    for route in &contribution.port_routes {
+      if !route.is_object()
+        || route["source_type"].as_str().is_none_or(str::is_empty)
+        || route["target_type"].as_str().is_none_or(str::is_empty)
+        || !["in_process", "unix_socket"].contains(&route["transport"].as_str().unwrap_or(""))
+      {
+        return Err(ProfileError("invalid contributed EOS port route".into()));
+      }
+    }
+    for bridge in &contribution.bridge_adapters {
+      if bridge["core"] != "eos" {
+        continue;
+      }
+      if bridge["adapter"].as_str().is_none_or(str::is_empty)
+        || bridge["node_type"].as_str().is_none_or(str::is_empty)
+      {
+        return Err(ProfileError(
+          "invalid contributed EOS bridge adapter".into(),
+        ));
+      }
+    }
+    let mut library_paths = BTreeSet::new();
+    for library in &contribution.libraries {
+      if !safe_library_path(&library.path)
+        || !valid_digest(&library.sha256)
+        || !library_paths.insert(library.path.as_str())
+      {
+        return Err(ProfileError(format!(
+          "invalid or duplicate native library: {}",
+          library.path
+        )));
+      }
+    }
     let mut next = self.clone();
+    next.port_routes.extend(
+      contribution
+        .port_routes
+        .iter()
+        .filter(|route| {
+          route["source_type"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("eos."))
+            || route["target_type"]
+              .as_str()
+              .is_some_and(|id| id.starts_with("eos."))
+        })
+        .cloned(),
+    );
+    next.bridge_adapters.extend(
+      contribution
+        .bridge_adapters
+        .iter()
+        .filter(|bridge| bridge["core"] == "eos")
+        .cloned(),
+    );
     for descriptor in contribution.data_types {
       let id = descriptor.id.clone();
       next.register_data_type(descriptor)?;
@@ -559,7 +1109,11 @@ impl NodeTypeRegistry {
         || family.device_kinds.iter().any(|kind| {
           !matches!(
             kind,
-            NodeKind::Camera | NodeKind::Base | NodeKind::Manipulator
+            NodeKind::Camera
+              | NodeKind::Base
+              | NodeKind::Manipulator
+              | NodeKind::Gripper
+              | NodeKind::Torso
           ) || !kinds.insert(*kind)
         })
         || family.description.trim().is_empty()
@@ -589,29 +1143,100 @@ impl NodeTypeRegistry {
       next.register_safety_adapter(adapter)?;
     }
     for definition in contribution.node_types {
-      if definition.id == "isos.eos_process.mujoco@v0.2"
-        && (contribution.package.id != "island/mujoco-sim"
-          || contribution.package.version != "0.1.1"
-          || definition.core != "isos"
-          || definition.layer != "eos_process"
-          || definition.group != "mujoco"
-          || definition.kind != NodeKind::Software
-          || definition.lifecycle != Lifecycle::Process)
-      {
+      if definition.core != "eos" {
+        continue;
+      }
+      if !definition.id.starts_with("eos.") || !definition.id.ends_with("@v0.2") {
         return Err(ProfileError(format!(
-          "unsupported MuJoCo type definition: {}",
+          "EOS package node type must use the current graph contract: {}",
           definition.id
         )));
       }
-      if !definition.id.starts_with("isos.") || !definition.id.ends_with("@v0.2") {
-        return Err(ProfileError(format!(
-          "package node type must use the current graph contract: {}",
-          definition.id
-        )));
+      {
+        match definition.implementation.as_ref() {
+          Some(implementation) if implementation.kind == "native_plugin" => {
+            let library = implementation.library.as_deref().unwrap_or("");
+            if !matches!(
+              implementation.abi.as_deref(),
+              Some("isos_node_v1" | "isos_node_v2")
+            ) || !library_paths.contains(library)
+              || implementation.interface.is_some()
+              || implementation.version.is_some()
+              || implementation.lifecycle_adapter.is_some()
+            {
+              return Err(ProfileError(format!(
+                "invalid native implementation for {}",
+                definition.id
+              )));
+            }
+          }
+          Some(implementation) if implementation.kind == "managed_process" => {
+            if implementation
+              .interface
+              .as_deref()
+              .is_none_or(str::is_empty)
+              || implementation.version.as_deref() != Some("1")
+              || implementation
+                .lifecycle_adapter
+                .as_deref()
+                .is_none_or(str::is_empty)
+              || implementation.library.is_some()
+              || implementation.abi.is_some()
+            {
+              return Err(ProfileError(format!(
+                "invalid external implementation for {}",
+                definition.id
+              )));
+            }
+          }
+          _ => {
+            return Err(ProfileError(format!(
+              "package node type {} requires a supported implementation",
+              definition.id
+            )))
+          }
+        }
       }
       let id = definition.id.clone();
       next.register(definition)?;
       next.packages.insert(id, contribution.package.clone());
+    }
+    for route in &next.port_routes {
+      for (type_key, port_key, output) in [
+        ("source_type", "output", true),
+        ("target_type", "input", false),
+      ] {
+        let Some(type_id) = route[type_key].as_str() else {
+          return Err(ProfileError("route type missing".into()));
+        };
+        if !type_id.starts_with("eos.") {
+          continue;
+        }
+        let Some(node) = next.get(type_id) else {
+          return Err(ProfileError(format!(
+            "EOS route references unknown type {type_id}"
+          )));
+        };
+        let ports = if output { &node.outputs } else { &node.inputs };
+        let Some(port) = ports
+          .iter()
+          .find(|port| Some(port.name.as_str()) == route[port_key].as_str())
+        else {
+          return Err(ProfileError(format!(
+            "EOS route references missing port on {type_id}"
+          )));
+        };
+        if serde_json::to_value(port.transport).ok().as_ref() != Some(&route["transport"])
+          || serde_json::to_value(port.delivery_mode).ok().as_ref() != Some(&route["delivery_mode"])
+          || port.data_type.id() != route["data_type"].as_str().unwrap_or("")
+          || serde_json::to_value(&port.contract).ok().as_ref() != Some(&route["contract"])
+        {
+          return Err(ProfileError(format!(
+            "EOS route disagrees with {type_id} port {}",
+            port.name
+          )));
+        }
+      }
     }
     *self = next;
     Ok(())
@@ -658,7 +1283,10 @@ impl NodeTypeRegistry {
         )));
       }
     }
-    if matches!(definition.kind, NodeKind::Base | NodeKind::Manipulator) {
+    if matches!(
+      definition.kind,
+      NodeKind::Base | NodeKind::Manipulator | NodeKind::Gripper | NodeKind::Torso
+    ) {
       let safety = definition
         .safety_adapter_type
         .as_deref()
@@ -726,7 +1354,10 @@ impl NodeTypeRegistry {
     definition: SafetyAdapterType,
   ) -> Result<(), ProfileError> {
     if !valid_segment(&definition.id)
-      || !matches!(definition.kind, NodeKind::Base | NodeKind::Manipulator)
+      || !matches!(
+        definition.kind,
+        NodeKind::Base | NodeKind::Manipulator | NodeKind::Gripper | NodeKind::Torso
+      )
       || !definition.supports_stop
       || definition.movement_modes.is_empty()
       || !definition
@@ -798,9 +1429,7 @@ impl NodeTypeRegistry {
         .any(|p| {
           !valid_segment(&p.name)
             || p.description.as_ref().is_some_and(|d| d.trim().is_empty())
-            || p
-              .expected_rate_hz
-              .is_some_and(|r| !r.is_finite() || r <= 0.0)
+            || p.frequency_hz.is_some_and(|r| !r.is_finite() || r <= 0.0)
             || p.max_rate_hz.is_some_and(|r| !r.is_finite() || r <= 0.0)
             || !self.data_types.contains_key(p.data_type.id())
             || p.description.is_none()
@@ -924,50 +1553,8 @@ impl NodeTypeRegistry {
         node.id
       )));
     }
-    if is_eos_backend_type(&definition.id) {
-      if let Some(path) = node.settings.get("socket").and_then(toml::Value::as_str) {
-        if !path.starts_with('/') || path.len() >= 108 {
-          return Err(ProfileError(format!(
-            "node {} has invalid socket path",
-            node.id
-          )));
-        }
-      }
-    }
-    if matches!(definition.id.as_str(), "isos.eos_process.mujoco@v0.2")
-      && node
-        .package
-        .as_ref()
-        .is_none_or(|package| package.id != "island/mujoco-sim" || package.version != "0.1.1")
-    {
-      return Err(ProfileError(format!(
-        "node {} requires island/mujoco-sim@0.1.1",
-        node.id
-      )));
-    }
-    if matches!(definition.id.as_str(), "isos.eos_process.mujoco@v0.2")
-      && (node
-        .settings
-        .get("scene")
-        .and_then(toml::Value::as_str)
-        .is_none()
-        || node
-          .settings
-          .get("socket")
-          .and_then(toml::Value::as_str)
-          .is_none())
-    {
-      return Err(ProfileError(format!(
-        "node {} requires scene and socket",
-        node.id
-      )));
-    }
     Ok(())
   }
-}
-
-pub fn is_eos_backend_type(id: &str) -> bool {
-  id == "isos.eos_process.mujoco@v0.2"
 }
 
 fn valid_type_version(version: &str) -> bool {
@@ -1253,7 +1840,7 @@ fn port(name: &str, data_type: PortDataType, required: bool) -> Port {
     required,
     cardinality: PortCardinality::One,
     description: None,
-    expected_rate_hz: None,
+    frequency_hz: None,
     max_rate_hz: None,
     transport: None,
     delivery_mode: DeliveryMode::Message,
@@ -1290,32 +1877,35 @@ fn node_type(
   let (core, layer, group) = placement;
   let (inputs, outputs) = ports;
   NodeType {
-        id: id.into(),
-        description: match id {
-            "isos.eos_hardware.camera@v0.2" => "Captures camera frames and publishes health and status.",
-            "isos.eos_hardware.base@v0.2" => "Receives admitted base commands and publishes pose, outcome, health, and status.",
-            "isos.eos_hardware.manipulator@v0.2" => "Receives admitted arm commands and publishes joint observations, outcome, health, and status.",
-            "isos.eos_dispatcher.control@v0.2" => "Admits control requests and emits typed base or arm commands and status.",
-            "isos.eos_dispatcher.primitive_base@v0.2" => "Binds a declared base primitive to a typed base command output.",
-            "isos.eos_dispatcher.primitive_manipulator@v0.2" => "Binds a declared arm primitive to a typed arm command output.",
-            "isos.eos_interface.camera_gate@v0.2" => "Gates camera frames into a read-only vision stream.",
-            _ => "",
-        }.into(),
-        core: core.into(),
-        layer: layer.into(),
-        group: group.into(),
-        kind,
-        lifecycle,
-        capabilities: capabilities.iter().map(|c| (*c).into()).collect(),
-        settings: Vec::new(),
-        inputs,
-        outputs,
-        implementation: None,
-        service_inputs: BTreeMap::new(),
-        service_outputs: BTreeMap::new(),
-        bridge: None,
-        safety_adapter_type: None,
+    id: id.into(),
+    description: match id {
+      "isos.eos_dispatcher.control@v0.2" => {
+        "Admits control requests and emits typed base or arm commands and status."
+      }
+      "isos.eos_dispatcher.primitive_base@v0.2" => {
+        "Binds a declared base primitive to a typed base command output."
+      }
+      "isos.eos_dispatcher.primitive_manipulator@v0.2" => {
+        "Binds a declared arm primitive to a typed arm command output."
+      }
+      _ => "",
     }
+    .into(),
+    core: core.into(),
+    layer: layer.into(),
+    group: group.into(),
+    kind,
+    lifecycle,
+    capabilities: capabilities.iter().map(|c| (*c).into()).collect(),
+    settings: Vec::new(),
+    inputs,
+    outputs,
+    implementation: None,
+    service_inputs: BTreeMap::new(),
+    service_outputs: BTreeMap::new(),
+    bridge: None,
+    safety_adapter_type: None,
+  }
 }
 
 fn builtin_types() -> Vec<NodeType> {
@@ -1595,7 +2185,41 @@ fn builtin_types() -> Vec<NodeType> {
     inputs: vec![],
     outputs: vec!["observation".into()],
   });
-  vec![
+  let mut vision = node_type(
+    "eos.interface.egress.vision_flow@v0.2",
+    ("eos", "interface", "egress"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &["bridge"],
+    (
+      vec![live(
+        "frame",
+        "image_frame@v0.2",
+        PortTransport::InProcess,
+        "eos",
+        "image_frame@v0.2",
+        DataClass::Image,
+      )],
+      vec![live(
+        "frame",
+        "image_frame@v0.2",
+        PortTransport::UnixSocket,
+        "eos",
+        "vision-flow-to-isos",
+        DataClass::Image,
+      )],
+    ),
+  );
+  vision.description = "Transfers validated camera frames to IsOS Vision".into();
+  vision.inputs[0].delivery_mode = DeliveryMode::Event;
+  vision.inputs[0].contract.as_mut().unwrap().version = "0.2".into();
+  vision.outputs[0].delivery_mode = DeliveryMode::Stream;
+  vision.bridge = Some(BridgeDeclaration {
+    adapter: "unix_socket".into(),
+    inputs: vec![],
+    outputs: vec!["frame".into()],
+  });
+  let mut types = vec![
     ingress,
     skill,
     dispatcher,
@@ -1605,7 +2229,160 @@ fn builtin_types() -> Vec<NodeType> {
     monitor_dispatcher,
     status_skill,
     egress,
-  ]
+    vision,
+  ];
+  types.extend(isolated_types());
+  types
+}
+
+fn isolated_types() -> Vec<NodeType> {
+  fn local(name: &str, data: &str, class: DataClass) -> Port {
+    Port {
+      name: name.into(),
+      data_type: PortDataType::Custom(data.into()),
+      contract: None,
+      required: false,
+      cardinality: PortCardinality::One,
+      description: Some(format!("Isolated {data} value")),
+      frequency_hz: None,
+      max_rate_hz: None,
+      transport: Some(PortTransport::None),
+      delivery_mode: DeliveryMode::Declaration,
+      data_class: Some(class),
+    }
+  }
+  fn frame_setting() -> Setting {
+    let mut value = setting("frame_id", SettingType::String, true);
+    value.description = Some("Exact source frame identity".into());
+    value
+  }
+  let mut camera = node_type(
+    "eos.hardware.mock.camera@v0.2",
+    ("eos", "hardware", "mock"),
+    NodeKind::Camera,
+    Lifecycle::Adapter,
+    &[],
+    (
+      vec![local("sample", "sample_request@v0.2", DataClass::Event)],
+      vec![local("frame", "image_frame@v0.2", DataClass::Image)],
+    ),
+  );
+  camera.description = "Produces a deterministic bounded mock RGB frame on direct input".into();
+  camera.settings = vec![frame_setting()];
+  let mut features = node_type(
+    "eos.perception.physical.features@v0.2",
+    ("eos", "perception", "physical"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local("state", "joint_state@v0.2", DataClass::Observation)],
+      vec![local("event", "physical_event@v0.2", DataClass::Event)],
+    ),
+  );
+  features.description = "Checks measured joint positions for physical limit proximity".into();
+  features.settings = vec![frame_setting()];
+  let mut binding = node_type(
+    "eos.dispatcher.command.binding@v0.2",
+    ("eos", "dispatcher", "command"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local(
+        "request",
+        "movement_binding_request@v0.2",
+        DataClass::Command,
+      )],
+      vec![local("binding", "binding_result@v0.2", DataClass::State)],
+    ),
+  );
+  binding.description =
+    "Validates one mock-arm primitive binding without releasing movement".into();
+  let mut target = setting("target_node", SettingType::String, true);
+  target.description = Some("Exact mock arm target path".into());
+  binding.settings = vec![frame_setting(), target];
+  let mut guard = node_type(
+    "eos.safety.device.guard@v0.2",
+    ("eos", "safety", "device"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local("state", "joint_state@v0.2", DataClass::Observation)],
+      vec![local("status", "device_status@v0.2", DataClass::State)],
+    ),
+  );
+  guard.description = "Checks measured joint-state freshness and physical position limits".into();
+  guard.settings = vec![frame_setting()];
+  let mut estop = node_type(
+    "eos.safety.device.estop@v0.2",
+    ("eos", "safety", "device"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local("stop", "stop_request@v0.2", DataClass::Command)],
+      vec![local("latch", "stop_latch@v0.2", DataClass::State)],
+    ),
+  );
+  estop.description = "Delegates an emergency Stop request to an injected EOS Stop service".into();
+  let mut recorder = node_type(
+    "eos.evidence.episode.recorder@v0.2",
+    ("eos", "evidence", "episode"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local("record", "evidence_record@v0.2", DataClass::Event)],
+      vec![
+        local("gap", "gap_record@v0.2", DataClass::Event),
+        local("episode", "episode_reference@v0.2", DataClass::State),
+      ],
+    ),
+  );
+  recorder.description =
+    "Writes bounded run-fenced physical metadata to an owner-supplied append-only store".into();
+  let mut manifest = node_type(
+    "eos.dataset.export.manifest@v0.2",
+    ("eos", "dataset", "export"),
+    NodeKind::Software,
+    Lifecycle::Internal,
+    &[],
+    (
+      vec![local(
+        "request",
+        "manifest_request@v0.2",
+        DataClass::Command,
+      )],
+      vec![local(
+        "manifest",
+        "dataset_manifest_reference@v0.2",
+        DataClass::State,
+      )],
+    ),
+  );
+  manifest.description =
+    "Writes a deterministic manifest from owner-authorized episode references".into();
+  for node in [
+    &mut camera,
+    &mut features,
+    &mut binding,
+    &mut guard,
+    &mut estop,
+    &mut recorder,
+    &mut manifest,
+  ] {
+    node.implementation = Some(ImplementationDescriptor {
+      kind: "built_in".into(),
+      abi: None,
+      library: None,
+      interface: None,
+      version: None,
+      lifecycle_adapter: None,
+    });
+  }
+  vec![camera, features, binding, guard, estop, recorder, manifest]
 }
 
 fn builtin_data_purpose(id: &str) -> &'static str {
@@ -1613,6 +2390,37 @@ fn builtin_data_purpose(id: &str) -> &'static str {
     "button_activation@v0.2" => "General user activation event",
     "arm_joint_delta@v0.2" => "Six ordered relative arm joint angles in radians",
     "arm_monitor_state@v0.2" => "Run-fenced six-joint mock arm observation",
+    "image_frame@v0.2" => "Bounded camera image with source time and frame identity",
+    "sample_request@v0.2" => "Run-local request for one deterministic mock camera sample",
+    "movement_binding_request@v0.2" => "Exact mock-arm primitive binding candidate",
+    "physical_event@v0.2" => "Measured physical limit proximity event",
+    "device_status@v0.2" => "Measured device safety status",
+    "binding_result@v0.2" => "Validated primitive binding without actuator release",
+    "stop_request@v0.2" => "Run-fenced request for emergency Stop",
+    "stop_latch@v0.2" => "EOS emergency Stop latch and proof reference",
+    "evidence_record@v0.2" => "Bounded physical metadata record with source identity",
+    "episode_reference@v0.2" => "Digest-qualified local physical episode reference",
+    "gap_record@v0.2" => "Explicit physical evidence loss record",
+    "manifest_request@v0.2" => "Authorized dataset manifest selection and policy",
+    "dataset_manifest_reference@v0.2" => "Digest-qualified local dataset manifest reference",
+    "depth_frame_ref@v0.2" => "Bounded reference to calibrated physical depth pixels",
+    "segmentation_mask_ref@v0.2" => "Bounded reference to a binary physical mask",
+    "point_cloud_ref@v0.2" => "Bounded reference to calibrated XYZ point samples",
+    "physical_detection@v0.2" => "Source-attributed physical obstacle detection",
+    "imu_sample@v0.2" => "Calibrated inertial acceleration and angular velocity",
+    "force_torque_sample@v0.2" => "Calibrated three-axis force and torque sample",
+    "tactile_sample@v0.2" => "Calibrated bounded tactile pressure channels",
+    "contact_event@v0.2" => "Source-attributed physical contact transition",
+    "audio_chunk_ref@v0.2" => "Bounded reference to microphone PCM audio bytes",
+    "base_state@v0.2" => "Frame-qualified mobile base pose and velocity",
+    "joint_state@v0.2" => "Named manipulator joint positions and velocities",
+    "base_twist_command@v0.2" => "Bounded body-frame base velocity request",
+    "joint_position_command@v0.2" => "Named manipulator joint position request",
+    "pose_state@v0.2" => "Frame-qualified position and unit-quaternion observation",
+    "gripper_state@v0.2" => "Named gripper channels with explicit units",
+    "normalized_axes_command@v0.2" => "Declared normalized axes with a bounded lease",
+    "gripper_binary_command@v0.2" => "Binary gripper open or close request",
+    "control_mode_command@v0.2" => "Declared control mode request",
     "camera_frame" => "RGB-D camera sample with source provenance and calibration",
     "vision_frame" => "JPEG preview derived from a camera gate",
     "base_observation" => "Mobile base pose and velocity sample",
@@ -1633,7 +2441,216 @@ fn builtin_data_purpose(id: &str) -> &'static str {
 
 fn builtin_data_schema(id: &str) -> serde_json::Value {
   use serde_json::json;
+  let sample = json!({
+    "type":"object","additionalProperties":false,
+    "required":["source_time_ns","clock","sequence","frame_id"],
+    "properties":{
+      "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+      "clock":{"enum":["system","simulation","monotonic"]},
+      "sequence":{"type":"integer","minimum":0},
+      "frame_id":{"type":"string","minLength":1,"maxLength":128}
+    }
+  });
+  if let Some(schema) = crate::scene_data::schema(id, &sample) {
+    return schema;
+  }
   let properties = match id {
+    "stop_request@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","reason","source_time_ns"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "reason":{"type":"string","minLength":1,"maxLength":128},
+        "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"}}})
+    }
+    "stop_latch@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","latched","proof_ref"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "latched":{"const":true},"proof_ref":{"type":"string","minLength":1,"maxLength":128}}})
+    }
+    "evidence_record@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","record_id","source_time_ns","kind","source_ref"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "record_id":{"type":"string","minLength":1,"maxLength":128},
+        "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+        "kind":{"enum":["sample","command","event","intervention"]},
+        "source_ref":{"type":"string","minLength":1,"maxLength":128}}})
+    }
+    "episode_reference@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","episode_id","record_count","sha256"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "episode_id":{"type":"string","minLength":1,"maxLength":128},
+        "record_count":{"type":"integer","minimum":0},
+        "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}})
+    }
+    "gap_record@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","episode_id","lost_count","reason"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "episode_id":{"type":"string","minLength":1,"maxLength":128},
+        "lost_count":{"type":"integer","minimum":1},
+        "reason":{"enum":["byte_budget","write_failure"]}}})
+    }
+    "manifest_request@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","episodes","split_policy_id","label_policy_id"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "episodes":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":true,
+          "items":{"type":"object","additionalProperties":false,
+            "required":["episode_id","record_count","sha256"],"properties":{
+              "episode_id":{"type":"string","minLength":1,"maxLength":128},
+              "record_count":{"type":"integer","minimum":0},
+              "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}},
+        "split_policy_id":{"type":"string","minLength":1,"maxLength":64},
+        "label_policy_id":{"type":"string","minLength":1,"maxLength":64}}})
+    }
+    "dataset_manifest_reference@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+      "required":["run_id","manifest_id","episode_count","sha256"],"properties":{
+        "run_id":{"type":"string","minLength":1,"maxLength":128},
+        "manifest_id":{"type":"string","minLength":1,"maxLength":128},
+        "episode_count":{"type":"integer","minimum":1},
+        "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}})
+    }
+    "sample_request@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["source_time_ns","sequence","frame_id","clock"],"properties":{
+          "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+          "sequence":{"type":"integer","minimum":1},
+          "clock":{"const":"monotonic"},
+          "frame_id":{"type":"string","minLength":1,"maxLength":128}}})
+    }
+    "movement_binding_request@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["source_time_ns","frame_id","target_node","primitive","mode","unit","joint_deltas_rad"],
+        "properties":{"source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+          "frame_id":{"type":"string","minLength":1,"maxLength":128},
+          "target_node":{"type":"string","minLength":1,"maxLength":128},
+          "primitive":{"const":"arm.delta@1.0.0"},"mode":{"const":"joint_positions"},
+          "unit":{"const":"rad"},"joint_deltas_rad":{"type":"array","minItems":6,"maxItems":6,
+            "items":{"type":"number","minimum":-0.25,"maximum":0.25},"x-unit":"rad"}}})
+    }
+    "physical_event@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["run_id","source_time_ns","frame_id","source_sequence","event","state","provenance","rule_version"],
+        "properties":{"run_id":{"type":"string","minLength":1,"maxLength":128},
+          "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+          "frame_id":{"type":"string","minLength":1,"maxLength":128},
+          "source_sequence":{"type":"integer","minimum":0},
+          "event":{"const":"joint_limit_proximity"},"state":{"enum":["detected","clear","unknown"]},
+          "provenance":{"const":"input_joint_state"},"rule_version":{"const":"1"}}})
+    }
+    "device_status@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["run_id","source_time_ns","frame_id","source_sequence","state","reason"],
+        "properties":{"run_id":{"type":"string","minLength":1,"maxLength":128},
+          "source_time_ns":{"type":"integer","minimum":0,"x-unit":"ns"},
+          "frame_id":{"type":"string","minLength":1,"maxLength":128},
+          "source_sequence":{"type":"integer","minimum":0},
+          "state":{"enum":["ready","degraded","inhibited"]},
+          "reason":{"type":["string","null"],"maxLength":64}}})
+    }
+    "binding_result@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["run_id","target_node","primitive","mode","unit","valid"],
+        "properties":{"run_id":{"type":"string","minLength":1,"maxLength":128},
+          "target_node":{"type":"string","minLength":1,"maxLength":128},
+          "primitive":{"const":"arm.delta@1.0.0"},"mode":{"const":"joint_positions"},
+          "unit":{"const":"rad"},"valid":{"const":true}}})
+    }
+    "image_frame@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["sample","width_px","height_px","encoding","data"],
+        "properties":{
+          "sample":sample,
+          "width_px":{"type":"integer","minimum":1,"x-unit":"px"},
+          "height_px":{"type":"integer","minimum":1,"x-unit":"px"},
+          "encoding":{"enum":["jpeg","rgb8"]},
+          "data":{"type":"string","contentEncoding":"base64"}
+        }
+      })
+    }
+    "base_state@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["sample","x_m","y_m","yaw_rad","vx_m_s","vy_m_s","yaw_rate_rad_s"],
+        "properties":{
+          "sample":sample,
+          "x_m":{"type":"number","x-unit":"m"},
+          "y_m":{"type":"number","x-unit":"m"},
+          "yaw_rad":{"type":"number","x-unit":"rad"},
+          "vx_m_s":{"type":"number","x-unit":"m/s"},
+          "vy_m_s":{"type":"number","x-unit":"m/s"},
+          "yaw_rate_rad_s":{"type":"number","x-unit":"rad/s"}
+        }
+      })
+    }
+    "joint_state@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["sample","joint_names","position_rad","velocity_rad_s"],
+        "properties":{
+          "sample":sample,
+          "joint_names":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+          "position_rad":{"type":"array","minItems":1,"items":{"type":"number"},"x-unit":"rad"},
+          "velocity_rad_s":{"type":"array","minItems":1,"items":{"type":"number"},"x-unit":"rad/s"}
+        }
+      })
+    }
+    "base_twist_command@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["frame_id","vx_m_s","vy_m_s","yaw_rate_rad_s","lease_ms"],
+        "properties":{
+          "frame_id":{"type":"string","minLength":1,"maxLength":128},
+          "vx_m_s":{"type":"number","x-unit":"m/s"},
+          "vy_m_s":{"type":"number","x-unit":"m/s"},
+          "yaw_rate_rad_s":{"type":"number","x-unit":"rad/s"},
+          "lease_ms":{"type":"integer","minimum":1,"x-unit":"ms"}
+        }
+      })
+    }
+    "joint_position_command@v0.2" => {
+      return json!({
+        "type":"object","additionalProperties":false,
+        "required":["joint_names","position_rad"],
+        "properties":{
+          "joint_names":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+          "position_rad":{"type":"array","minItems":1,"items":{"type":"number"},"x-unit":"rad"}
+        }
+      })
+    }
+    "pose_state@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["sample","position_m","orientation_xyzw"],
+        "properties":{"sample":sample,
+          "position_m":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"},"x-unit":"m"},
+          "orientation_xyzw":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"number"}}}})
+    }
+    "gripper_state@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["sample","channels"],"properties":{"sample":sample,
+          "channels":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,
+            "required":["name","value","unit"],"properties":{"name":{"type":"string","minLength":1,"maxLength":64},
+            "value":{"type":"number"},"unit":{"type":"string","minLength":1,"maxLength":32}}}}}})
+    }
+    "normalized_axes_command@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["axes","lease_ms"],"properties":{"axes":{"type":"object","minProperties":1,
+          "maxProperties":32,"additionalProperties":{"type":"number","minimum":-1.0,"maximum":1.0}},
+          "lease_ms":{"type":"integer","minimum":1,"maximum":1000,"x-unit":"ms"}}})
+    }
+    "gripper_binary_command@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["action"],"properties":{"action":{"enum":["open","close"]}}})
+    }
+    "control_mode_command@v0.2" => {
+      return json!({"type":"object","additionalProperties":false,
+        "required":["mode"],"properties":{"mode":{"type":"string","minLength":1,"maxLength":64}}})
+    }
     "button_activation@v0.2" => {
       return json!({"type":"object","additionalProperties":false,"required":["event_id","kind"],"properties":{"event_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9_.-]+$"},"kind":{"const":"activate"}}})
     }
@@ -1775,5 +2792,25 @@ mod object_array_tests {
     assert!(!valid_setting_value(&seventeen, &setting));
     setting.items_schema = Some(serde_json::json!({"type":"string"}));
     assert!(!valid_setting_descriptor(&setting));
+  }
+}
+
+#[cfg(test)]
+mod data_schema_cache_tests {
+  use super::*;
+  use serde_json::json;
+
+  #[test]
+  fn reuses_only_the_exact_data_schema() {
+    let numbers = json!({"type":"integer"});
+    let strings = json!({"type":"string"});
+    let first = compiled_data_schema(&numbers).unwrap();
+    let again = compiled_data_schema(&numbers).unwrap();
+    let other = compiled_data_schema(&strings).unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
+    assert!(!Arc::ptr_eq(&first, &other));
+    assert!(first.is_valid(&json!(7)));
+    assert!(!first.is_valid(&json!("7")));
+    assert!(other.is_valid(&json!("7")));
   }
 }

@@ -9,9 +9,9 @@ import re
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-GATEWAY = (ROOT / "share/eos/contracts/eos/gateway.proto").read_text()
-CAPABILITIES = (ROOT / "share/eos/contracts/eos/capabilities.proto").read_text()
-SKILLS = (ROOT / "share/eos/contracts/eos/skills.proto").read_text()
+GATEWAY = (ROOT / "contract/proto/gateway.proto").read_text()
+CAPABILITIES = (ROOT / "contract/proto/capabilities.proto").read_text()
+SKILLS = (ROOT / "contract/proto/skills.proto").read_text()
 REQUIRED_GATEWAY = {
   "Discover", "ListResources", "GetStatus", "ReadResource", "WatchResource", "CaptureFrames"
 }

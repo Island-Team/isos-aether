@@ -1,9 +1,9 @@
 """Structural layering invariant: ei.io may import core; core never imports io.
 
 import-linter's layers contract only covers the listed layer packages, so this
-suite scans every module under ``ei/core`` by hand — the composition root
-(``ei/core/__init__.py``, the wiring layer io.md allows) is the sole
-exception. See ``docs/ei/design/runtime/io.md``.
+suite scans every module under ``ei/core`` by hand. The composition and
+launch modules wire ``ei.io`` to core; other core modules cannot import it.
+See ``docs/ei/core/runtime/io.md``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import ei.core
 import ei.io
 
 CORE_ROOT = Path(ei.core.__file__).parent
-COMPOSITION_ROOT = CORE_ROOT / "__init__.py"
+COMPOSITION_ROOT = CORE_ROOT / "system" / "composition.py"
+WIRING_ROOTS = {COMPOSITION_ROOT, CORE_ROOT / "system" / "launch.py"}
 
 
 def _imported_modules(tree: ast.Module) -> set[str]:
@@ -35,10 +36,10 @@ def test_io_imports_standalone() -> None:
 
 
 def test_core_never_imports_io() -> None:
-  """No module under ei/core except the composition root imports ei.io."""
+  """Only composition and launch wiring import ei.io."""
   offenders: list[str] = []
   for path in sorted(CORE_ROOT.rglob("*.py")):
-    if path == COMPOSITION_ROOT:
+    if path in WIRING_ROOTS:
       continue
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     if any(

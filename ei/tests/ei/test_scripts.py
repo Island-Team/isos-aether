@@ -14,16 +14,16 @@ from pathlib import Path
 from typing import ClassVar
 
 
-def test_generate_eos_proto_is_deterministic() -> None:
+def test_generated_eos_proto_is_current() -> None:
   root = Path(__file__).resolve().parents[2]
-  generated = root / "src/island/generated/eos"
+  generated = root / "generated/eos"
   before = {
     path.relative_to(generated).as_posix(): path.read_bytes()
     for path in sorted(generated.rglob("*"))
     if path.is_file() and path.suffix in {".py", ".pyi"}
   }
   result = subprocess.run(
-    [sys.executable, str(root / "scripts/generate_eos_proto.py")],
+    [sys.executable, str(root.parent / "scripts/ei/generate_eos_proto.py"), "--check"],
     cwd=root,
     check=True,
     capture_output=True,
@@ -31,7 +31,7 @@ def test_generate_eos_proto_is_deterministic() -> None:
   )
 
   assert all(
-    "Import eos/robot/primitive.proto is unused." in line
+    "Import robot/primitive.proto is unused." in line
     for line in result.stderr.splitlines()
   )
   assert before == {
@@ -45,7 +45,7 @@ def test_packaged_decision_models_define_fast_and_reasoning_lanes() -> None:
   root = Path(__file__).resolve().parents[2]
   for path in (
     root.parent / "config/ei/models.toml",
-    root.parent / "share/ei/defaults/ei/models.toml",
+    root.parent / "config/defaults/ei/models.toml",
   ):
     with path.open("rb") as stream:
       document = tomllib.load(stream)
@@ -128,7 +128,7 @@ def test_model_script_calls_selection_from_ei_toml(tmp_path: Path) -> None:
   try:
     result = subprocess.run(
       [
-        str(root / "scripts/test_model.py"),
+        str(root.parent / "scripts/ei/test_model.py"),
         "--etc",
         str(etc),
         "--max-tokens",
@@ -171,29 +171,6 @@ def test_model_script_calls_selection_from_ei_toml(tmp_path: Path) -> None:
   )
 
 
-def test_shared_root_resolver_uses_product_config_from_arbitrary_cwd(
-  tmp_path: Path,
-) -> None:
-  root = Path(__file__).resolve().parents[2]
-  result = subprocess.run(
-    [
-      sys.executable,
-      str(root / "scripts/resolve_shared_roots.py"),
-      "--prefix",
-      str(root),
-      "--config",
-      str(root.parent / "config/ei/island.toml"),
-    ],
-    cwd=tmp_path,
-    check=True,
-    capture_output=True,
-    text=True,
-  )
-
-  assert f"[==[{(root / '../share').resolve()}]==]" in result.stdout
-  assert result.stdout.count("[==[") == 1
-
-
 def test_print_prompt_renders_all_lanes_offline_from_arbitrary_cwd(
   tmp_path: Path,
 ) -> None:
@@ -201,7 +178,7 @@ def test_print_prompt_renders_all_lanes_offline_from_arbitrary_cwd(
   result = subprocess.run(
     [
       sys.executable,
-      str(root / "scripts/print_prompt.py"),
+      str(root.parent / "scripts/ei/print_prompt.py"),
       "--etc",
       str(root.parent / "config/ei"),
       "--mode",
@@ -243,7 +220,7 @@ def test_print_prompt_json_matches_text_preview_from_arbitrary_cwd(
   result = subprocess.run(
     [
       sys.executable,
-      str(root / "scripts/print_prompt.py"),
+      str(root.parent / "scripts/ei/print_prompt.py"),
       "--etc",
       str(root.parent / "config/ei"),
       "--json",

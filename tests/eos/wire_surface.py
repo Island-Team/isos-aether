@@ -13,12 +13,12 @@ from google.protobuf import descriptor_pb2
 SERVICES = ("gateway", "skills", "workflow", "capabilities")
 
 
-def wire_surface(proto_root: Path, prefix: str = "eos") -> dict[str, dict[str, str]]:
+def wire_surface(proto_root: Path, prefix: str = "") -> dict[str, dict[str, str]]:
   with tempfile.TemporaryDirectory(prefix="eos-wire-") as directory:
     output = Path(directory) / "services.pb"
     subprocess.run(
       ["protoc", f"-I{proto_root}", f"--descriptor_set_out={output}",
-       "--include_imports", *(f"{prefix}/{name}.proto" for name in SERVICES)],
+       "--include_imports", *(f"{prefix}/{name}.proto" if prefix else f"{name}.proto" for name in SERVICES)],
       cwd=proto_root, check=True, capture_output=True, text=True,
     )
     descriptor = descriptor_pb2.FileDescriptorSet.FromString(output.read_bytes())

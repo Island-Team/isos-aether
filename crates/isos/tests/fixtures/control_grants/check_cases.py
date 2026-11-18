@@ -6,12 +6,12 @@ import re
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[5]
 HERE = Path(__file__).resolve().parent
 PAIRS = [
-    ("docs/isos/interfaces/core/control-grants.md", "docs_cn/isos/interfaces/core/control-grants_cn.md"),
-    ("docs/isos/design/server.md", "docs_cn/isos/design/server_cn.md"),
-    ("tests/fixtures/control_grants/README.md", "tests/fixtures/control_grants/README_cn.md"),
+    ("docs/isos/interfaces/core.md", "docs_cn/isos/interfaces/core_cn.md"),
+    ("docs/isos/core/server.md", "docs_cn/isos/core/server_cn.md"),
+    ("crates/isos/tests/fixtures/control_grants/README.md", "crates/isos/tests/fixtures/control_grants/README_cn.md"),
 ]
 SHARED = (
     "EOS_CONTROL_GRANTS_FILE",

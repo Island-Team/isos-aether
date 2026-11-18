@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 static TYPE_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
   let schema: Value = serde_json::from_str(include_str!(
-    "../../../../../share/isos/contracts/node/node-type.schema.json"
+    "../../../../../contract/node/node-type.schema.json"
   ))
   .expect("embedded node type IDL is JSON");
   jsonschema::validator_for(&schema).expect("embedded node type IDL is valid")
@@ -15,7 +15,7 @@ static TYPE_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
 
 static INSTANCE_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
   let schema: Value = serde_json::from_str(include_str!(
-    "../../../../../share/isos/contracts/node/node-instance.schema.json"
+    "../../../../../contract/node/node-instance.schema.json"
   ))
   .expect("embedded node instance IDL is JSON");
   jsonschema::validator_for(&schema).expect("embedded node instance IDL is valid")
@@ -124,15 +124,51 @@ fn selector_valid(selector: &Value) -> bool {
 pub fn validate_type(node: &Value) -> Result<()> {
   validate_type_idl(node)?;
   let id = node["id"].as_str().unwrap_or("<missing>");
+  if let Some(roles) = node.get("interaction_roles").and_then(Value::as_array) {
+    for (role, direction) in [("publisher", "outputs"), ("subscriber", "inputs")] {
+      if roles.iter().any(|item| item == role) {
+        ensure!(
+          node[direction].as_array().is_some_and(|ports| ports
+            .iter()
+            .any(|port| { port["transport"] != "none" && port["delivery_mode"] != "declaration" })),
+          "{id}: {role} requires a live {direction} port"
+        );
+      }
+    }
+  }
   if let Some(implementation) = node.get("implementation") {
     match implementation["kind"].as_str() {
       Some("built_in") => ensure!(
         implementation.get("abi").is_none(),
         "{id}: built-in type cannot select an ABI"
       ),
-      Some("native_plugin") => ensure!(
-        node["layer"] == "eos_hardware" && implementation["abi"] == "aether_adapter_v1",
-        "{id}: native plugin requires the EOS hardware adapter ABI"
+      Some("native_plugin") => {
+        ensure!(
+          matches!(
+            implementation["abi"].as_str(),
+            Some("isos_node_v1" | "isos_node_v2")
+          ),
+          "{id}: unsupported native ABI"
+        );
+        let library = implementation["library"].as_str().unwrap_or("");
+        ensure!(
+          library.ends_with(".so")
+            && !library.starts_with('/')
+            && library
+              .split('/')
+              .all(|part| !matches!(part, "" | "." | "..")),
+          "{id}: native library must be a safe package-relative .so path"
+        );
+      }
+      Some("external") => ensure!(
+        implementation["version"] == "1"
+          && implementation["interface"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty())
+          && implementation["lifecycle_adapter"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty()),
+        "{id}: unsupported external interface"
       ),
       Some("managed_process") => ensure!(
         node["layer"] == "process" || node["layer"] == "eos_process",
@@ -140,6 +176,17 @@ pub fn validate_type(node: &Value) -> Result<()> {
       ),
       _ => anyhow::bail!("{id}: implementation kind is unsupported"),
     }
+  }
+  for port in ["inputs", "outputs"]
+    .into_iter()
+    .flat_map(|key| node[key].as_array().into_iter().flatten())
+  {
+    ensure!(
+      port["transport"] == "none"
+        || port["transport"] == "in_process"
+        || port["transport"] == "unix_socket",
+      "{id}: unsupported carrier"
+    );
   }
   ensure!(
     node["service_inputs"]
@@ -254,6 +301,10 @@ pub fn validate_type(node: &Value) -> Result<()> {
     for port in ports {
       let name = port["name"].as_str().unwrap_or("");
       ensure!(
+        port.get("expected_rate_hz").is_none(),
+        "{id}.{name}: expected_rate_hz was replaced by frequency_hz; migrate the package declaration"
+      );
+      ensure!(
         !name.is_empty() && names.insert(name),
         "{id}: duplicate or missing {direction} port"
       );
@@ -311,10 +362,10 @@ pub fn validate_type(node: &Value) -> Result<()> {
         matches!(cardinality, "one" | "many"),
         "{id}.{name}: invalid cardinality"
       );
-      if let Some(rate) = port.get("expected_rate_hz") {
+      if let Some(rate) = port.get("frequency_hz") {
         ensure!(
           rate.as_f64().is_some_and(|n| n.is_finite() && n > 0.0),
-          "{id}.{name}: expected_rate_hz must be positive"
+          "{id}.{name}: frequency_hz must be positive"
         );
       }
       if let Some(rate) = port.get("max_rate_hz") {
@@ -483,8 +534,21 @@ mod tests {
         {"name":"enabled","data_type":"boolean","required":false,"description":"Armed"},
         {"name":"axes","data_type":"array","required":false,"description":"Axes"},
         {"name":"metadata","data_type":"object","required":false,"description":"Metadata"}],
-      "inputs":[],"outputs":[{"name":"event","data_type":"key_state","transport":"http","delivery_mode":"stream","cardinality":"one","required":true,"description":"Input event","max_rate_hz":20.0,"contract":{"owner":"isos","id":"key-state","version":"1.0"}}]});
+      "inputs":[],"outputs":[{"name":"event","data_type":"key_state","transport":"unix_socket","delivery_mode":"stream","cardinality":"one","required":true,"description":"Input event","max_rate_hz":20.0,"contract":{"owner":"isos","id":"key-state","version":"1.0"}}]});
     validate_type(&definition).unwrap();
+    let mut frequency = definition.clone();
+    frequency["outputs"][0]["frequency_hz"] = json!(30.0);
+    validate_type(&frequency).unwrap();
+    frequency["outputs"][0]["frequency_hz"] = json!(0.0);
+    assert!(validate_type(&frequency).is_err());
+    let mut legacy = definition.clone();
+    legacy["outputs"][0]["expected_rate_hz"] = json!(30.0);
+    assert!(
+      validate_type(&legacy)
+        .unwrap_err()
+        .to_string()
+        .contains("replaced by frequency_hz")
+    );
     validate_instance_settings(
       &json!({"settings":{"key":"w","speed":0.4,"enabled":true,"axes":[],"metadata":{}}}),
       &definition,
@@ -520,6 +584,31 @@ mod tests {
     assert!(validate_type(&broken).is_err());
     broken["settings"][1]["default"] = json!(0.3);
     validate_type(&broken).unwrap();
+  }
+
+  #[test]
+  fn interaction_roles_require_live_ports_and_unique_known_names() {
+    let mut definition = json!({"id":"isos.io.camera.test@v0.2","core":"isos","layer":"io",
+      "group":"camera","description":"Test camera","kind":"software","lifecycle":"internal",
+      "capabilities":[],"settings":[],"inputs":[],
+      "outputs":[{"name":"frame","description":"Latest test frame","data_type":"image_frame@v0.2","transport":"unix_socket",
+        "delivery_mode":"stream","cardinality":"one","required":false,
+        "contract":{"owner":"isos","id":"test-frame","version":"1"}}],
+      "interaction_roles":["publisher"]});
+    validate_type(&definition).unwrap();
+    definition["interaction_roles"] = json!(["subscriber"]);
+    assert!(
+      validate_type(&definition)
+        .unwrap_err()
+        .to_string()
+        .contains("live inputs")
+    );
+    definition["interaction_roles"] = json!(["publisher", "publisher"]);
+    assert!(validate_type(&definition).is_err());
+    definition["interaction_roles"] = json!(["unknown"]);
+    assert!(validate_type(&definition).is_err());
+    definition["interaction_roles"] = json!(["service", "action"]);
+    validate_type(&definition).unwrap();
   }
 
   #[test]

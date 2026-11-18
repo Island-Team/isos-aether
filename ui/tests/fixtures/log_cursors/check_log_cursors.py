@@ -8,14 +8,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 FIXTURE = Path(__file__).parent
 DOCS = (
-    "docs/isosui/interfaces/log-cursors.md",
-    "docs_cn/isosui/interfaces/log-cursors_cn.md",
-    "docs/isosui/design-log-cursors.md",
-    "docs_cn/isosui/design-log-cursors_cn.md",
-    "docs/isosui/usage.md",
-    "docs_cn/isosui/usage_cn.md",
-    "docs/isosui/README.md",
-    "docs_cn/isosui/README_cn.md",
+    "docs/isos/interfaces/api/client.md",
+    "docs_cn/isos/interfaces/api/client_cn.md",
+    "docs/isos/core/ui/webui.md",
+    "docs_cn/isos/core/ui/webui_cn.md",
+    "docs/isos/core/logger.md",
+    "docs_cn/isos/core/logger_cn.md",
     "ui/tests/fixtures/log_cursors/README.md",
     "ui/tests/fixtures/log_cursors/README_cn.md",
 )

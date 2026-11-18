@@ -3,33 +3,38 @@ import { request } from './api-client';
 /** One registered node type. Placement belongs to this definition, not an instance setting. */
 export interface NodeTypeDefinition {
   id: string;
+  package?: { id: string; version: string };
   deprecated?: boolean;
   description?: string;
   core: string;
   layer: string;
   group: string;
-  kind: 'camera' | 'base' | 'manipulator' | 'software';
+  kind: string;
+  interaction_roles?: ('publisher' | 'subscriber' | 'service' | 'action')[];
   lifecycle: 'internal' | 'process' | 'adapter';
   capabilities: string[];
   settings: SettingDefinition[];
   inputs: PortDefinition[];
   outputs: PortDefinition[];
-  implementation?: { kind: 'built_in' | 'native_plugin' | 'managed_process'; abi?: string };
+  implementation?: { kind: 'built_in' | 'native_plugin' | 'managed_process' | 'in_process' | 'external'; abi?: string; library?: string; interface?: string; version?: string; lifecycle_adapter?: string };
   service_inputs?: Record<string, ServiceDefinition>;
   service_outputs?: Record<string, ServiceDefinition>;
   safety_adapter_type?: string | null;
 }
 export interface ServiceDefinition { owner: string; service: string; version: string; protocol: 'grpc' | 'http' | 'websocket' | 'socket'; carrier: 'in_process' | 'tcp' | 'unix_socket'; socket_protocol?: string; required?: boolean }
 export interface ServiceBinding { owner: string; service: string; version: string; node?: string }
-export function catalogTypeKey(type: Pick<NodeTypeDefinition, 'core' | 'layer' | 'group' | 'id'>): string {
-  return JSON.stringify([type.core, type.layer, type.group, type.id]);
+export function catalogTypeKey(type: Pick<NodeTypeDefinition, 'core' | 'layer' | 'group' | 'id' | 'package'>): string {
+  return JSON.stringify([type.core, type.layer, type.group, type.id, type.package?.id ?? null, type.package?.version ?? null]);
 }
 export interface SettingDefinition { name: string; data_type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object' | 'positive_integer' | 'nonnegative_integer' | 'positive_number' | 'endpoint' | 'string_array' | 'string_table'; required: boolean; description?: string; unit?: string; min?: number; max?: number; choices?: string[]; default?: unknown; selector?: { provider: 'package' | 'registry' | 'graph' | 'ui' | 'owner'; resource: string; package_from?: string; filter?: Record<string, string> } }
-export interface PortDefinition { name: string; data_type: string; contract?: { owner: string; id: string; version: string }; required: boolean; cardinality?: 'one' | 'many'; description?: string; expected_rate_hz?: number | null; transport?: 'in_process' | 'unix_socket' | 'websocket' | 'ros2' | 'http' | string; delivery_mode?: 'request' | 'event' | 'stream' | 'snapshot' | string; data_class?: string }
+export interface PortDefinition { name: string; data_type: string; contract?: { owner: string; id: string; version: string }; required: boolean; cardinality?: 'one' | 'many'; description?: string; frequency_hz?: number | null; transport?: 'in_process' | 'unix_socket' | 'websocket' | 'ros2' | 'http' | string; delivery_mode?: 'request' | 'event' | 'stream' | 'snapshot' | string; data_class?: string }
 export interface DataSchema { title?: string; description?: string; type?: string; properties?: Record<string, { type?: string; description?: string; 'x-unit'?: string; minimum?: number; maximum?: number }>; required?: string[]; [key: string]: unknown }
 export interface DataTypeDefinition { id: string; version: string; purpose: string; media_type: string; codec: string; schema: DataSchema; max_payload_bytes: number }
 
-export interface NodeSource { node: string; output: string; priority?: number; frequency_hz?: number; [key: string]: unknown }
+export interface NodeSource { node: string; output: string; priority?: number; [key: string]: unknown }
+export interface DesiredRate { min?: number; max?: number }
+export interface PortInput { sources: NodeSource | NodeSource[]; desired_rate_hz?: DesiredRate }
+export type InputBinding = NodeSource | NodeSource[] | PortInput;
 export interface NodeInstance {
   id: string;
   node_type: string;
@@ -38,7 +43,7 @@ export interface NodeInstance {
   package?: { id: string; version: string };
   capabilities?: string[];
   settings?: Record<string, unknown>;
-  inputs?: Record<string, NodeSource | NodeSource[]>;
+  inputs?: Record<string, InputBinding>;
   service_bindings?: Record<string, ServiceBinding>;
   references?: string[];
   frame_id?: string;
@@ -55,30 +60,34 @@ export interface NodeGraph {
   cores: Record<string, { layers: Record<string, { groups: Record<string, { nodes: Record<string, NodeInstance> }> }> }>;
   [key: string]: unknown;
 }
-export interface NodeGraphDocument { revision: string; graph: NodeGraph; pool_name?: string; read_only?: boolean; diagnostics?: NodeGraphDiagnostic[] }
+export interface NodeGraphDocument { revision: string; graph: NodeGraph; pool_name?: string; read_only?: boolean; diagnostics?: NodeGraphDiagnostic[]; warnings?: NodeGraphDiagnostic[] }
 export interface NodeGraphDiagnostic { path: string; code?: string; message: string }
 export interface ValidatedEdge { path: string; source: string; output?: string; target: string; input: string; route_class: string; fixed: boolean; qos_eligible: boolean; routed: boolean; priority: number; frequency_hz?: number; data_type: string; transport: string }
-export interface NodeGraphValidation { valid: boolean; diagnostics: NodeGraphDiagnostic[]; edges?: ValidatedEdge[] }
+export interface NodeGraphValidation { valid: boolean; diagnostics: NodeGraphDiagnostic[]; warnings?: NodeGraphDiagnostic[]; edges?: ValidatedEdge[] }
 export interface ConnectionPreviewResult { allowed: boolean; edge?: ValidatedEdge; diagnostic?: NodeGraphDiagnostic }
 export interface ProcessStatus {
-  schema_version: '1.0.0';
+  schema_version: '0.1.0' | '1.0.0';
   saved_revision?: string;
   active_revision?: string | null;
-  state?: 'stopped' | 'running' | 'degraded';
+  state?: 'stopped' | 'starting' | 'stopping' | 'running' | 'degraded';
+  startup_phase?: string | null;
   last_error?: string | null;
   run_id?: string | null;
-  run_id_state?: 'none' | 'known' | 'unavailable';
-  vision_evidence?: import('../eos/vision').VisionEvidenceSelection | null;
+  run_id_state?: 'none' | 'known' | 'unknown' | 'unavailable';
   terminal?: StopTerminal | null;
   processes: { id: string; pid?: number; restarts: number; state?: string; last_error?: string | null; error?: string | null; health?: { error?: string | null } }[];
 }
+/** Run/Restart returns a launch receipt; read process status separately. */
+export interface RunControlReply { started: string[]; active_revision: string; run_id: string }
 /** Stop is a terminal owner reply, not a process-status snapshot. */
 export interface StopTerminal { run_id: string; outcome: 'confirmed' | 'unknown'; reason_code: string | null; processes: { id: string; outcome: 'confirmed' | 'unknown'; reason_code: string | null }[] }
 export interface StopControlReply { stopped: string[]; terminal: StopTerminal | null }
-export interface InstalledPackage { schema_version: 1 | 2; id: string; version: string; source_commit: string | null; asset_sha256: string | null; local_link: string | null }
+export interface InstalledPackage { schema_version: 1 | 2; id: string; version: string; source_commit: string | null; asset_sha256: string | null; local_link: string | null; configurable?: boolean }
 export interface NodeSetDefinition {
   package: { id: string; version: string };
   id: string;
+  label?: { en: string; cn: string };
+  description?: { en: string; cn: string };
   parameters: Record<string, { type: 'string'; default?: string }>;
   nodes: { ref: string; core: string; layer: string; group?: string; profile: NodeInstance }[];
 }
@@ -99,7 +108,7 @@ export interface LinkPreview { id: string; version: string; ready: boolean; issu
 export interface AdapterFamilyOption { id: string; device_kinds: string[]; package?: { id: string; version: string }; compiled: boolean; transport: string; description: string; available: boolean; reason?: string }
 export interface PrimitiveBindingOption { node_type: string; device_kind: string; movement_types: string[]; available: boolean; reason?: string }
 export interface HardwareTargetOption { path: string; node_type: string; device_kind: string; adapter_type: string; movement_types: string[]; available: boolean; reason?: string }
-export interface SettingOption { value: string; label: string; description: string; available: boolean; reason_code: string | null; reason: string | null }
+export interface SettingOption { value: string; label: string; description: string; available: boolean; reason_code: string | null; reason: string | null; profile?: NodeInstance }
 export interface SettingOptionGroup { node_path: string; setting: string; selected: string | null; options: SettingOption[] }
 export interface NodeOptions { adapter_families: AdapterFamilyOption[]; primitive_bindings: PrimitiveBindingOption[]; targets: HardwareTargetOption[]; setting_options?: SettingOptionGroup[]; graph_revision?: string | null; read_only?: boolean }
 export interface PrimitiveSpec { name: string; version: string; device_class: string; movement_type: string; description: string }
@@ -110,6 +119,18 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isNodeSource(value: unknown): value is NodeSource {
   return isObject(value) && typeof value.node === 'string' && typeof value.output === 'string';
+}
+function isInputBinding(value: unknown): value is InputBinding {
+  if (isObject(value) && 'sources' in value) {
+    const sources = value.sources;
+    const rate = value.desired_rate_hz;
+    return (Array.isArray(sources) ? sources.every(isNodeSource) : isNodeSource(sources)) &&
+      (rate === undefined || isObject(rate) &&
+        (rate.min === undefined || typeof rate.min === 'number' && Number.isFinite(rate.min) && rate.min > 0) &&
+        (rate.max === undefined || typeof rate.max === 'number' && Number.isFinite(rate.max) && rate.max > 0) &&
+        (rate.min === undefined || rate.max === undefined || rate.min <= rate.max));
+  }
+  return Array.isArray(value) ? value.every(isNodeSource) : isNodeSource(value);
 }
 
 function isServiceBinding(value: unknown): value is ServiceBinding {
@@ -136,7 +157,7 @@ export function nodeGraphHasEditableShape(graph: unknown): graph is NodeGraph {
           if (node.inputs !== undefined) {
             if (!isObject(node.inputs)) return false;
             for (const sources of Object.values(node.inputs)) {
-              if (Array.isArray(sources) ? !sources.every(isNodeSource) : !isNodeSource(sources)) return false;
+              if (!isInputBinding(sources)) return false;
             }
           }
           if (node.service_bindings !== undefined && (!isObject(node.service_bindings) || Object.values(node.service_bindings).some((binding) => !isServiceBinding(binding)))) return false;
@@ -160,15 +181,15 @@ export function nodeGraphHasEditableShape(graph: unknown): graph is NodeGraph {
 export function nodeGraphReadOnlyReason(document: NodeGraphDocument, types: NodeTypeDefinition[] | null): string | null {
   if (document.read_only) return document.diagnostics?.map((issue) => issue.message).join('; ') || 'IsOS opened this graph read-only.';
   if (!nodeGraphHasEditableShape(document.graph)) return 'This graph structure cannot be edited by this IsosUI build.';
-  if (document.graph.version !== '0.2.0') return `Unsupported graph version ${document.graph.version}.`;
-  if (Object.keys(document.graph.cores).sort().join(',') !== 'ei,eos,isos') return 'Graph 0.2.0 requires the isos, ei, and eos cores.';
+  if (document.graph.version !== '0.2.1') return `Unsupported graph version ${document.graph.version}.`;
+  if (Object.keys(document.graph.cores).sort().join(',') !== 'ei,eos,isos') return 'Graph 0.2.1 requires the isos, ei, and eos cores.';
   if (!types) return 'Node type catalog is unavailable.';
   const known = new Set(types.map(catalogTypeKey));
   for (const [coreId, core] of Object.entries(document.graph.cores)) {
     for (const [layerId, layer] of Object.entries(core.layers)) {
       for (const [groupId, group] of Object.entries(layer.groups)) {
         for (const [nodeId, node] of Object.entries(group.nodes)) {
-          if (!known.has(catalogTypeKey({ core: coreId, layer: layerId, group: groupId, id: node.node_type }))) return `Unsupported node type ${node.node_type} at ${coreId}/${layerId}/${groupId}/${nodeId}.`;
+          if (!known.has(catalogTypeKey({ core: coreId, layer: layerId, group: groupId, id: node.node_type, package: node.package }))) return `Unsupported node type ${node.node_type} at ${coreId}/${layerId}/${groupId}/${nodeId}.`;
         }
       }
     }
@@ -181,18 +202,21 @@ export function graphPackagePins(graph: NodeGraph): { id: string; version: strin
   const pins = new Map<string, { id: string; version: string }>();
   for (const core of Object.values(graph.cores)) for (const layer of Object.values(core.layers)) for (const group of Object.values(layer.groups)) for (const node of Object.values(group.nodes)) {
     if (node.package) pins.set(`${node.package.id}@${node.package.version}`, node.package);
+    if (node.adapter?.package) pins.set(`${node.adapter.package.id}@${node.adapter.package.version}`, node.adapter.package);
   }
   return [...pins.values()];
 }
 
 export function getNodeGraph(): Promise<NodeGraphDocument> { return request('/graph'); }
-/** A fresh 0.2.0 draft fenced by the current saved revision, including an obsolete graph. */
+/** A fresh 0.2.1 draft fenced by the current saved revision, including an obsolete graph. */
 export function getNewNodeGraph(): Promise<NodeGraphDocument> { return request('/graph/new'); }
+/** Convert the bound 0.2.0 graph into an unsaved 0.2.1 draft under its byte revision. */
+export function convertNodeGraph(revision: string): Promise<NodeGraphDocument> { return request(`/graph/convert?revision=${encodeURIComponent(revision)}`); }
 export interface GraphPoolEntry { name: string; revision: string; version: string }
 export function getGraphPool(): Promise<{ graphs: GraphPoolEntry[] }> { return request('/graph-pool'); }
 export function getGraphPoolEntry(name: string): Promise<{ name: string; revision: string; graph: NodeGraph }> { return request(`/graph-pool/${encodeURIComponent(name)}`); }
 export function putGraphPoolEntry(name: string, revision: string, graph: NodeGraph): Promise<{ name: string; revision: string; graph: NodeGraph }> { return request(`/graph-pool/${encodeURIComponent(name)}`, 'PUT', { schema_version: '0.1.0', revision, graph }); }
-export interface NodeTypeCatalog { types: NodeTypeDefinition[]; data_types?: DataTypeDefinition[]; primitive_specs?: PrimitiveSpec[] }
+export interface NodeTypeCatalog { types: NodeTypeDefinition[]; data_types?: DataTypeDefinition[]; primitive_specs?: PrimitiveSpec[]; adapter_families?: (AdapterFamilyOption & { loadable?: boolean })[] }
 export interface GraphCatalogSnapshot { graph: NodeGraphDocument; selected: NodeTypeCatalog | null; global: NodeTypeCatalog | null; reason: string | null }
 export function graphCatalogReadOnlyReason(snapshot: GraphCatalogSnapshot): string | null {
   if (snapshot.graph.read_only) return nodeGraphReadOnlyReason(snapshot.graph, snapshot.selected?.types || null);
@@ -204,7 +228,7 @@ export function getSelectedNodeTypes(): Promise<{ graph_revision: string; catalo
 export async function getGraphCatalogSnapshot(): Promise<GraphCatalogSnapshot> {
   const global = await getNodeTypes().catch(() => null);
   let graph = await getNodeGraph();
-  if (graph.graph.version !== '0.2.0') return { graph, selected: global, global, reason: null };
+  if (graph.graph.version !== '0.2.1') return { graph, selected: global, global, reason: null };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const response = await getSelectedNodeTypes();
@@ -233,22 +257,87 @@ export function combineNodeTypeCatalogs(selected: NodeTypeCatalog | null, global
   const dataTypes = new Map<string, DataTypeDefinition>();
   for (const type of global?.data_types || []) dataTypes.set(type.id, type);
   for (const type of selected?.data_types || []) dataTypes.set(type.id, type);
-  return { types: [...types.values()], data_types: [...dataTypes.values()], primitive_specs: selected?.primitive_specs || global?.primitive_specs || [] };
+  const families = new Map<string, NonNullable<NodeTypeCatalog['adapter_families']>[number]>();
+  for (const family of [...(global?.adapter_families || []), ...(selected?.adapter_families || [])]) {
+    families.set(`${family.package?.id || ''}@${family.package?.version || ''}:${family.id}`, family);
+  }
+  return { types: [...types.values()], data_types: [...dataTypes.values()], primitive_specs: selected?.primitive_specs || global?.primitive_specs || [], adapter_families: [...families.values()] };
 }
 export function getNodeSets(): Promise<{ sets: NodeSetDefinition[] }> { return request('/catalog/node-sets'); }
 export function getInstalledPackages(): Promise<{ installed: InstalledPackage[] }> { return request('/packages'); }
+export interface PackageConfigField {
+  name: string;
+  type: 'string' | 'integer' | 'boolean' | 'directory' | 'file' | 'enum';
+  required: boolean;
+  label: { en: string; cn: string };
+  description: { en: string; cn: string };
+  note?: { en: string; cn: string };
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+  options?: { value: string; label: { en: string; cn: string } }[];
+}
+export interface PackageConfigSection {
+  id: string;
+  label: { en: string; cn: string };
+  description: { en: string; cn: string };
+  fields: PackageConfigField[];
+}
+export interface PackageConfigDescriptor {
+  contract: 'isos.package-config@v1';
+  schema_version: '0.1.0';
+  sections: PackageConfigSection[];
+}
+export interface PackageConfigDocument {
+  id: string;
+  version: string;
+  deployment: string;
+  revision: string;
+  toml: string;
+  descriptor: PackageConfigDescriptor;
+  values: Record<string, unknown>;
+}
+export interface PackageConfigValidation { valid: boolean; diagnostics: { path?: string; code?: string; message: string }[] }
+function packageConfigQuery(id: string, version: string): string {
+  return `/packages/config?${new URLSearchParams({ id, version }).toString()}`;
+}
+export function getPackageConfig(id: string, version: string): Promise<PackageConfigDocument> {
+  return request(packageConfigQuery(id, version));
+}
+export function validatePackageConfig(id: string, version: string, update: { toml: string } | { values: Record<string, unknown> }): Promise<PackageConfigValidation> {
+  return request('/packages/config/validate', 'POST', { schema_version: '0.1.0', id, version, ...update });
+}
+export function putPackageConfig(id: string, version: string, revision: string, update: { toml: string } | { values: Record<string, unknown> }): Promise<{ revision: string; toml: string }> {
+  return request(packageConfigQuery(id, version), 'PUT', { schema_version: '0.1.0', id, version, revision, ...update });
+}
 export function previewNodeSet(set: NodeSetDefinition, graph: NodeGraph, values: Record<string, string>): Promise<NodeSetPreview> {
   return request('/catalog/node-sets/preview', 'POST', { package: set.package, set_id: set.id, graph, values });
 }
 export function getProcessStatus(signal?: AbortSignal): Promise<ProcessStatus> { return request('/runtime/process-status', 'GET', undefined, signal); }
-export function installBackend(id: string, version: string): Promise<unknown> {
-  return request('/packages/install', 'POST', { id, version });
+export interface OwnerServiceHealth {
+  core: 'eos' | 'ei';
+  state: 'idle' | 'ready' | 'running' | 'exited' | 'degraded' | 'failed' | 'unavailable';
+  run_id?: string | null;
+  revision?: string | null;
+  reason?: string;
+}
+export interface SystemHealth { service: 'isos'; state: 'ready'; owners: OwnerServiceHealth[] }
+export function getSystemHealth(signal?: AbortSignal): Promise<SystemHealth> { return request('/system/health', 'GET', undefined, signal); }
+export interface PackageDownloadPreview {
+  id: string; version: string; publisher: string; source_url: string | null;
+  url: string; size_bytes: number; sha256: string; trust: string; approval: string;
+}
+export function previewPackageDownload(id: string, version: string): Promise<{ preview: PackageDownloadPreview }> {
+  return request('/packages/preview-download', 'POST', { id, version });
+}
+export function installBackend(id: string, version: string, approval: string): Promise<unknown> {
+  return request('/packages/install', 'POST', { id, version, approval });
 }
 export function linkBackend(id: string, version: string, path: string, manifest?: string): Promise<unknown> {
   return request('/packages/link', 'POST', { id, version, path, ...(manifest ? { manifest } : {}) });
 }
 export function getSetupStatus(): Promise<SetupStatus> { return request('/cores/setup-status'); }
-export function controlProcesses(operation: 'run' | 'restart', revision?: string): Promise<ProcessStatus> {
+export function controlProcesses(operation: 'run' | 'restart', revision?: string): Promise<RunControlReply> {
   return request('/runtime/control', 'POST', { schema_version: '0.1.0', operation, ...(revision ? { revision } : {}) });
 }
 export function stopProcesses(): Promise<StopControlReply> {
@@ -258,7 +347,7 @@ export function getCoreReadiness(): Promise<CoreReadiness> { return request('/co
 export function previewBackendLink(path: string, manifest?: string): Promise<LinkPreview> {
   return request('/packages/preview-link', 'POST', { path, ...(manifest ? { manifest } : {}) });
 }
-export function getNodeOptions(graph: NodeGraph): Promise<NodeOptions> { return request('/catalog/node-options', 'POST', { schema_version: '0.1.0', graph }); }
+export function getNodeOptions(graph: NodeGraph, signal?: AbortSignal): Promise<NodeOptions> { const body = { schema_version: '0.1.0', graph }; return signal ? request('/catalog/node-options', 'POST', body, signal) : request('/catalog/node-options', 'POST', body); }
 export async function getCurrentLogPage(query: CurrentLogQuery, signal?: AbortSignal): Promise<CurrentLogPage> {
   const { source, level, node_path, correlation_id, cursor, limit = 100 } = query;
   const params = new URLSearchParams({ view: 'current', source, level, limit: String(Math.max(1, Math.min(200, Math.floor(limit)))) });

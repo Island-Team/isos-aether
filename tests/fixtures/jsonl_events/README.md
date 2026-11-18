@@ -1,10 +1,10 @@
 # P06 EOS event design fixtures
 
-[中文](README_cn.md) · [owner contract](../../../docs/eos/interfaces/events.md) · [runtime design](../../../docs/eos/design/runtime/events.md)
+[中文](README_cn.md) · [owner contract](../../../docs/isos/interfaces/server/eos.md#events) · [runtime design](../../../docs/eos/core/dispatcher/dispatcher.md#eos-local-logs)
 
-`examples.jsonl` contains the three exact bilingual contract examples. `check_events.py` checks their UTF-8 JSONL envelope, field bounds, package digests, shared documentation links, English/Chinese equality and thirteen malformed variations. `cases.json` freezes 27 implementation and boundary replay cases by stable ID, mutation and expected result. The Rust producer is exercised by `cargo test -p aether-common`, `cargo test -p aether-runtime --test events`,.
+`examples.jsonl` contains the three exact bilingual contract examples. `check_events.py` checks their UTF-8 JSONL envelope, field bounds, package digests, shared documentation links, English/Chinese equality and thirteen malformed variations. `cases.json` freezes 27 implementation and boundary replay cases by stable ID, mutation and expected result. The Rust producer is exercised by `cargo test -p aether-lib`, `cargo test -p aether-runtime --test events`.
 
-The EOS tests capture stderr from all three persistent binaries, preserve runtime stdout ready, and launch a stub MuJoCo child to check startup, backend loss and stop-before-reap. Pair the IsOS P06 capture replay with the same `run_id`, and verify that a package/Apply failure before spawn has only the IsOS manager-session ID. Inspect parsed fields as well as raw bytes for secret, prompt, frame, argument, path and child-output leaks. `eos_ready` is a local runtime transition; IsOS status is the deployment-readiness authority.
+The EOS tests capture stderr from all three persistent binaries, preserve runtime stdout ready, and launch a stub package hardware child to check startup, backend loss and stop-before-reap. Pair the IsOS P06 capture replay with the same `run_id`, and verify that a package/Apply failure before spawn has only the IsOS manager-session ID. Inspect parsed fields as well as raw bytes for secret, prompt, frame, argument, path and child-output leaks. `eos_ready` is a local runtime transition; IsOS status is the deployment-readiness authority.
 
 Run `python3 tests/fixtures/jsonl_events/check_events.py` from the repository root. Keep full implementation test output in ignored `data/test/<run-id>/`.
 

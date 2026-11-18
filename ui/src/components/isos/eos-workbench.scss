@@ -61,5 +61,18 @@
 .eos-vision__controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
 .eos-vision__controls label { min-width: min(320px, 100%); flex: 1; }
 .eos-vision__controls select { width: 100%; }
-.eos-vision__image { display: grid; place-items: center; min-height: 180px; margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; background: #111827; color: #e5e7eb; overflow: hidden; }
-.eos-vision__image img { display: block; max-width: 100%; max-height: min(65vh, 700px); object-fit: contain; }
+.eos-vision__image { display: grid; place-items: center; width: 100%; min-width: 0; min-height: 180px; margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; background: #111827; color: #e5e7eb; overflow: hidden; }
+.eos-vision__image img { display: block; width: 100%; height: auto; max-height: min(65vh, 700px); object-fit: contain; }
+.isos-vision-page { flex: 1; min-height: 0; overflow: auto; padding: 20px clamp(16px, 4vw, 52px); }
+.isos-vision-page h1 { margin: 0 0 18px; }
+.isos-vision-page__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; }
+.eos-vision__node { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); container-type: inline-size; }
+.eos-vision__node h2 { margin: 0 0 8px; font-size: 1.05rem; overflow-wrap: anywhere; }
+.eos-vision__node [role='alert'] { color: var(--error); overflow-wrap: anywhere; }
+.eos-vision__node-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 220px); align-items: start; gap: 14px; }
+.eos-vision__node-content .eos-vision__image { margin-top: 0; }
+.eos-vision__details { margin: 0; min-width: 0; display: grid; gap: 3px; }
+.eos-vision__details dt { color: var(--text-secondary); font-size: .8rem; }
+.eos-vision__details dd { margin: 0 0 8px; overflow-wrap: anywhere; }
+.eos-vision__details code { white-space: normal; overflow-wrap: anywhere; }
+@container (max-width: 470px) { .eos-vision__node-content { grid-template-columns: minmax(0, 1fr); } }

@@ -41,7 +41,7 @@ class UnifiedOwnerReplay(unittest.TestCase):
             "ISOS_AETHER_BIN_DIR": str(BIN),
             "ISOS_EI_BIN_DIR": str(EI / "bin"),
             "ISOS_EI_DEFAULTS_DIR": str(ROOT / "config/ei"),
-            "ISOS_EI_FACTORY_DEFAULTS_DIR": str(EI.parent / "share/ei/defaults/ei"),
+            "ISOS_EI_FACTORY_DEFAULTS_DIR": str(EI.parent / "config/defaults/ei"),
             "EI_PYTHON": str(EI / ".venv/bin/python"),
             "ISLAND_PREFIX": str(EI),
         })

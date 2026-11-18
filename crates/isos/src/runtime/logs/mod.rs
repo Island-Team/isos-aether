@@ -124,7 +124,7 @@ fn ordered_event(value: &Value) -> Result<Vec<u8>> {
   let mut event = value.clone();
   let source = value["source"].as_str().unwrap_or("manager");
   if !source.contains('@') {
-    event["source"] = json!(format!("isos.runtime.{source}.event@aether-v0.2.1"));
+    event["source"] = json!(format!("isos.runtime.{source}.event@aether-v0.2.3"));
   }
   event["core"] = json!("isos");
   Ok(serde_json::to_vec(&event)?)
@@ -132,6 +132,19 @@ fn ordered_event(value: &Value) -> Result<Vec<u8>> {
 
 pub fn jsonl_line(value: &Value) -> Result<String> {
   Ok(String::from_utf8(ordered_event(value)?)?)
+}
+
+fn readable_line(value: &Value) -> String {
+  let field = |name: &str| value[name].as_str().unwrap_or("-");
+  let message = field("message").replace(['\r', '\n'], "\\n");
+  format!(
+    "IsOS-v{}@{}: [{}][{}]{}\n",
+    env!("CARGO_PKG_VERSION"),
+    field("source"),
+    field("level").to_ascii_uppercase(),
+    field("timestamp"),
+    message
+  )
 }
 
 impl LogStore {
@@ -165,6 +178,15 @@ impl LogStore {
     let root = paths.data.join("log/deployments").join(deployment);
     let fresh_root = !root.exists() && !paths.data.join("log").join(deployment).exists();
     private_dir(&root)?;
+    private_dir(&root.join("owner-pool"))?;
+    for core in ["eos", "ei"] {
+      let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(root.join("owner-pool").join(format!("{core}.jsonl")))?;
+      file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     // Old log trees are read-only history. New sessions write one JSONL file per core.
     let old_ui = root.join("ui-server.log");
     if old_ui.is_file() {
@@ -203,6 +225,48 @@ impl LogStore {
 
   pub fn root(&self) -> &Path {
     &self.root
+  }
+
+  /// Keep selected owner records in IsOS storage for UI reconnection.
+  pub fn append_owner_pool(&self, core: &str, records: &[Value]) -> Result<()> {
+    ensure!(matches!(core, "eos" | "ei"), "invalid owner log core");
+    let path = self.root.join("owner-pool").join(format!("{core}.jsonl"));
+    let _guard = self.lock.lock().unwrap();
+    for record in records {
+      let source = record["source"]
+        .as_str()
+        .context("owner log source missing")?;
+      ensure!(
+        source.starts_with(&format!("{core}.")) && source.ends_with("@aether-v0.2.3"),
+        "owner log source mismatch"
+      );
+      let level = record["level"]
+        .as_str()
+        .context("owner log level missing")?;
+      ensure!(
+        matches!(level, "info" | "warn" | "error"),
+        "invalid owner log level"
+      );
+      let timestamp = record["timestamp"]
+        .as_str()
+        .context("owner log timestamp missing")?;
+      chrono::DateTime::parse_from_rfc3339(timestamp)?;
+      ensure!(
+        record["message"]
+          .as_str()
+          .is_some_and(|message| message.len() <= 4096),
+        "invalid owner log message"
+      );
+      let mut value = record.clone();
+      if value["run_id"].is_null() {
+        value["run_id"] = json!(self.current_run_id());
+      }
+      let mut line = serde_json::to_vec(&value)?;
+      line.push(b'\n');
+      ensure!(line.len() <= 8192, "owner log entry exceeds bound");
+      self.append_file(&path, &line)?;
+    }
+    Ok(())
   }
 
   fn current_run_id(&self) -> String {
@@ -289,17 +353,6 @@ impl LogStore {
       .write(true)
       .mode(0o600)
       .open(self.root.join("isos.jsonl"))?;
-    for owner in ["eos", "ei"] {
-      if let Some(data_root) = paths.data.parent() {
-        remove_dev_owner_logs(&data_root.join(owner).join("log").join(deployment))?;
-      }
-    }
-    for owner in ["eos-owner.log", "ei-owner.log"] {
-      let path = paths.data.join("log").join(owner);
-      if path.is_file() {
-        fs::remove_file(path)?;
-      }
-    }
     let launch = paths.data.join("log/launch/dev/launcher.jsonl");
     if launch.exists() {
       ensure!(launch.is_file(), "dev launcher log is not a regular file");
@@ -314,7 +367,7 @@ impl LogStore {
     writeln!(
       file,
       "{}",
-      json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":"info","source":"isos.launcher.isos.sh@aether-v0.2.1","message":"Dev log history replaced"})
+      json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":"info","source":"isos.launcher.isos.sh@aether-v0.2.3","message":"Dev log history replaced"})
     )?;
     Ok(true)
   }
@@ -383,11 +436,17 @@ impl LogStore {
     } else {
       message
     };
-    let line = serde_json::to_vec(
-      &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":"isos.runtime.manager.diagnostic@aether-v0.2.1","message":message,"event_code":event_code,"run_id":self.current_run_id()}),
-    )?;
+    let value = json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":"isos.runtime.manager.diagnostic@aether-v0.2.3","message":message,"event_code":event_code,"run_id":self.current_run_id()});
+    let line = serde_json::to_vec(&value)?;
     let _guard = self.lock.lock().unwrap();
-    let result = self.append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat());
+    let result = self
+      .append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat())
+      .and_then(|_| {
+        self.append_file(
+          &self.root.join("isos.log"),
+          readable_line(&value).as_bytes(),
+        )
+      });
     if result.is_err() {
       saturating_increment(&WRITE_FAILED);
       saturating_increment(&self.losses);
@@ -422,11 +481,17 @@ impl LogStore {
       "invalid process log identity"
     );
     let message = &message[..message.floor_char_boundary(4096)];
-    let line = serde_json::to_vec(
-      &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":format!("isos.runtime.{process}.event@aether-v0.2.1"),"event_code":code,"message":message,"run_id":self.current_run_id()}),
-    )?;
+    let value = json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":format!("isos.runtime.{process}.event@aether-v0.2.3"),"event_code":code,"message":message,"run_id":self.current_run_id()});
+    let line = serde_json::to_vec(&value)?;
     let _guard = self.lock.lock().unwrap();
-    let result = self.append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat());
+    let result = self
+      .append_file(&self.root.join("isos.jsonl"), &[line, vec![b'\n']].concat())
+      .and_then(|_| {
+        self.append_file(
+          &self.root.join("isos.log"),
+          readable_line(&value).as_bytes(),
+        )
+      });
     if result.is_err() {
       saturating_increment(&WRITE_FAILED);
       saturating_increment(&self.losses);
@@ -580,6 +645,7 @@ impl LogStore {
     );
     let result = (|| {
       self.append_file(path, &line)?;
+      self.append_file(&self.root.join("isos.log"), readable_line(value).as_bytes())?;
       Ok(())
     })();
     if result.is_err() {
@@ -787,33 +853,6 @@ impl LogStore {
   }
 }
 
-fn remove_dev_owner_logs(dir: &Path) -> Result<()> {
-  if !dir.is_dir() {
-    return Ok(());
-  }
-  for entry in fs::read_dir(dir)? {
-    let entry = entry?;
-    let path = entry.path();
-    let kind = entry.file_type()?;
-    if kind.is_dir() {
-      remove_dev_owner_logs(&path)?;
-    } else if kind.is_file()
-      && path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-          name.ends_with(".log")
-            || name.contains(".log.")
-            || name.ends_with(".jsonl")
-            || name.contains(".jsonl.")
-        })
-    {
-      fs::remove_file(path)?;
-    }
-  }
-  Ok(())
-}
-
 pub struct ChildAdmission {
   #[cfg(test)]
   #[expect(
@@ -994,5 +1033,21 @@ fn capture_stream<R: std::io::Read>(
       stream,
       message.trim_end(),
     );
+  }
+}
+
+#[cfg(test)]
+mod readable_tests {
+  use super::*;
+
+  #[test]
+  fn one_record_stays_on_one_readable_line() {
+    let value = json!({"source":"isos.runtime.manager.diagnostic@aether-v0.2.3","level":"warn","timestamp":"2026-11-15T10:24:39.132Z","message":"required owner\nis unavailable"});
+    let line = readable_line(&value);
+    assert_eq!(line.lines().count(), 1);
+    assert!(line.starts_with(
+      "IsOS-v0.2.3@isos.runtime.manager.diagnostic@aether-v0.2.3: [WARN][2026-11-15T10:24:39.132Z]"
+    ));
+    assert!(line.contains("required owner\\nis unavailable"));
   }
 }

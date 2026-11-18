@@ -4,7 +4,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from ei.lib.config import ConfigError, load_launch_config, load_mission_templates
 
 

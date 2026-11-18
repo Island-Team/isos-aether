@@ -8,8 +8,31 @@ import socket
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
-from ei.owner_service import _Handler, _OwnerServer
+from ei.core.system.node_runtime import ContextStage
+from ei.core.system.owner_service import _activation_path, _Handler, _OwnerServer
+
+
+def test_disconnected_activation_cannot_reach_eos() -> None:
+  source = "isos/ui/button/trigger"
+  graph: dict[str, Any] = {"cores": {"ei": {"layers": {}}}}
+  layers = graph["cores"]["ei"]["layers"]
+  previous = source
+  for layer, group, name in (
+    ("io", "input", "trigger"),
+    ("cognition", "intent", "context"),
+    ("cognition", "intent", "forwarder"),
+    ("governance", "safety", "gate"),
+  ):
+    layers.setdefault(layer, {"groups": {}})["groups"].setdefault(group, {"nodes": {}})["nodes"][name] = {
+      "node_type": f"ei.{layer}.{group}.{name}@v0.2",
+      "inputs": {"activation": {"node": previous, "output": "activation"}},
+    }
+    previous = f"ei/{layer}/{group}/{name}"
+  assert _activation_path(graph, source)
+  graph["cores"]["ei"]["layers"]["cognition"]["groups"]["intent"]["nodes"]["forwarder"]["inputs"] = {}
+  assert not _activation_path(graph, source)
 
 
 def _exchange(path: Path, request: bytes) -> tuple[int, dict[str, object]]:
@@ -47,13 +70,15 @@ def test_idle_owner_health_setup_and_closed_lifecycle(tmp_path: Path) -> None:
       "schema_version": 1,
       "core": "ei",
       "state": "idle",
-      "setup_schema_version": 2,
+      "run_id": None,
+      "revision": None,
+      "setup_schema_version": 3,
     }
     status, identity = _post(
       path, "/v1/identity", {"schema_version": 1, "core": "ei", "op": "identity"}
     )
     assert status == 200
-    assert identity["schema_version"] == 2
+    assert identity["schema_version"] == 3
     assert identity["identity"]["core"] == "ei"
     status, unavailable = _post(
       path, "/v1/run", {"schema_version": 1, "core": "ei", "op": "run"}
@@ -84,6 +109,43 @@ def test_idle_owner_health_setup_and_closed_lifecycle(tmp_path: Path) -> None:
     worker.join()
 
 
+def test_owner_log_pages_filter_info_and_resume(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("EI_LOG_DIR", str(tmp_path / "logs"))
+  from ei.core.system.owner_service import _core_log
+
+  _core_log("info", "EI owner service listening")
+  _core_log("info", "unimportant detail")
+  _core_log("warn", "setup warning")
+  _core_log("error", "worker failure")
+  path = tmp_path / "owner.sock"
+  server = _OwnerServer(str(path), _Handler)
+  worker = threading.Thread(target=server.serve_forever, daemon=True)
+  worker.start()
+  try:
+    status, page = _exchange(
+      path, b"GET /v1/logs?after=0 HTTP/1.1\r\nHost: owner\r\n\r\n"
+    )
+    assert status == 200
+    assert [entry["message"] for entry in page["entries"]] == [
+      "EI owner service listening", "setup warning", "worker failure"
+    ]
+    cursor = page["next_cursor"]
+    status, empty = _exchange(
+      path,
+      f"GET /v1/logs?after={cursor} HTTP/1.1\r\nHost: owner\r\n\r\n".encode(),
+    )
+    assert status == 200 and empty["entries"] == []
+    assert empty["next_cursor"] == cursor
+    status, bad = _exchange(
+      path, b"GET /v1/logs?after=oops HTTP/1.1\r\nHost: owner\r\n\r\n"
+    )
+    assert status == 400 and bad["error"] == "invalid_log_cursor"
+  finally:
+    server.shutdown()
+    server.server_close()
+    worker.join()
+
+
 def test_catalog_uses_existing_setup_validation(tmp_path: Path) -> None:
   path = tmp_path / "owner.sock"
   server = _OwnerServer(str(path), _Handler)
@@ -104,14 +166,14 @@ def test_catalog_uses_existing_setup_validation(tmp_path: Path) -> None:
       },
     )
     assert status == 422
-    assert reply["schema_version"] == 2
+    assert reply["schema_version"] == 3
     assert reply["ok"] is False
     assert reply["files"] == []
     assert reply["diagnostics"] == [
       {
         "path": "/graph/version",
         "code": "unsupported_graph_version",
-        "message": "EI requires graph 0.2.0",
+        "message": "EI requires graph 0.2.1",
       }
     ]
   finally:
@@ -135,7 +197,7 @@ def test_catalog_reports_node_mismatch_at_exact_graph_path(tmp_path: Path) -> No
         "op": "catalog",
         "revision": "abc",
         "graph": {
-          "version": "0.2.0",
+          "version": "0.2.1",
           "cores": {
             "ei": {
               "layers": {
@@ -172,7 +234,7 @@ def test_activation_follows_three_stages_and_fences_run(
 ) -> None:
   from unittest.mock import Mock
 
-  from ei import owner_service
+  from ei.core.system import owner_service
 
   path = tmp_path / "owner.sock"
   server = _OwnerServer(str(path), _Handler)
@@ -202,11 +264,20 @@ def test_activation_follows_three_stages_and_fences_run(
             "groups": {
               "intent": {
                 "nodes": {
+                  "context": {
+                    "node_type": "ei.cognition.intent.context@v0.2",
+                    "inputs": {
+                      "activation": {
+                        "node": "ei/io/input/input",
+                        "output": "activation",
+                      }
+                    },
+                  },
                   "forward": {
                     "node_type": "ei.cognition.intent.forwarder@v0.2",
                     "inputs": {
                       "activation": {
-                        "node": "ei/io/input/input",
+                        "node": "ei/cognition/intent/context",
                         "output": "activation",
                       }
                     },
@@ -236,6 +307,7 @@ def test_activation_follows_three_stages_and_fences_run(
       }
     }
   }
+  server.start_nodes(server.activation_graph, [], server.run_id, server.revision)
   calls: list[dict] = []
 
   def eos_reply(_path: str, _route: str, request: dict) -> tuple[int, dict]:
@@ -329,7 +401,7 @@ def test_arm_monitor_passes_fenced_state_and_throttles_eos(
 ) -> None:
   from unittest.mock import Mock
 
-  from ei import owner_service
+  from ei.core.system import owner_service
 
   path = tmp_path / "owner.sock"
   server = _OwnerServer(str(path), _Handler)
@@ -459,6 +531,7 @@ def test_arm_monitor_passes_fenced_state_and_throttles_eos(
     }
 
   monkeypatch.setattr(owner_service, "_post_owner", eos_reply)
+  server.start_nodes(server.activation_graph, [], server.run_id, server.revision)
   server.start_monitor()
   worker = threading.Thread(target=server.serve_forever, daemon=True)
   worker.start()
@@ -526,7 +599,7 @@ def test_run_is_fenced_and_stop_reaps_worker(tmp_path: Path, monkeypatch) -> Non
     "op": "run",
     "run_id": "run_1",
     "revision": "a" * 64,
-    "graph": {"version": "0.2.0", "robot": {}, "cores": {"ei": {"layers": {}}}},
+    "graph": {"version": "0.2.1", "robot": {}, "cores": {"ei": {"layers": {}}}},
     "endpoints": {
       "eos_gateway": {"transport": "tcp", "host": "127.0.0.1", "port": 16200}
     },
@@ -539,7 +612,7 @@ def test_run_is_fenced_and_stop_reaps_worker(tmp_path: Path, monkeypatch) -> Non
   }
   try:
     monitor_graph = {
-      "version": "0.2.0",
+      "version": "0.2.1",
       "robot": {},
       "cores": {
         "ei": {
@@ -624,7 +697,7 @@ def test_real_ei_worker_runs_health_only_without_configuration(
   request = {
     **identity,
     "op": "run",
-    "graph": {"version": "0.2.0", "robot": {}, "cores": {"ei": {"layers": {}}}},
+    "graph": {"version": "0.2.1", "robot": {}, "cores": {"ei": {"layers": {}}}},
     "endpoints": {},
     "packages": [],
     "launch": {
@@ -645,6 +718,8 @@ def test_real_ei_worker_runs_health_only_without_configuration(
         break
     assert status == 200
     assert health["state"] == "running"
+    assert health["run_id"] == "health_1"
+    assert health["revision"] == "a" * 64
     status, stopped = _post(path, "/v1/stop", {**identity, "op": "stop"})
     assert status == 200, stopped
     assert stopped["terminal"]["worker_exited"] is True
@@ -676,7 +751,7 @@ def test_real_ei_worker_runs_health_only_without_configuration(
     ]
     assert all(
       {"timestamp", "level", "source", "message"} <= record.keys()
-      and record["source"] == "ei.owner_service.py@aether-v0.2.1"
+      and record["source"] == "ei.owner_service.py@aether-v0.2.3"
       for record in records
     )
   finally:
@@ -713,7 +788,7 @@ def test_two_owner_health_workers_share_state_root_without_lock_collision(
       "op": "run",
       "run_id": f"parallel_{index}",
       "revision": "a" * 64,
-      "graph": {"version": "0.2.0", "robot": {}, "cores": {"ei": {"layers": {}}}},
+      "graph": {"version": "0.2.1", "robot": {}, "cores": {"ei": {"layers": {}}}},
       "endpoints": {},
       "packages": [],
       "launch": {
@@ -759,3 +834,48 @@ def test_two_owner_health_workers_share_state_root_without_lock_collision(
       server.server_close()
     for thread in threads:
       thread.join()
+
+
+def test_context_stage_forwards_activation_and_renders_observation() -> None:
+  emitted: list[dict[str, object]] = []
+  stage = ContextStage(emitted.append)
+  stage.input(
+    {
+      "port": "observation",
+      "payload": {
+        "run_id": "run-1",
+        "revision": "a" * 64,
+        "source_node": "eos/hardware/mock/arm_observer",
+        "sequence": 7,
+        "sampled_at_monotonic_ns": 123,
+        "joint_names": ["joint_1", "joint_2"],
+        "joint_positions_rad": [0.05, -0.04],
+        "state": "ready",
+        "reason_code": "ok",
+      },
+    }
+  )
+  event = {"event_id": "click-1", "kind": "activate"}
+  stage.input({"port": "activation", "payload": event})
+
+  assert emitted[0] == {"port": "activation", "payload": event}
+  snapshot = emitted[1]["payload"]
+  hardware = [s for s in snapshot["sections"] if s["kind"] == "hardware"]
+  assert hardware and hardware[0]["has_data"] is True
+  assert hardware[0]["rendered"] == "Hardware: joint_1=0.050, joint_2=-0.040"
+  assert "joint_1=0.050" in snapshot["prompt"]
+  assert "joint_2=-0.040" in snapshot["prompt"]
+  assert snapshot["observation_ids"]
+
+
+def test_context_stage_without_observation_reports_empty_context() -> None:
+  emitted: list[dict[str, object]] = []
+  stage = ContextStage(emitted.append)
+  event = {"event_id": "click-2", "kind": "activate"}
+  stage.input({"port": "activation", "payload": event})
+
+  assert emitted[0] == {"port": "activation", "payload": event}
+  snapshot = emitted[1]["payload"]
+  assert snapshot["observation_ids"] == []
+  hardware = [s for s in snapshot["sections"] if s["kind"] == "hardware"]
+  assert hardware and hardware[0]["rendered"] == "Hardware: unavailable"

@@ -6,13 +6,12 @@ import asyncio
 
 import grpc
 import pytest
+from ei.contracts.io.link import ResourceKind, TerminalStatus
+from ei.core.io.link import EosClient, LinkPrimitiveError
+from ei.core.system.registry import PrimitiveRegistry
+from ei.lib.config import GatewayConfig
 from grpc_health.v1 import health_pb2
 
-from ei.contracts.actions import TerminalStatus
-from ei.contracts.endpoints import ResourceKind
-from ei.core.link import EosClient, LinkPrimitiveError
-from ei.core.registry import PrimitiveRegistry
-from ei.lib.config import GatewayConfig
 from tests.ei.stub.gateway import start_stub_gateway, stop_stub_gateway
 
 

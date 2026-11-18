@@ -4,7 +4,7 @@
 # Port registry — every port EI binds is declared in etc/:
 #   ei.toml  [server].port            16060  northbound and sandbox media WebSocket
 #   modes.toml [modes.<mode>.gateway].grpc_port  external EOS gRPC listener
-#   opt/sandbox.toml [gateway].grpc_port 16022  local playground EOS gRPC
+#   sandbox.toml [gateway].grpc_port 16022  local playground EOS gRPC
 # models.toml names the external decision-model endpoint. The shipped selection
 # uses the Island-models Gemma4 router on :18011, which EI consumes but does
 # not bind. EOS owns speech recognition and synthesis.
@@ -118,20 +118,20 @@ proposal_token_budget = 0
 proposal_max_tokens = 256
 
 # Memory — §3.2 vector recall and docs-corpus RAG, both riding the sqlite-vec
-# index in opt/memory. When the package is absent the launch logs
+# index in core/memory. When the extra is absent the launch logs
 # `vector_recall_unavailable` and both degrade to keyword search uniformly.
 [memory]
-# Build the sqlite-vec recall index at launch when the opt package is present.
+# Build the sqlite-vec recall index at launch when the vector dependency is present.
 vector_recall = true
 # Plain-text docs corpus indexed for retrieval (relative to the resolved EI
 # documentation root, or absolute; empty disables docs retrieval).
 docs_corpus = "."
 
 # Reserved EI-side sandbox details. Activation is [launch].sandbox; local
-# device, listener, and fallback settings live in opt/sandbox.toml.
+# device, listener, and fallback settings live in sandbox.toml.
 [sandbox]
 
-# Monitor — backend heartbeat loop (core/monitor).
+# Monitor — backend heartbeat loop (core/safety).
 [monitor]
 heartbeat_interval_s = 5.0
 failure_threshold = 3

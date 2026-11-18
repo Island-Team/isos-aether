@@ -6,19 +6,18 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-
-from ei.api.mission import MissionRecord
-from ei.api.model_io import ModelExchange
-from ei.core.context import ContextBuilder
-from ei.core.decision.planner import DecisionPlanner
-from ei.core.decision.sentinel import (
+from ei.core.cognition.context import ContextBuilder
+from ei.core.cognition.decision.planner import DecisionPlanner
+from ei.core.cognition.decision.sentinel import (
   SafetySentinel,
   SentinelSignal,
   SentinelSignalKind,
   _parse_signal,
 )
-from ei.core.perception.admission import Admission
-from ei.core.registry import PrimitiveRegistry
+from ei.core.evidence.perception.admission import Admission
+from ei.core.system.models.mission import MissionRecord
+from ei.core.system.models.model_io import ModelExchange
+from ei.core.system.registry import PrimitiveRegistry
 from ei.lib.config import DecisionConfig, DecisionSentinelConfig, load_prompt_config
 from ei.lib.vlm import ModelResponse
 

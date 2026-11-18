@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ei.core.context.hardware import render_hardware
-from ei.core.link import DeviceBinding
+from ei.core.cognition.context.hardware import render_hardware
+from ei.core.io.link import DeviceBinding
 
 
 def _device(device_id: str, device_class: str, part_id: str) -> DeviceBinding:

@@ -3,7 +3,7 @@ name = "IsOS"
 profile = "live"
 # Prefix-relative architecture-independent resource roots. Consumers merge the
 # roots into one logical directory and must reject duplicate relative paths.
-share = ["../share"]
+share = ["../contract"]
 
 [logging]
 max_bytes = 33554432
