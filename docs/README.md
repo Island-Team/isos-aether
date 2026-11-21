@@ -11,7 +11,7 @@ Browse documents and subfolders here.
   - [Documentation changelog](changelog.md)
   - [Shared contracts and source resources](contract.md)
   - [Contributing](contributing.md)
-  - [Coding and Documentation Conventions](conventions.v1.4.0.md)
+  - [Coding and Documentation Conventions](conventions.v2.0.0.md)
   - [Unified IsOS release](release.md)
 - Subfolders:
   - [ei/](ei/README.md)
@@ -37,7 +37,7 @@ IsOS owns the saved graph, package verification, Apply, and deployment run ident
 | [Unified release](release.md) | One product release, qualification gates, and published bundle verification. |
 | [Changelog](changelog.md) | Completed UI delivery and earlier source beta planning. |
 | [Contributing](contributing.md) | Repository-wide contribution entry point and documentation workflow. |
-| [Conventions](conventions.v1.4.0.md) | Source, contract, and documentation rules. |
+| [Conventions](conventions.v2.0.0.md) | Source, contract, and documentation rules. |
 | [Shared contracts](contract.md) | Ownership and location of authored, checked, and generated contract files. |
 
 The owning component's `interfaces/` tree defines public fields and wire behavior with readable JSON examples. The [shared contract map](contract.md) points contributors to machine-readable sources and generated artifacts. Source version `0.2.3` and graph format `0.2.1` are independent of HTTP, protobuf, and package identities.

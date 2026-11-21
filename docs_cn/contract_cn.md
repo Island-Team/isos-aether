@@ -11,7 +11,7 @@
   - [文档](README_cn.md)
   - [文档变更记录](changelog_cn.md)
   - [贡献指南](contributing_cn.md)
-  - [代码与文档规范](conventions.v1.4.0_cn.md)
+  - [代码与文档规范](conventions.v2.0.0_cn.md)
   - [IsOS 统一发布](release_cn.md)
 - 下级目录：
   - [ei/](ei/README_cn.md)

@@ -19,7 +19,7 @@ Browse documents and subfolders here.
 
 EOS exposes one hardware control boundary for every admitted adapter. The selected package and owner catalog supply device implementation details; Dispatcher admission, typed observations, health, and Stop use the same owner contracts.
 
-[中文](../../docs_cn/eos/README_cn.md) · [Documentation](../README.md) · [Conventions](../conventions.v1.4.0.md)
+[中文](../../docs_cn/eos/README_cn.md) · [Documentation](../README.md) · [Conventions](../conventions.v2.0.0.md)
 
 
 - [Start](../isos/start/quick-start.md): build, configure, launch, inspect, stop and troubleshoot EOS.

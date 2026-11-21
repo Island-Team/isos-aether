@@ -55,4 +55,4 @@ React Web 客户端与 TypeScript Ink TUI 均位于 [`ui/`](docs_cn/isos/core/ui
 
 ## 开发与验证
 
-`crates/isos/` 包含管理器，`crates/aether-*/` 包含 EOS Rust 运行时，`ei/` 包含 Python 运行时，`ui/` 包含两种客户端。从根目录运行 Rust 格式检查、Clippy 和针对性测试；在 `ei/` 运行平台构建流程及检查；在 `ui/` 运行 `npm ci && npm run typecheck && npm test && npm run build`。UI 构建生成本地与托管 Web 包以及 TUI。遵循[开发文档](docs_cn/README_cn.md)、[仓库约定](docs_cn/conventions.v1.4.0_cn.md)和[智能体指南](AGENTS.md)，并保持中英文文档一致。
+`crates/isos/` 包含管理器，`crates/aether-*/` 包含 EOS Rust 运行时，`ei/` 包含 Python 运行时，`ui/` 包含两种客户端。从根目录运行 Rust 格式检查、Clippy 和针对性测试；在 `ei/` 运行平台构建流程及检查；在 `ui/` 运行 `npm ci && npm run typecheck && npm test && npm run build`。UI 构建生成本地与托管 Web 包以及 TUI。遵循[开发文档](docs_cn/README_cn.md)、[仓库约定](docs_cn/conventions.v2.0.0_cn.md)和[智能体指南](AGENTS.md)，并保持中英文文档一致。

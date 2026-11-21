@@ -4,10 +4,10 @@ Each entry gives the role of one English Markdown file in one sentence.
 
 ## Documentation rules
 
-- Follow `docs/conventions.v1.4.0.md` and the owning component’s `start/`, `interfaces/`, and `core/` pages before changing behavior.
+- Follow `docs/conventions.v2.0.0.md` and the owning component’s `start/`, `interfaces/`, and `core/` pages before changing behavior.
 - `docs/README.md` — Introduces the repository documentation scope and links to its related pages.
 - `docs/contributing.md` — Guides repository-wide code, contract, documentation, verification, and review contributions.
-- `docs/conventions.v1.4.0.md` — Sets the conventions v1 4 0 source, interface, documentation, testing, and publication rules.
+- `docs/conventions.v2.0.0.md` — Sets the conventions v2 0 0 source, interface, documentation, testing, and publication rules.
 - `docs/ei/README.md` — Introduces the docs ei scope and links to its related pages.
 - `docs/ei/core/README.md` — Introduces the docs ei design scope and links to its related pages.
 - `docs/ei/core/architecture.md` — Explains the design and responsibilities of EI architecture.
