@@ -11,7 +11,7 @@ Browse documents and subfolders here.
   - [Documentation](README.md)
   - [Documentation changelog](changelog.md)
   - [Shared contracts and source resources](contract.md)
-  - [Coding and Documentation Conventions](conventions.v1.4.0.md)
+  - [Coding and Documentation Conventions](conventions.v2.0.0.md)
   - [Unified IsOS release](release.md)
 - Subfolders:
   - [ei/](ei/README.md)
@@ -22,9 +22,9 @@ Browse documents and subfolders here.
 </details>
 <!-- doc-navigation:end -->
 
-[中文](../docs_cn/contributing_cn.md) · [Documentation index](README.md) · [Repository conventions](conventions.v1.4.0.md) · [Contract map](contract.md)
+[中文](../docs_cn/contributing_cn.md) · [Documentation index](README.md) · [Repository conventions](conventions.v2.0.0.md) · [Contract map](contract.md)
 
-This guide is the working path for changes to IsOS, EI, EOS, the Web client, and the TUI. The [conventions](conventions.v1.4.0.md) set shared source and documentation rules; the owning interface defines public behavior. Start with the [first-use guide](isos/start/quick-start.md) if you have not run this checkout before.
+This guide is the working path for changes to IsOS, EI, EOS, the Web client, and the TUI. The [conventions](conventions.v2.0.0.md) set shared source and documentation rules; the owning interface defines public behavior. Start with the [first-use guide](isos/start/quick-start.md) if you have not run this checkout before.
 
 ## Find the owner and the current boundary
 
@@ -85,6 +85,6 @@ For a runtime boundary, exercise success, rejection, dependency failure, and Sto
 
 ## Review and publish
 
-Review `git diff` for unintended changes, generated output, private data, broken examples, and stale paths. Commit a coherent slice with a `docs:`, `refactor:`, `fix:`, `test:`, or `chore:` prefix. Follow the [shared change and release workflow](conventions.v1.4.0.md#change-and-release-workflow) for PR, testing branch, independent review, merge order, and cleanup. Confirm the integration target before publishing. A reviewed package release has separate qualification and immutable assets under the [package contract](isos/interfaces/package/README.md).
+Review `git diff` for unintended changes, generated output, private data, broken examples, and stale paths. Commit a coherent slice with a `docs:`, `refactor:`, `fix:`, `test:`, or `chore:` prefix. Follow the [shared change and release workflow](conventions.v2.0.0.md#change-and-release-workflow) for PR, testing branch, independent review, merge order, and cleanup. Confirm the integration target before publishing. A reviewed package release has separate qualification and immutable assets under the [package contract](isos/interfaces/package/README.md).
 
 The 2026-11-16 readable-contract documentation pass checked all 234 Markdown files for relative links (none broken), 28 IsOS English/Chinese page pairs (no issues), 140 JSON blocks in changed pages (all parsed), and complete English coverage in `doc.md`. `git diff --check` passed. Reproducible commands and output are saved under ignored `data/test/20261116-readable-contracts/checks.log`.

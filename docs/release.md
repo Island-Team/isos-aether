@@ -12,7 +12,7 @@ Browse documents and subfolders here.
   - [Documentation changelog](changelog.md)
   - [Shared contracts and source resources](contract.md)
   - [Contributing](contributing.md)
-  - [Coding and Documentation Conventions](conventions.v1.4.0.md)
+  - [Coding and Documentation Conventions](conventions.v2.0.0.md)
 - Subfolders:
   - [ei/](ei/README.md)
   - [eos/](eos/README.md)

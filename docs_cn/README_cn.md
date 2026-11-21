@@ -11,7 +11,7 @@
   - [文档变更记录](changelog_cn.md)
   - [共享契约与源码资源](contract_cn.md)
   - [贡献指南](contributing_cn.md)
-  - [代码与文档规范](conventions.v1.4.0_cn.md)
+  - [代码与文档规范](conventions.v2.0.0_cn.md)
   - [IsOS 统一发布](release_cn.md)
 - 下级目录：
   - [ei/](ei/README_cn.md)
@@ -37,7 +37,7 @@ IsOS 负责保存图、验证软件包、Apply 和部署运行身份。EI 与 EO
 | [统一发布](release_cn.md) | 单一产品发布、资格门禁及已发布包的验证。 |
 | [变更记录](changelog_cn.md) | 已完成的 UI 交付和早期源码 beta 计划。 |
 | [贡献指南](contributing_cn.md) | 全仓库贡献入口与文档变更流程。 |
-| [约定](conventions.v1.4.0_cn.md) | 源码、契约和文档规则。 |
+| [约定](conventions.v2.0.0_cn.md) | 源码、契约和文档规则。 |
 | [共享契约](contract_cn.md) | 手写、核对及生成的契约文件的归属与位置。 |
 
 公开字段和线协议由所属组件的 `interfaces/` 文档通过易读的 JSON 示例定义。[共享契约地图](contract_cn.md)供贡献者查找机器可读源码与生成资源。源码版本 `0.2.3` 与图格式 `0.2.1` 独立于 HTTP、protobuf 和软件包标识。

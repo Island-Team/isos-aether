@@ -11,7 +11,7 @@
   - [文档](README_cn.md)
   - [文档变更记录](changelog_cn.md)
   - [共享契约与源码资源](contract_cn.md)
-  - [代码与文档规范](conventions.v1.4.0_cn.md)
+  - [代码与文档规范](conventions.v2.0.0_cn.md)
   - [IsOS 统一发布](release_cn.md)
 - 下级目录：
   - [ei/](ei/README_cn.md)
@@ -22,9 +22,9 @@
 </details>
 <!-- doc-navigation:end -->
 
-[English](../docs/contributing.md) · [文档索引](README_cn.md) · [仓库约定](conventions.v1.4.0_cn.md) · [契约地图](contract_cn.md)
+[English](../docs/contributing.md) · [文档索引](README_cn.md) · [仓库约定](conventions.v2.0.0_cn.md) · [契约地图](contract_cn.md)
 
-本指南说明如何修改 IsOS、EI、EOS、Web 客户端与 TUI。[共享约定](conventions.v1.4.0_cn.md)规定源码和文档规则；所属接口定义公开行为。尚未运行本仓库时，先阅读[首次使用指南](isos/start/quick-start_cn.md)。
+本指南说明如何修改 IsOS、EI、EOS、Web 客户端与 TUI。[共享约定](conventions.v2.0.0_cn.md)规定源码和文档规则；所属接口定义公开行为。尚未运行本仓库时，先阅读[首次使用指南](isos/start/quick-start_cn.md)。
 
 ## 找到归属方与当前边界
 
@@ -85,6 +85,6 @@ git diff --check
 
 ## 审查与发布
 
-检查 `git diff` 中的意外更改、生成输出、私有数据、错误示例和过期路径。用 `docs:`、`refactor:`、`fix:`、`test:` 或 `chore:` 前缀提交完整的变更。按照[共享变更与发布流程](conventions.v1.4.0_cn.md#变更与发布流程)处理 PR、测试分支、独立审查、合并顺序和清理。发布前确认集成目标。经审查的软件包发行还需遵循[软件包契约](isos/interfaces/package/README_cn.md)的资格验证和不可变资源规则。
+检查 `git diff` 中的意外更改、生成输出、私有数据、错误示例和过期路径。用 `docs:`、`refactor:`、`fix:`、`test:` 或 `chore:` 前缀提交完整的变更。按照[共享变更与发布流程](conventions.v2.0.0_cn.md#变更与发布流程)处理 PR、测试分支、独立审查、合并顺序和清理。发布前确认集成目标。经审查的软件包发行还需遵循[软件包契约](isos/interfaces/package/README_cn.md)的资格验证和不可变资源规则。
 
 2026-11-16 的易读契约文档检查覆盖全部 234 个 Markdown 文件的相对链接（零失效）、28 对 IsOS 中英文页面（零问题）、变更页面中的 140 个 JSON 代码块（全部可解析）及 `doc.md` 对全部英文文档的覆盖。`git diff --check` 通过。可复现的命令和输出保存在被忽略的 `data/test/20261116-readable-contracts/checks.log`。

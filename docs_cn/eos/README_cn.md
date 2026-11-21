@@ -19,7 +19,7 @@
 
 EOS 对所有获准适配器提供同一硬件控制边界。选定的软件包和所属核心目录提供设备实现细节；Dispatcher 准入、类型化观测、健康和 Stop 使用相同的所属核心契约。
 
-[English](../../docs/eos/README.md) · [文档索引](../README_cn.md) · [约定](../conventions.v1.4.0_cn.md)
+[English](../../docs/eos/README.md) · [文档索引](../README_cn.md) · [约定](../conventions.v2.0.0_cn.md)
 
 
 - [入门](../isos/start/quick-start_cn.md)：构建、配置、启动、检查、停止和排障。

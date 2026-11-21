@@ -1,6 +1,6 @@
 # Repository agent guide
 
-Follow the [IslandTeam conventions](docs/conventions.v1.4.0.md) and the [documentation index](docs/README.md). This file is a short map of the current repository, not a second source for product contracts. Before changing behavior, read the owning component's `start/`, `interfaces/`, and relevant `core/` or `design/` pages. The owning interface defines public behavior. Keep English `docs/` and Chinese `docs_cn/` pages, examples, and links aligned.
+Follow the [IslandTeam conventions](docs/conventions.v2.0.0.md) and the [documentation index](docs/README.md). This file is a short map of the current repository, not a second source for product contracts. Before changing behavior, read the owning component's `start/`, `interfaces/`, and relevant `core/` or `design/` pages. The owning interface defines public behavior. Keep English `docs/` and Chinese `docs_cn/` pages, examples, and links aligned.
 
 ## Current source map
 
@@ -14,7 +14,7 @@ Create a focused `<change-type>/<topic>` branch from the confirmed integration t
 
 Run checks relevant to the changed boundary. Rust uses root `rustfmt.toml`; run `cargo fmt --all` and `cargo fmt --all -- --check`, plus relevant Clippy and tests. UI checks are `npm run typecheck`, `npm test`, and the browser and TUI builds from `ui/`. EI checks are Ruff, Pyright, import rules, and relevant tests. For runtime changes, exercise success, rejection, failure, and Stop at the real boundary where applicable. Save complete evidence in ignored `data/test/<run-id>/` and record reproducible commands and outcomes in the owning guide.
 
-Follow the [shared publication workflow](docs/conventions.v1.4.0.md#change-and-release-workflow) for review, testing branch, PR, merge, and cleanup. This repository uses branch names without `(v2)`; that local rule supersedes the branch prefix in the shared workflow. Confirm the integration target before publishing. Do not treat a local check or install as a published package release; use the [package contract](docs/isos/interfaces/package/README.md) for qualification and release rules.
+Follow the [shared publication workflow](docs/conventions.v2.0.0.md#change-and-release-workflow) for review, testing branch, PR, merge, and cleanup. This repository uses branch names without `(v2)`; that local rule supersedes the branch prefix in the shared workflow. Confirm the integration target before publishing. Do not treat a local check or install as a published package release; use the [package contract](docs/isos/interfaces/package/README.md) for qualification and release rules.
 
 ## Documentation boundaries
 
